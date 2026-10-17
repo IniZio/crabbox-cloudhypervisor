@@ -3,24 +3,31 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 
-use crate::backend::Backend;
-use crate::lease::{check_agreement, status_of, target_id};
+use crate::backend::{Backend, Power};
+use crate::lease::{check_agreement, target_id};
 use crate::protocol::{LeaseRow, Request};
 
 #[cfg(test)]
 mod tests;
 
 /// Every lease on the host with its status, sorted by lease id.
-pub fn list(_request: &Request, backend: &dyn Backend) -> Result<Vec<LeaseRow>, String> {
+pub fn list(
+    _request: &Request,
+    backend: &dyn Backend,
+    diag: &mut dyn Write,
+) -> Result<Vec<LeaseRow>, String> {
     let mut rows: Vec<LeaseRow> = backend
         .list()?
         .into_iter()
-        .map(|r| LeaseRow {
-            status: status_of(backend.alive(&r)).to_owned(),
-            lease_id: r.lease_id,
-            slug: r.slug,
-            name: r.name,
-            cloud_id: r.cloud_id,
+        .map(|r| {
+            backend.reap(&r, diag);
+            LeaseRow {
+                status: backend.power(&r).status().to_owned(),
+                lease_id: r.lease_id,
+                slug: r.slug,
+                name: r.name,
+                cloud_id: r.cloud_id,
+            }
         })
         .collect();
     rows.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
@@ -65,7 +72,8 @@ pub fn cleanup(
 ) -> Result<String, String> {
     let mut ids: BTreeSet<String> = backend.orphans()?.into_iter().collect();
     for record in backend.list()? {
-        if !backend.alive(&record) {
+        backend.reap(&record, diag);
+        if backend.power(&record) == Power::Stopped {
             ids.insert(record.lease_id);
         }
     }

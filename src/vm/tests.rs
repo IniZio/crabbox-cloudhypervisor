@@ -78,11 +78,11 @@ fn vm_config_has_the_spike_shape() {
         ],
         "net": [{
             "vhost_user": true,
-            "vhost_socket": "/r/abc/passt.sock",
+            "vhost_socket": "/r/abc/p",
             "mac": mac_for("abc"),
             "num_queues": 2,
         }],
-        "vsock": {"cid": 3, "socket": "/r/abc/vsock.sock"},
+        "vsock": {"cid": 3, "socket": "/r/abc/v"},
         "serial": {"mode": "File", "file": "/serial.log"},
         "console": {"mode": "Off"},
     });

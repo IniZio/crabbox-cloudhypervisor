@@ -1,6 +1,6 @@
 //! Tests for the readiness probe.
 
-use super::ReadyProbe;
+use super::{known_hosts_line, ReadyProbe};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -13,6 +13,8 @@ fn probe(ssh: &Path) -> ReadyProbe {
         proxy_command: "pc %h".into(),
         user: "crabbox".into(),
         host: "ch-x".into(),
+        known_hosts: "/k/known_hosts".into(),
+        host_key_alias: "crabbox-x".into(),
     }
 }
 
@@ -49,11 +51,17 @@ fn args_exact() {
         "-o",
         "ConnectTimeout=10",
         "-o",
-        "StrictHostKeyChecking=no",
+        "StrictHostKeyChecking=yes",
         "-o",
-        "UserKnownHostsFile=/dev/null",
+        "UpdateHostKeys=no",
+        "-o",
+        "VerifyHostKeyDNS=no",
         "-o",
         "LogLevel=ERROR",
+        "-o",
+        "UserKnownHostsFile=/k/known_hosts",
+        "-o",
+        "HostKeyAlias=crabbox-x",
         "-o",
         "ProxyCommand=pc %h",
         "-p",
@@ -118,4 +126,12 @@ fn hanging_attempt_respects_deadline() {
     let error = run(&probe(&ssh), Duration::from_secs(1)).unwrap_err();
     assert!(error.contains("not ready"), "{error}");
     assert!(start.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn known_hosts_line_format() {
+    assert_eq!(
+        known_hosts_line("crabbox-x", "ssh-ed25519 AAAA"),
+        "crabbox-x ssh-ed25519 AAAA\n"
+    );
 }

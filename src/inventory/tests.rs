@@ -18,18 +18,23 @@ fn list_sorted_with_status() {
     fake.add("c3", false);
     fake.add("a1", true);
     fake.add("b2", true);
-    let rows = list(&request(Operation::List), &fake).unwrap();
+    fake.pause_set("b2");
+    fake.passt_set("c3");
+    let rows = list(&request(Operation::List), &fake, &mut std::io::sink()).unwrap();
     let ids: Vec<&str> = rows.iter().map(|r| r.lease_id.as_str()).collect();
     assert_eq!(ids, ["a1", "b2", "c3"]);
     let statuses: Vec<&str> = rows.iter().map(|r| r.status.as_str()).collect();
-    assert_eq!(statuses, ["ready", "ready", "stopped"]);
+    assert_eq!(statuses, ["ready", "paused", "stopped"]);
+    assert!(fake.called("reap c3"));
     assert_eq!(rows.first().unwrap().cloud_id, "ch-a1");
 }
 
 #[test]
 fn list_empty() {
     let fake = Fake::default();
-    assert!(list(&request(Operation::List), &fake).unwrap().is_empty());
+    assert!(list(&request(Operation::List), &fake, &mut std::io::sink())
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -85,6 +90,18 @@ fn cleanup_removes_dead_and_orphans_not_alive() {
     assert!(fake.called("destroy:o3"));
     assert!(!fake.called("destroy:a1"));
     assert!(fake.records.borrow().contains_key("a1"));
+}
+
+#[test]
+fn cleanup_keeps_paused_and_reaps_orphan_passt() {
+    let fake = Fake::default();
+    fake.add("a1", true);
+    fake.pause_set("a1");
+    fake.add("b2", false);
+    fake.passt_set("b2");
+    let msg = run_cleanup(&fake, true).unwrap();
+    assert_eq!(msg, "would remove 1 lease(s): b2");
+    assert!(fake.called("reap b2"));
 }
 
 #[test]

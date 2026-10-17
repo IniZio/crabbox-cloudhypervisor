@@ -120,6 +120,7 @@ fn lease_response_shape() {
             key: "/abs/id_ed25519".to_owned(),
             proxy_command: "x proxy l1".to_owned(),
             ready_check: "true".to_owned(),
+            host_key: String::new(),
         },
     };
     let base = r#"{"protocolVersion":1,"lease":{"leaseId":"l1","slug":"s","name":"n","cloudId":"vm1","status":"ready","ssh":{"user":"crabbox","host":"vm1.local","port":"22","key":"/abs/id_ed25519","proxyCommand":"x proxy l1","readyCheck":"true""#;
@@ -211,7 +212,45 @@ fn parses_extra_request_fields() {
 }
 
 #[test]
-fn pause_is_unknown() {
-    let err = parse_request(br#"{"protocolVersion":1,"operation":"pause"}"#).unwrap_err();
-    assert_eq!(err, "unknown operation \"pause\"");
+fn unknown_operation_is_rejected() {
+    let err = parse_request(br#"{"protocolVersion":1,"operation":"hibernate"}"#).unwrap_err();
+    assert_eq!(err, "unknown operation \"hibernate\"");
+}
+
+#[test]
+fn parses_pause_and_resume_with_extra_lease_fields() {
+    for name in ["pause", "resume"] {
+        let input = format!(
+            r#"{{"protocolVersion":1,"operation":"{name}","config":{{}},"lease":{{"leaseId":"l","slug":"s","name":"n","cloudId":"c","status":"paused","serverType":"t","labels":{{"a":"b"}},"ssh":{{"host":"h"}}}}}}"#
+        );
+        let req = parse_request(input.as_bytes()).unwrap();
+        assert_eq!(req.operation.as_str(), name);
+        assert_eq!(req.lease.and_then(|l| l.lease_id).as_deref(), Some("l"));
+        assert!(!req.release_only);
+    }
+}
+
+#[test]
+fn operation_roundtrips_through_wire_name() {
+    for op in [Operation::Pause, Operation::Resume, Operation::Touch] {
+        assert_eq!(Operation::from_wire(op.as_str()), Some(op));
+    }
+}
+
+#[test]
+fn ssh_host_key_serialized_only_when_non_empty() {
+    let mut ssh = Ssh {
+        user: "u".to_owned(),
+        host: "h".to_owned(),
+        port: "22".to_owned(),
+        key: "k".to_owned(),
+        proxy_command: "p".to_owned(),
+        ready_check: "true".to_owned(),
+        host_key: String::new(),
+    };
+    assert!(!serde_json::to_string(&ssh).unwrap().contains("hostKey"));
+    ssh.host_key = "ssh-ed25519 AAAA".to_owned();
+    assert!(serde_json::to_string(&ssh)
+        .unwrap()
+        .contains(r#""hostKey":"ssh-ed25519 AAAA""#));
 }

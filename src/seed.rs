@@ -21,12 +21,25 @@ pub struct SeedParams<'a> {
     pub hostname: &'a str,
     /// One-line OpenSSH public key authorised for user `crabbox`.
     pub ssh_public_key: &'a str,
+    /// Full OpenSSH ed25519 host private key (multi-line PEM).
+    pub host_private_key: &'a str,
+    /// One-line OpenSSH ed25519 host public key.
+    pub host_public_key: &'a str,
 }
 
 /// Renders `#cloud-config` user-data. A multi-line key is flattened to one line.
 #[must_use]
 pub fn user_data(params: &SeedParams<'_>) -> String {
     let key = params.ssh_public_key.trim().replace(['\r', '\n'], " ");
+    let host_pub = params.host_public_key.trim().replace(['\r', '\n'], " ");
+    let host_priv = params
+        .host_private_key
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .map(|l| format!("      {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         r"#cloud-config
 users:
@@ -37,7 +50,16 @@ users:
     ssh_authorized_keys:
       - {key}
 ssh_pwauth: false
+ssh_deletekeys: true
+ssh_genkeytypes: []
+ssh_keys:
+  ed25519_private: |
+{host_priv}
+  ed25519_public: {host_pub}
 write_files:
+  - path: /etc/ssh/sshd_config.d/00-crabbox-hostkey.conf
+    content: |
+      HostKey /etc/ssh/ssh_host_ed25519_key
   - path: /etc/systemd/system/crabbox-ssh-vsock.socket
     content: |
       [Unit]
