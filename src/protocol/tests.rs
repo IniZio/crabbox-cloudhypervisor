@@ -117,11 +117,12 @@ fn lease_response_shape() {
             user: "crabbox".to_owned(),
             host: "vm1.local".to_owned(),
             port: "22".to_owned(),
+            key: "/abs/id_ed25519".to_owned(),
             proxy_command: "x proxy l1".to_owned(),
             ready_check: "true".to_owned(),
         },
     };
-    let base = r#"{"protocolVersion":1,"lease":{"leaseId":"l1","slug":"s","name":"n","cloudId":"vm1","status":"ready","ssh":{"user":"crabbox","host":"vm1.local","port":"22","proxyCommand":"x proxy l1","readyCheck":"true""#;
+    let base = r#"{"protocolVersion":1,"lease":{"leaseId":"l1","slug":"s","name":"n","cloudId":"vm1","status":"ready","ssh":{"user":"crabbox","host":"vm1.local","port":"22","key":"/abs/id_ed25519","proxyCommand":"x proxy l1","readyCheck":"true""#;
     assert_eq!(lease_response(&lease), format!("{base}}}}}}}"));
 }
 

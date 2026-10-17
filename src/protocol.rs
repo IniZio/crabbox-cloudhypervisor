@@ -105,6 +105,8 @@ pub struct Ssh {
     pub host: String,
     /// Port, as the protocol's string.
     pub port: String,
+    /// Absolute path of the private key crabbox must use.
+    pub key: String,
     /// `ProxyCommand` line.
     pub proxy_command: String,
     /// Shell command that proves readiness.

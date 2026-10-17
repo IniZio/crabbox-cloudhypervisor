@@ -3,7 +3,16 @@
 //! crabbox runs the binary once per operation: one request object on stdin, one
 //! response object on stdout, diagnostics on stderr.
 
+pub mod assets;
+pub mod backend;
+pub mod ch;
+pub mod config;
+pub mod host;
 pub mod protocol;
+pub mod proxy;
+pub mod ready;
+pub mod seed;
+pub mod state;
 
 use std::io::Write;
 
