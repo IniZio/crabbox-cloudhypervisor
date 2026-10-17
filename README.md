@@ -102,8 +102,9 @@ Outbound traffic goes through passt (NAT and DNS, no inbound).
 The provider generates a per-lease ed25519 host key and injects it through
 cloud-init (sshd offers only that key). Every `acquire`, `resolve` and `resume`
 returns it as `ssh.hostKey` (`ssh-ed25519 AAAA...`, no hostname or comment), so
-it never rotates and the guest is verified with `StrictHostKeyChecking=yes`.
-Host key pinning needs the crabbox fork's `hostKey` support.
+it never rotates. The provider uses it for its own readiness check only.
+crabbox's external backend does not read `ssh.hostKey` today, so crabbox
+sessions keep `StrictHostKeyChecking` off and do not verify the host key.
 
 ## Pause and resume
 
@@ -129,8 +130,18 @@ works so `release`, `pause` and `resume` can find it.
 - Downloads and the converted base image: `<cacheDir>`.
 
 `release` removes the lease directory. `cloud-hypervisor` and `passt` processes
-run detached per lease and are stopped on release. `cleanup` removes dead or
-orphaned lease directories.
+run detached per lease and are stopped on release. Only `release` destroys a
+lease.
+
+`cleanup` never deletes stopped or paused leases. It reaps orphan `passt`
+processes (VM dead, passt alive) and removes broken lease directories (no
+readable `lease.json`, for example from a crashed acquire). `dryRun` reports
+what it would remove without deleting.
+
+Opt-in: set `reapStoppedAfterHours` (integer >= 1; absent = off) in the
+provider config and `cleanup` also deletes stopped leases whose age exceeds
+that many hours. Age is `now - createdAt` from `lease.json`, so a long-lived
+lease that stops is eligible at once.
 
 ## Doctor
 
@@ -148,6 +159,6 @@ shows them, not just `doctor finished`.
   `crabbox stop`.
 - Pause keeps the guest RAM allocated on the host (cloud-hypervisor
   `vm.pause`); snapshot-to-disk is future work.
-- Pause/resume and `ssh.hostKey` pinning need the crabbox fork
-  (`moor/external-pause-resume` and its `hostKey` support) with
+- Pause/resume needs the crabbox fork (`moor/external-pause-resume`) with
   `capabilities.pauseResume: true` in trusted user config.
+- crabbox does not verify the guest host key (see above).

@@ -147,15 +147,20 @@ fn cleanup_dry_run_then_real() {
     let backend = FakeBackend::default();
     backend.add("cbx_dead", false);
     backend.add("cbx_live", true);
-    let (out, _) = call(&backend, &req("cleanup", &json!({"dryRun": true})));
+    let reap = json!({"reapStoppedAfterHours": 1});
+    let (out, _) = call(&backend, &req("cleanup", &json!({})));
+    assert_eq!(out["message"], "nothing to clean up");
+    assert!(backend.has("cbx_dead"));
+    let dry = json!({"dryRun": true, "config": reap});
+    let (out, _) = call(&backend, &req("cleanup", &dry));
     assert_eq!(out["message"], "would remove 1 lease(s): cbx_dead");
     assert!(backend.has("cbx_dead"));
-    let (out, code) = call(&backend, &req("cleanup", &json!({})));
+    let (out, code) = call(&backend, &req("cleanup", &json!({"config": reap})));
     assert_eq!(code, 0);
     assert_eq!(out["message"], "removed 1 lease(s): cbx_dead");
     assert!(!backend.has("cbx_dead"));
     assert!(backend.has("cbx_live"));
-    let (out, _) = call(&backend, &req("cleanup", &json!({})));
+    let (out, _) = call(&backend, &req("cleanup", &json!({"config": reap})));
     assert_eq!(out["message"], "nothing to clean up");
 }
 

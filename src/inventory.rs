@@ -4,8 +4,10 @@ use std::collections::BTreeSet;
 use std::io::Write;
 
 use crate::backend::{Backend, Power};
+use crate::config::reap_stopped_after_hours;
 use crate::lease::{check_agreement, target_id};
 use crate::protocol::{LeaseRow, Request};
+use crate::state::now_unix;
 
 #[cfg(test)]
 mod tests;
@@ -64,16 +66,22 @@ fn remove_one(backend: &dyn Backend, id: &str, diag: &mut dyn Write) -> Result<b
     Ok(true)
 }
 
-/// Removes dead leases and orphaned directories; live leases stay untouched.
+/// Removes broken lease dirs; stopped leases go only past `reapStoppedAfterHours`.
+///
+/// Running, paused and (by default) stopped leases stay untouched; only
+/// `release` destroys them. Age is `now - createdAt` from lease.json.
 pub fn cleanup(
     request: &Request,
     backend: &dyn Backend,
     diag: &mut dyn Write,
 ) -> Result<String, String> {
+    let max_age = reap_stopped_after_hours(&request.config)?.map(|h| h.saturating_mul(3600));
+    let now = now_unix();
     let mut ids: BTreeSet<String> = backend.orphans()?.into_iter().collect();
     for record in backend.list()? {
         backend.reap(&record, diag);
-        if backend.power(&record) == Power::Stopped {
+        let old = max_age.is_some_and(|max| now.saturating_sub(record.created_at) > max);
+        if old && backend.power(&record) == Power::Stopped {
             ids.insert(record.lease_id);
         }
     }

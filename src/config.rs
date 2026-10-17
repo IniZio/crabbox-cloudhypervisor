@@ -64,6 +64,8 @@ pub struct Config {
     pub curl: PathBuf,
     /// How long to wait for the guest to become ready.
     pub ready_timeout: Duration,
+    /// Cleanup deletes stopped leases older than this many hours; `None` = never.
+    pub reap_stopped_after_hours: Option<u64>,
 }
 
 /// Environment lookup used for default directories.
@@ -108,8 +110,17 @@ impl Config {
                 1,
                 3600,
             )?),
+            reap_stopped_after_hours: reap_stopped_after_hours(config)?,
         })
     }
+}
+
+/// Reads the optional `reapStoppedAfterHours` (integer >= 1; absent = off).
+pub fn reap_stopped_after_hours(config: &Value) -> Result<Option<u64>, String> {
+    if get(config, "reapStoppedAfterHours").is_none() {
+        return Ok(None);
+    }
+    int_key(config, "reapStoppedAfterHours", 0, 1, u64::MAX).map(Some)
 }
 
 /// Returns the value at `key`, treating absent and null alike.
