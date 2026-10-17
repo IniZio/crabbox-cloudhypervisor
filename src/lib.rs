@@ -8,11 +8,17 @@ pub mod backend;
 pub mod ch;
 pub mod config;
 pub mod host;
+pub mod inventory;
+pub mod lease;
 pub mod protocol;
 pub mod proxy;
 pub mod ready;
 pub mod seed;
 pub mod state;
+pub mod vm;
+
+#[cfg(test)]
+mod fake;
 
 use std::io::Write;
 
