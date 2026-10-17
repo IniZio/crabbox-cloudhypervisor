@@ -2,27 +2,12 @@
 
 use std::io::Write;
 
-use crate::backend::{self, Backend};
+use crate::backend::{self, Backend, Power};
 use crate::protocol::{Lease, Request, Ssh};
 use crate::state::{validate_lease_id, LeaseRecord};
 
 #[cfg(test)]
 mod tests;
-
-/// Lease status reported for a running VM.
-const READY: &str = "ready";
-/// Lease status reported for a VM that is not running.
-const STOPPED: &str = "stopped";
-
-/// Lease status for a VM that is or is not running.
-#[must_use]
-pub const fn status_of(alive: bool) -> &'static str {
-    if alive {
-        READY
-    } else {
-        STOPPED
-    }
-}
 
 /// The non-empty value, else `None`.
 fn non_empty(value: Option<&str>) -> Option<&str> {
@@ -137,6 +122,7 @@ pub fn build_lease(record: &LeaseRecord, status: &str, backend: &dyn Backend) ->
             key: backend.ssh_key(id).to_string_lossy().into_owned(),
             proxy_command: backend.proxy_command(id),
             ready_check: backend::READY_CHECK.to_owned(),
+            host_key: backend.host_key(id).unwrap_or_default(),
         },
     }
 }
@@ -172,28 +158,40 @@ pub fn acquire(
     let _lock = backend.lock(&id)?;
     if let Some(existing) = backend.find(&id)? {
         check_agreement(request, &existing)?;
-        if backend.alive(&existing) {
-            backend.wait_ready(&existing, diag)?;
-            return Ok(build_lease(&existing, READY, backend));
-        }
-        let _ = writeln!(diag, "acquire: replacing stopped lease {id}");
-        backend.destroy(&id, diag)?;
+        backend.reap(&existing, diag);
+        require_running(backend.power(&existing), &id)?;
+        backend.wait_ready(&existing, diag)?;
+        return Ok(build_lease(&existing, Power::Running.status(), backend));
     }
     let record = create_ready(desired, backend, diag)?;
-    Ok(build_lease(&record, READY, backend))
+    Ok(build_lease(&record, Power::Running.status(), backend))
+}
+
+/// Ok when the VM runs; else the paused or stopped error naming `id`.
+fn require_running(power: Power, id: &str) -> Result<(), String> {
+    match power {
+        Power::Running => Ok(()),
+        Power::Paused => Err(backend::paused_error(id)),
+        Power::Stopped => Err(backend::stopped_error(id)),
+    }
 }
 
 /// Describes the lease the request names; never creates or destroys.
+/// A paused or stopped lease is an error unless the request is `releaseOnly`.
 pub fn resolve(
     request: &Request,
     backend: &dyn Backend,
-    _diag: &mut dyn Write,
+    diag: &mut dyn Write,
 ) -> Result<Lease, String> {
     let id = target_id(request)?;
     let record = backend
         .find(&id)?
         .ok_or_else(|| format!("lease {id} not found"))?;
     check_agreement(request, &record)?;
-    let status = status_of(backend.alive(&record));
-    Ok(build_lease(&record, status, backend))
+    backend.reap(&record, diag);
+    let power = backend.power(&record);
+    if !request.release_only {
+        require_running(power, &id)?;
+    }
+    Ok(build_lease(&record, power.status(), backend))
 }

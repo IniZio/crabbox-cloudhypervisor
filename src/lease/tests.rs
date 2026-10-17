@@ -32,6 +32,7 @@ fn acquire_creates_and_returns_full_lease() {
         key: "/keys/a1/id_ed25519".to_owned(),
         proxy_command: "proxy a1".to_owned(),
         ready_check: "/usr/local/bin/crabbox-ready".to_owned(),
+        host_key: "ssh-ed25519 AAAAFAKEa1".to_owned(),
     };
     assert_eq!(lease.ssh, ssh);
     assert!(fake.called("lock:a1"));
@@ -91,15 +92,17 @@ fn create_failure_propagates() {
 }
 
 #[test]
-fn dead_existing_is_destroyed_then_recreated() {
+fn acquire_existing_stopped_or_paused_errors_without_destroy() {
     let fake = Fake::default();
     fake.add("a1", false);
-    let lease = run_acquire(&fake, &acquire_req("a1")).unwrap();
-    assert_eq!(lease.status, "ready");
-    let calls = fake.calls.borrow();
-    let destroy = calls.iter().position(|c| c == "destroy:a1").unwrap();
-    let create = calls.iter().position(|c| c == "create").unwrap();
-    assert!(destroy < create);
+    let err = run_acquire(&fake, &acquire_req("a1")).unwrap_err();
+    assert_eq!(err, "lease a1 is stopped; run crabbox resume");
+    fake.add("b2", true);
+    fake.pause_set("b2");
+    let err = run_acquire(&fake, &acquire_req("b2")).unwrap_err();
+    assert_eq!(err, "lease b2 is paused; run crabbox resume");
+    assert!(!fake.destroyed_any());
+    assert!(!fake.called("create"));
 }
 
 #[test]
@@ -127,15 +130,42 @@ fn acquire_without_desired_errors() {
 }
 
 #[test]
-fn resolve_found_ready_and_stopped() {
+fn resolve_ready_returns_lease() {
     let fake = Fake::default();
     fake.add("a1", true);
-    fake.add("b2", false);
     let ready = run_resolve(&fake, &lease_request(Operation::Resolve, "a1")).unwrap();
     assert_eq!(ready.status, "ready");
     assert_eq!(ready.ssh.key, "/keys/a1/id_ed25519");
-    let stopped = run_resolve(&fake, &lease_request(Operation::Resolve, "b2")).unwrap();
-    assert_eq!(stopped.status, "stopped");
+    assert_eq!(ready.ssh.host_key, "ssh-ed25519 AAAAFAKEa1");
+}
+
+#[test]
+fn resolve_stopped_and_paused_error_unless_release_only() {
+    let fake = Fake::default();
+    fake.add("b2", false);
+    fake.add("c3", true);
+    fake.pause_set("c3");
+    let err = run_resolve(&fake, &lease_request(Operation::Resolve, "b2")).unwrap_err();
+    assert_eq!(err, "lease b2 is stopped; run crabbox resume");
+    let err = run_resolve(&fake, &lease_request(Operation::Resolve, "c3")).unwrap_err();
+    assert_eq!(err, "lease c3 is paused; run crabbox resume");
+    let mut req = lease_request(Operation::Resolve, "b2");
+    req.release_only = true;
+    assert_eq!(run_resolve(&fake, &req).unwrap().status, "stopped");
+    let mut req = lease_request(Operation::Resolve, "c3");
+    req.release_only = true;
+    assert_eq!(run_resolve(&fake, &req).unwrap().status, "paused");
+}
+
+#[test]
+fn resolve_reaps_orphan_passt() {
+    let fake = Fake::default();
+    fake.add("b2", false);
+    fake.passt_set("b2");
+    let mut req = lease_request(Operation::Resolve, "b2");
+    req.release_only = true;
+    run_resolve(&fake, &req).unwrap();
+    assert!(fake.called("reap b2"));
 }
 
 #[test]
@@ -178,10 +208,4 @@ fn no_target_and_bad_id_error() {
     let err = run_resolve(&fake, &request(Operation::Resolve)).unwrap_err();
     assert_eq!(err, "request names no lease");
     assert!(run_resolve(&fake, &lease_request(Operation::Resolve, "a/b")).is_err());
-}
-
-#[test]
-fn status_of_maps_alive() {
-    assert_eq!(status_of(true), "ready");
-    assert_eq!(status_of(false), "stopped");
 }

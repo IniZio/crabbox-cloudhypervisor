@@ -29,6 +29,16 @@ pub struct ReadyProbe {
     pub user: String,
     /// Host name passed to ssh.
     pub host: String,
+    /// `known_hosts` file pinning the guest's host key.
+    pub known_hosts: PathBuf,
+    /// Host key alias the pinned key is filed under.
+    pub host_key_alias: String,
+}
+
+/// One `known_hosts` line pinning `host_key` under `alias`.
+#[must_use]
+pub fn known_hosts_line(alias: &str, host_key: &str) -> String {
+    format!("{alias} {host_key}\n")
 }
 
 impl ReadyProbe {
@@ -44,13 +54,18 @@ impl ReadyProbe {
             "IdentitiesOnly=yes",
             "BatchMode=yes",
             "ConnectTimeout=10",
-            "StrictHostKeyChecking=no",
-            "UserKnownHostsFile=/dev/null",
+            "StrictHostKeyChecking=yes",
+            "UpdateHostKeys=no",
+            "VerifyHostKeyDNS=no",
             "LogLevel=ERROR",
         ] {
             args.push("-o".to_owned());
             args.push(option.to_owned());
         }
+        args.push("-o".to_owned());
+        args.push(format!("UserKnownHostsFile={}", self.known_hosts.display()));
+        args.push("-o".to_owned());
+        args.push(format!("HostKeyAlias={}", self.host_key_alias));
         args.push("-o".to_owned());
         args.push(format!("ProxyCommand={}", self.proxy_command));
         args.push("-p".to_owned());

@@ -1,11 +1,11 @@
 //! In-memory `Backend` for the e2e tests (the crate's own fake is `cfg(test)`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
-use crabbox_cloudhypervisor::backend::{cloud_id, Backend};
+use crabbox_cloudhypervisor::backend::{cloud_id, Backend, Power};
 use crabbox_cloudhypervisor::protocol::Desired;
 use crabbox_cloudhypervisor::state::{LeaseLock, LeaseRecord};
 
@@ -18,6 +18,14 @@ pub(crate) struct FakeBackend {
     pub ready_fails: Cell<bool>,
     /// Orphan directory names.
     pub orphan_ids: RefCell<Vec<String>>,
+    /// Lease ids whose VM is paused (only meaningful while alive).
+    pub paused: RefCell<BTreeSet<String>>,
+    /// `resume` fails.
+    pub resume_fails: Cell<bool>,
+    /// Lease ids whose dead VM left a passt orphan; `reap` clears them.
+    pub passt_orphans: RefCell<BTreeSet<String>>,
+    /// Lease ids that `resume` was called for.
+    pub resumed: RefCell<Vec<String>>,
 }
 
 impl FakeBackend {
@@ -103,5 +111,42 @@ impl Backend for FakeBackend {
 
     fn proxy_command(&self, lease_id: &str) -> String {
         format!("proxy {lease_id}")
+    }
+
+    fn power(&self, record: &LeaseRecord) -> Power {
+        if !self.alive(record) {
+            Power::Stopped
+        } else if self.paused.borrow().contains(&record.lease_id) {
+            Power::Paused
+        } else {
+            Power::Running
+        }
+    }
+
+    fn pause(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {
+        self.paused.borrow_mut().insert(record.lease_id.clone());
+        Ok(())
+    }
+
+    fn resume(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {
+        if self.resume_fails.get() {
+            return Err("resume failed".to_owned());
+        }
+        self.resumed.borrow_mut().push(record.lease_id.clone());
+        self.paused.borrow_mut().remove(&record.lease_id);
+        if let Some(entry) = self.records.borrow_mut().get_mut(&record.lease_id) {
+            entry.1 = true;
+        }
+        Ok(())
+    }
+
+    fn host_key(&self, lease_id: &str) -> Result<String, String> {
+        Ok(format!("ssh-ed25519 AAAAFAKE{lease_id}"))
+    }
+
+    fn reap(&self, record: &LeaseRecord, _diag: &mut dyn Write) {
+        if !self.alive(record) {
+            self.passt_orphans.borrow_mut().remove(&record.lease_id);
+        }
     }
 }

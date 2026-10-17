@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::assets::{cache_state, CacheState};
 use crate::config::{Asset, Config};
+use crate::state::{LONGEST_SOCKET_NAME, RUN_DIR_NAME_LEN};
 use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
 
 #[cfg(test)]
@@ -16,10 +17,6 @@ mod tests;
 
 /// Longest unix socket path the kernel accepts, including the NUL.
 const SOCKET_PATH_MAX: usize = 108;
-/// Length of a lease id used when sizing socket paths.
-const LEASE_ID_LEN: usize = 48;
-/// Longest socket file name created inside a lease runtime directory.
-const LONGEST_SOCKET_SUFFIX: &str = "passt.sock.repair";
 
 /// Device nodes probed by the doctor; injectable for tests.
 #[derive(Debug, Clone)]
@@ -95,6 +92,9 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     ));
     checks.push(cache("image", &image_cache_path(config), &config.image));
     checks.push(raw_base(config));
+    for check in checks.iter().filter(|c| c.level != Level::Ok) {
+        let _ = writeln!(diag, "{}", line(check));
+    }
     let report = render(&checks);
     let _ = writeln!(diag, "doctor finished");
     if checks.iter().any(|c| c.level == Level::Fail) {
@@ -104,20 +104,20 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     }
 }
 
+/// One report line: `<tag> <name>: <detail>`.
+fn line(c: &Check) -> String {
+    let tag = match c.level {
+        Level::Ok => "ok",
+        Level::Warn => "warn",
+        Level::Fail => "FAIL",
+    };
+    format!("{tag} {}: {}", c.name, c.detail)
+}
+
 /// Formats the checks plus the summary line.
 fn render(checks: &[Check]) -> String {
     let count = |level| checks.iter().filter(|c| c.level == level).count();
-    let mut lines: Vec<String> = checks
-        .iter()
-        .map(|c| {
-            let tag = match c.level {
-                Level::Ok => "ok",
-                Level::Warn => "warn",
-                Level::Fail => "FAIL",
-            };
-            format!("{tag} {}: {}", c.name, c.detail)
-        })
-        .collect();
+    let mut lines: Vec<String> = checks.iter().map(line).collect();
     lines.push(format!(
         "doctor: {} ok, {} warn, {} fail",
         count(Level::Ok),
@@ -202,8 +202,9 @@ fn writable(name: &'static str, dir: &Path) -> Check {
 
 /// Checks the longest socket path under the runtime dir fits `sun_path`.
 fn socket_room(runtime_dir: &Path) -> Check {
-    let longest =
-        runtime_dir.as_os_str().len() + 1 + LEASE_ID_LEN + 1 + LONGEST_SOCKET_SUFFIX.len();
+    let fixed = 1 + RUN_DIR_NAME_LEN + 1 + LONGEST_SOCKET_NAME.len();
+    let longest = runtime_dir.as_os_str().len() + fixed;
+    let max_dir = SOCKET_PATH_MAX - 1 - fixed;
     if longest < SOCKET_PATH_MAX {
         Check::new(
             Level::Ok,
@@ -214,7 +215,9 @@ fn socket_room(runtime_dir: &Path) -> Check {
         Check::new(
             Level::Fail,
             "socket_path",
-            format!("runtime dir too long: sockets need {longest} bytes, limit {SOCKET_PATH_MAX}"),
+            format!(
+                "runtime dir too long: sockets need {longest} bytes, limit {SOCKET_PATH_MAX}; runtimeDir must be at most {max_dir} bytes"
+            ),
         )
     }
 }

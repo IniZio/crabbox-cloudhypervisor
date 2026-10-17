@@ -3,6 +3,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
+mod wire;
+pub use wire::{Lease, LeaseRow, Ssh};
+
 /// The only protocol version this adapter speaks.
 const VERSION: u64 = 1;
 
@@ -23,6 +26,10 @@ pub enum Operation {
     Touch,
     /// Remove stale resources.
     Cleanup,
+    /// Pause a lease's VM.
+    Pause,
+    /// Resume a paused or stopped lease.
+    Resume,
 }
 
 impl Operation {
@@ -37,6 +44,8 @@ impl Operation {
             Self::Release => "release",
             Self::Touch => "touch",
             Self::Cleanup => "cleanup",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
         }
     }
 
@@ -50,6 +59,8 @@ impl Operation {
             Self::Release,
             Self::Touch,
             Self::Cleanup,
+            Self::Pause,
+            Self::Resume,
         ]
         .into_iter()
         .find(|op| op.as_str() == name)
@@ -93,58 +104,6 @@ pub struct LeaseRef {
     pub name: Option<String>,
     /// Provider-side instance id.
     pub cloud_id: Option<String>,
-}
-
-/// SSH connection details of a lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Ssh {
-    /// Login user.
-    pub user: String,
-    /// Host name.
-    pub host: String,
-    /// Port, as the protocol's string.
-    pub port: String,
-    /// Absolute path of the private key crabbox must use.
-    pub key: String,
-    /// `ProxyCommand` line.
-    pub proxy_command: String,
-    /// Shell command that proves readiness.
-    pub ready_check: String,
-}
-
-/// A lease as reported back to crabbox.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Lease {
-    /// Crabbox lease id.
-    pub lease_id: String,
-    /// Short lease slug.
-    pub slug: String,
-    /// Lease name.
-    pub name: String,
-    /// Provider-side instance id.
-    pub cloud_id: String,
-    /// Lease status.
-    pub status: String,
-    /// SSH connection details.
-    pub ssh: Ssh,
-}
-
-/// One inventory row reported by list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LeaseRow {
-    /// Crabbox lease id.
-    pub lease_id: String,
-    /// Short lease slug.
-    pub slug: String,
-    /// Lease name.
-    pub name: String,
-    /// Provider-side instance id.
-    pub cloud_id: String,
-    /// Lease status.
-    pub status: String,
 }
 
 /// A parsed request. Fields not yet needed are ignored.

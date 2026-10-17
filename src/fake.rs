@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::backend::{cloud_id, Backend};
+use crate::backend::{cloud_id, Backend, Power};
 use crate::protocol::{Desired, Expected, LeaseRef, Operation, Request};
 use crate::state::{LeaseLock, LeaseRecord};
 
@@ -26,9 +26,25 @@ pub(crate) struct Fake {
     pub(crate) ready_fails: Cell<bool>,
     /// Lease ids whose `destroy` fails.
     pub(crate) destroy_fails: RefCell<BTreeSet<String>>,
+    /// Alive lease ids whose VM is paused.
+    pub(crate) paused: RefCell<BTreeSet<String>>,
+    /// Lease ids with a live passt (orphaned when the VM is dead).
+    pub(crate) passt_alive: RefCell<BTreeSet<String>>,
+    /// `resume` fails.
+    pub(crate) resume_fails: Cell<bool>,
 }
 
 impl Fake {
+    /// Marks an alive lease as paused.
+    pub(crate) fn pause_set(&self, id: &str) {
+        self.paused.borrow_mut().insert(id.to_owned());
+    }
+
+    /// Marks a lease's passt as alive.
+    pub(crate) fn passt_set(&self, id: &str) {
+        self.passt_alive.borrow_mut().insert(id.to_owned());
+    }
+
     /// Adds a record, running or not.
     pub(crate) fn add(&self, id: &str, alive: bool) {
         self.records.borrow_mut().insert(id.to_owned(), record(id));
@@ -175,5 +191,51 @@ impl Backend for Fake {
 
     fn proxy_command(&self, lease_id: &str) -> String {
         format!("proxy {lease_id}")
+    }
+
+    fn power(&self, record: &LeaseRecord) -> Power {
+        if !self.alive(record) {
+            Power::Stopped
+        } else if self.paused.borrow().contains(&record.lease_id) {
+            Power::Paused
+        } else {
+            Power::Running
+        }
+    }
+
+    fn pause(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("pause {}", record.lease_id));
+        self.pause_set(&record.lease_id);
+        Ok(())
+    }
+
+    fn resume(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("resume {}", record.lease_id));
+        if self.resume_fails.get() {
+            return Err("resume failed".to_owned());
+        }
+        self.paused.borrow_mut().remove(&record.lease_id);
+        self.alive_set.borrow_mut().insert(record.lease_id.clone());
+        Ok(())
+    }
+
+    fn host_key(&self, lease_id: &str) -> Result<String, String> {
+        if self.records.borrow().contains_key(lease_id) {
+            Ok(format!("ssh-ed25519 AAAAFAKE{lease_id}"))
+        } else {
+            Err(format!("no host key for {lease_id}"))
+        }
+    }
+
+    fn reap(&self, record: &LeaseRecord, _diag: &mut dyn Write) {
+        if !self.alive(record) && self.passt_alive.borrow_mut().remove(&record.lease_id) {
+            self.calls
+                .borrow_mut()
+                .push(format!("reap {}", record.lease_id));
+        }
     }
 }

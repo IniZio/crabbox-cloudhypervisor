@@ -87,6 +87,32 @@ fn put_without_body_sends_zero_length() {
 }
 
 #[test]
+fn pause_and_resume_put_endpoints() {
+    let (_d, c, h) = serve(vec![
+        "HTTP/1.1 204 No Content\r\n\r\n".to_owned(),
+        "HTTP/1.1 204 No Content\r\n\r\n".to_owned(),
+    ]);
+    c.pause().unwrap();
+    c.resume().unwrap();
+    let reqs = h.join().unwrap();
+    assert!(reqs[0].starts_with("PUT /api/v1/vm.pause HTTP/1.1\r\n"));
+    assert!(reqs[1].starts_with("PUT /api/v1/vm.resume HTTP/1.1\r\n"));
+}
+
+#[test]
+fn state_reads_state_field() {
+    let (_d, c, h) = serve(vec![http("200 OK", r#"{"state":"Paused"}"#)]);
+    assert_eq!(c.state().unwrap(), "Paused");
+    assert!(h.join().unwrap()[0].starts_with("GET /api/v1/vm.info HTTP/1.1\r\n"));
+}
+
+#[test]
+fn state_missing_field_is_error() {
+    let (_d, c, _h) = serve(vec![http("200 OK", "{}")]);
+    assert!(c.state().unwrap_err().contains("missing state"));
+}
+
+#[test]
 fn chunked_body_is_decoded() {
     let reply = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"state\r\n8\r\n\":\"Run\"}\r\n0\r\n\r\n";
     let (_d, c, _h) = serve(vec![reply.to_owned()]);

@@ -113,6 +113,25 @@ impl ChClient {
         self.call_json("GET", "vm.info")
     }
 
+    /// `PUT vm.pause`.
+    pub fn pause(&self) -> Result<(), String> {
+        self.call("PUT", "vm.pause", None).map(drop)
+    }
+
+    /// `PUT vm.resume`.
+    pub fn resume(&self) -> Result<(), String> {
+        self.call("PUT", "vm.resume", None).map(drop)
+    }
+
+    /// `GET vm.info` reduced to its `state` string (`Running`, `Paused`, ...).
+    pub fn state(&self) -> Result<String, String> {
+        self.info()?
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "cloud-hypervisor vm.info: missing state".to_owned())
+    }
+
     /// `PUT vm.shutdown`; an already stopped VM is not an error.
     pub fn shutdown(&self) -> Result<(), String> {
         self.call_tolerant("PUT", "vm.shutdown", &["not running", "not booted"])

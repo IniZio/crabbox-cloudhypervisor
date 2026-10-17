@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,23 @@ const LOCKS_DIR: &str = ".locks";
 const RECORD_FILE: &str = "lease.json";
 /// Longest accepted lease id.
 const MAX_ID_LEN: usize = 48;
+/// Longest socket file name created in a run dir (passt's repair socket).
+pub const LONGEST_SOCKET_NAME: &str = "p.repair";
+/// Length of a run dir name.
+pub const RUN_DIR_NAME_LEN: usize = 12;
+
+/// Run dir name for a lease: first 12 lowercase hex chars of sha256 of the id.
+#[must_use]
+pub fn run_dir_name(lease_id: &str) -> String {
+    let mut hex = String::with_capacity(RUN_DIR_NAME_LEN);
+    for byte in Sha256::digest(lease_id.as_bytes()) {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            hex.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
+        }
+    }
+    hex.truncate(RUN_DIR_NAME_LEN);
+    hex
+}
 
 /// Persisted description of one lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,19 +62,19 @@ impl LeaseRecord {
     /// cloud-hypervisor API socket.
     #[must_use]
     pub fn api_socket(&self) -> PathBuf {
-        self.run_dir.join("api.sock")
+        self.run_dir.join("a")
     }
 
     /// Guest vsock socket.
     #[must_use]
     pub fn vsock_socket(&self) -> PathBuf {
-        self.run_dir.join("vsock.sock")
+        self.run_dir.join("v")
     }
 
     /// passt socket.
     #[must_use]
     pub fn passt_socket(&self) -> PathBuf {
-        self.run_dir.join("passt.sock")
+        self.run_dir.join("p")
     }
 }
 
@@ -138,6 +156,24 @@ impl Store {
     #[must_use]
     pub fn key_path(&self, id: &str) -> PathBuf {
         self.lease_dir(id).join("id_ed25519")
+    }
+
+    /// Private SSH host key of the guest.
+    #[must_use]
+    pub fn host_key_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("ssh_host_ed25519_key")
+    }
+
+    /// Public SSH host key of the guest.
+    #[must_use]
+    pub fn host_pub_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("ssh_host_ed25519_key.pub")
+    }
+
+    /// Pinned `known_hosts` file for the guest.
+    #[must_use]
+    pub fn known_hosts_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("known_hosts")
     }
 
     /// Root disk image of the lease.

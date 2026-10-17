@@ -11,6 +11,8 @@ pub mod doctor;
 pub mod host;
 pub mod inventory;
 pub mod lease;
+/// Pause and resume operations.
+mod power;
 pub mod protocol;
 pub mod proxy;
 pub mod ready;
@@ -103,13 +105,19 @@ fn with_backend(
             lease::resolve(request, backend, diag).map(|l| protocol::lease_response(&l))
         }
         Operation::List => {
-            inventory::list(request, backend).map(|rows| protocol::leases_response(&rows))
+            inventory::list(request, backend, diag).map(|rows| protocol::leases_response(&rows))
         }
         Operation::Release => {
             inventory::release(request, backend, diag).map(|()| protocol::ok_response())
         }
         Operation::Cleanup => {
             inventory::cleanup(request, backend, diag).map(|m| protocol::message_response(&m))
+        }
+        Operation::Pause => {
+            power::pause(request, backend, diag).map(|m| protocol::message_response(&m))
+        }
+        Operation::Resume => {
+            power::resume(request, backend, diag).map(|l| protocol::lease_response(&l))
         }
         Operation::Doctor | Operation::Touch => Ok(protocol::ok_response()),
     }

@@ -9,7 +9,21 @@ fn params() -> SeedParams<'static> {
         instance_id: "i-123",
         hostname: "box-1",
         ssh_public_key: KEY,
+        host_private_key:
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\nBBBB\n-----END OPENSSH PRIVATE KEY-----\n",
+        host_public_key: "ssh-ed25519 HOSTPUB",
     }
+}
+
+#[test]
+fn user_data_pins_host_key() {
+    let u = user_data(&params());
+    assert!(u.contains("ssh_deletekeys: true\nssh_genkeytypes: []\nssh_keys:\n"));
+    assert!(u.contains(
+        "  ed25519_private: |\n      -----BEGIN OPENSSH PRIVATE KEY-----\n      AAAA\n      BBBB\n      -----END OPENSSH PRIVATE KEY-----\n  ed25519_public: ssh-ed25519 HOSTPUB\n"
+    ));
+    assert!(u.contains("/etc/ssh/sshd_config.d/00-crabbox-hostkey.conf"));
+    assert!(u.contains("      HostKey /etc/ssh/ssh_host_ed25519_key\n"));
 }
 
 #[test]

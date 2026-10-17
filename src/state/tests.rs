@@ -31,7 +31,7 @@ fn write_read_roundtrip_mode_0600() {
     let dir = store.lease_dir(&rec.lease_id);
     assert_eq!(mode(&dir.join("lease.json")), 0o600);
     assert_eq!(mode(&dir), 0o700);
-    assert_eq!(rec.api_socket(), PathBuf::from("/run/x/api.sock"));
+    assert_eq!(rec.api_socket(), PathBuf::from("/run/x/a"));
 }
 
 #[test]
@@ -113,4 +113,31 @@ fn lease_id_validation() {
     }
     assert!(validate_lease_id(&"a".repeat(49)).is_err());
     assert!(now_unix() > 0);
+}
+
+#[test]
+fn run_dir_name_is_12_hex_and_deterministic() {
+    let name = run_dir_name("cbx_000000000001");
+    assert_eq!(name.len(), RUN_DIR_NAME_LEN);
+    assert!(name
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert_eq!(name, run_dir_name("cbx_000000000001"));
+    assert_ne!(name, run_dir_name("cbx_000000000002"));
+}
+
+#[test]
+fn host_key_paths_and_short_sockets() {
+    let store = Store::new(Path::new("/s"));
+    let dir = store.lease_dir("x");
+    assert_eq!(store.host_key_path("x"), dir.join("ssh_host_ed25519_key"));
+    assert_eq!(
+        store.host_pub_path("x"),
+        dir.join("ssh_host_ed25519_key.pub")
+    );
+    assert_eq!(store.known_hosts_path("x"), dir.join("known_hosts"));
+    let rec = record("x");
+    assert_eq!(rec.vsock_socket(), PathBuf::from("/run/x/v"));
+    assert_eq!(rec.passt_socket(), PathBuf::from("/run/x/p"));
+    assert_eq!(LONGEST_SOCKET_NAME, "p.repair");
 }

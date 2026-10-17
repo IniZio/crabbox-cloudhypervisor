@@ -130,10 +130,35 @@ fn missing_cache_warns_then_verified_after_marker() {
 fn overlong_runtime_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = config(dir.path());
-    c.runtime_dir = dir.path().join("r".repeat(60));
+    c.runtime_dir = dir.path().join("r".repeat(90));
     let (ok, r) = report(&c, &probes(dir.path()));
     assert!(!ok);
     assert!(r.contains("FAIL socket_path:"), "{r}");
+    assert!(r.contains("at most 85 bytes"), "{r}");
+}
+
+#[test]
+fn socket_room_boundary_is_85_bytes() {
+    use super::socket_room;
+    let ok = socket_room(Path::new(&"r".repeat(85)));
+    assert!(ok.detail.contains("107 of 108"), "{}", ok.detail);
+    assert!(socket_room(Path::new(&"r".repeat(86)))
+        .detail
+        .contains("too long"));
+}
+
+#[test]
+fn failures_and_warnings_go_to_diag() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = probes(dir.path());
+    p.kvm = dir.path().join("absent");
+    let mut diag = Vec::new();
+    let _ = run_with(&config(dir.path()), &p, &mut diag);
+    let d = String::from_utf8(diag).unwrap();
+    assert!(d.contains("FAIL kvm: cannot open"), "{d}");
+    assert!(d.contains("warn firmware:"), "{d}");
+    assert!(!d.contains("ok runtime_dir"), "{d}");
+    assert!(d.trim_end().ends_with("doctor finished"), "{d}");
 }
 
 #[test]
