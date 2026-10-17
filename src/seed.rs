@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use fatfs::{format_volume, FileSystem, FormatVolumeOptions, FsOptions};
@@ -151,6 +152,7 @@ fn build(path: &Path, user_data: &str, meta_data: &str) -> Result<(), String> {
         .write(true)
         .create(true)
         .truncate(true)
+        .mode(0o600)
         .open(path)
         .map_err(|e| e.to_string())?;
     file.set_len(IMAGE_BYTES).map_err(|e| e.to_string())?;

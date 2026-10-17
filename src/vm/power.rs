@@ -145,7 +145,14 @@ impl RealBackend {
         Ok(())
     }
 
-    /// Resumes a paused VM, or cold boots a stopped one, then waits for ssh.
+    /// True iff the record's cloud-hypervisor process is alive.
+    fn ch_alive(record: &LeaseRecord) -> bool {
+        record
+            .ch_pid
+            .is_some_and(|pid| host::pid_alive(pid, CH_COMM))
+    }
+
+    /// Resumes a paused VM, or cold boots a dead one, then waits for ssh.
     pub(super) fn resume_vm(
         &self,
         record: &LeaseRecord,
@@ -153,16 +160,39 @@ impl RealBackend {
     ) -> Result<(), String> {
         let current = self.store.read(&record.lease_id)?;
         let record = current.as_ref().unwrap_or(record);
-        if Self::power_of(record) == Power::Paused {
-            let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
-            client.resume()?;
-            self.wait_state(&client, "Running")?;
-            let _ = writeln!(diag, "vm resumed");
-        } else {
-            self.cold_boot(record, diag)?;
+        if !self.bring_up(record, diag)? {
+            return Ok(());
         }
         let booted = self.store.read(&record.lease_id)?;
         self.wait_ready(booted.as_ref().unwrap_or(record), diag)
+    }
+
+    /// Resumes or cold boots; false means the VM already ran and nothing changed.
+    ///
+    /// A live cloud-hypervisor is never cold booted, even when it does not answer.
+    pub(super) fn bring_up(
+        &self,
+        record: &LeaseRecord,
+        diag: &mut dyn Write,
+    ) -> Result<bool, String> {
+        if !Self::ch_alive(record) {
+            self.cold_boot(record, diag)?;
+            return Ok(true);
+        }
+        let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
+        match client.state().as_deref() {
+            Ok("Paused") => {
+                client.resume()?;
+                self.wait_state(&client, "Running")?;
+                let _ = writeln!(diag, "vm resumed");
+                Ok(true)
+            }
+            Ok(_) => Ok(false),
+            Err(e) => Err(format!(
+                "lease {}: cloud-hypervisor is alive but not responding: {e}",
+                record.lease_id
+            )),
+        }
     }
 
     /// Boots a dead VM again from its existing disk, seed and host key.
@@ -171,6 +201,12 @@ impl RealBackend {
         record: &LeaseRecord,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
+        if Self::ch_alive(record) {
+            return Err(format!(
+                "lease {}: refusing to cold boot while cloud-hypervisor is alive",
+                record.lease_id
+            ));
+        }
         Self::reap_orphan_passt(record, diag);
         let mut record = record.clone();
         remove_tree(&record.run_dir)?;
@@ -190,10 +226,7 @@ impl RealBackend {
 
     /// Kills a passt left behind by a dead cloud-hypervisor.
     pub(super) fn reap_orphan_passt(record: &LeaseRecord, diag: &mut dyn Write) {
-        let ch_alive = record
-            .ch_pid
-            .is_some_and(|pid| host::pid_alive(pid, CH_COMM));
-        if ch_alive {
+        if Self::ch_alive(record) {
             return;
         }
         if let Some(pid) = record.passt_pid.filter(|p| host::pid_alive(*p, PASST_COMM)) {
