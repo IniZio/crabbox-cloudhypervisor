@@ -63,10 +63,3 @@ fn unknown_operation_fails() {
     assert_eq!(code, 1);
     assert_eq!(out["error"], "unknown operation \"frobnicate\"");
 }
-
-#[test]
-fn unimplemented_operation_fails() {
-    let (out, code) = call(r#"{"protocolVersion":1,"operation":"list"}"#);
-    assert_eq!(code, 1);
-    assert_eq!(out["error"], "operation list not implemented yet");
-}
