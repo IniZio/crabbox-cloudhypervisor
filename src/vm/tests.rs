@@ -37,6 +37,7 @@ fn config(root: &Path) -> Config {
         ssh_keygen: tool.clone(),
         curl: tool,
         ready_timeout: Duration::from_secs(1),
+        reap_stopped_after_hours: None,
     }
 }
 

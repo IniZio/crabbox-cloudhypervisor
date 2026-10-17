@@ -40,6 +40,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         ssh_keygen: PathBuf::from("ssh-keygen"),
         curl: PathBuf::from("curl"),
         ready_timeout: Duration::from_secs(300),
+        reap_stopped_after_hours: None,
     }
 }
 
@@ -274,4 +275,15 @@ fn errors_do_not_echo_values() {
 fn null_key_uses_default() {
     let c = parse(&json!({"cpus": null, "stateDir": null}), HOME).unwrap();
     assert_eq!(c.cpus, 2);
+}
+
+#[test]
+fn reap_stopped_after_hours_parses_and_validates() {
+    let got = parse(&json!({"reapStoppedAfterHours": 24}), HOME).unwrap();
+    assert_eq!(got.reap_stopped_after_hours, Some(24));
+    for bad in [json!(0), json!(-1), json!("7777"), json!(1.5)] {
+        let err = parse(&json!({"reapStoppedAfterHours": bad}), HOME).unwrap_err();
+        assert!(err.contains("config.reapStoppedAfterHours"), "{err}");
+        assert!(!err.contains("7777"), "{err}");
+    }
 }

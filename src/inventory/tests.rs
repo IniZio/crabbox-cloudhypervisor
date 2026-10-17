@@ -1,10 +1,21 @@
 use super::*;
 use crate::fake::{lease_request, request, with_expected, Fake};
 use crate::protocol::{Expected, Operation};
+use crate::state::now_unix;
+use serde_json::json;
 
 fn run_cleanup(fake: &Fake, dry_run: bool) -> Result<String, String> {
+    run_cleanup_with(fake, dry_run, serde_json::Value::Null)
+}
+
+fn run_cleanup_with(
+    fake: &Fake,
+    dry_run: bool,
+    config: serde_json::Value,
+) -> Result<String, String> {
     let mut req = request(Operation::Cleanup);
     req.dry_run = dry_run;
+    req.config = config;
     cleanup(&req, fake, &mut Vec::new())
 }
 
@@ -73,35 +84,50 @@ fn cleanup_dry_run_lists_without_destroying() {
     fake.add("a1", true);
     fake.add("b2", false);
     fake.orphan_ids.borrow_mut().push("o3".to_owned());
-    let msg = run_cleanup(&fake, true).unwrap();
+    let cfg = json!({"reapStoppedAfterHours": 1});
+    let msg = run_cleanup_with(&fake, true, cfg).unwrap();
     assert_eq!(msg, "would remove 2 lease(s): b2, o3");
     assert!(!fake.destroyed_any());
 }
 
 #[test]
-fn cleanup_removes_dead_and_orphans_not_alive() {
+fn cleanup_keeps_stopped_and_paused_removes_broken() {
     let fake = Fake::default();
     fake.add("a1", true);
-    fake.add("b2", false);
-    fake.orphan_ids.borrow_mut().push("o3".to_owned());
+    fake.add("p2", true);
+    fake.pause_set("p2");
+    fake.add("s3", false);
+    fake.passt_set("s3");
+    fake.orphan_ids.borrow_mut().push("o4".to_owned());
     let msg = run_cleanup(&fake, false).unwrap();
-    assert_eq!(msg, "removed 2 lease(s): b2, o3");
-    assert!(fake.called("destroy:b2"));
-    assert!(fake.called("destroy:o3"));
-    assert!(!fake.called("destroy:a1"));
-    assert!(fake.records.borrow().contains_key("a1"));
+    assert_eq!(msg, "removed 1 lease(s): o4");
+    assert!(fake.called("reap s3"));
+    assert!(fake.called("destroy:o4"));
+    let records = fake.records.borrow();
+    assert!(["a1", "p2", "s3"]
+        .iter()
+        .all(|id| records.contains_key(*id)));
 }
 
 #[test]
-fn cleanup_keeps_paused_and_reaps_orphan_passt() {
+fn cleanup_reap_key_removes_only_old_stopped() {
     let fake = Fake::default();
-    fake.add("a1", true);
-    fake.pause_set("a1");
-    fake.add("b2", false);
-    fake.passt_set("b2");
-    let msg = run_cleanup(&fake, true).unwrap();
-    assert_eq!(msg, "would remove 1 lease(s): b2");
-    assert!(fake.called("reap b2"));
+    fake.add("old", false);
+    fake.add("new", false);
+    fake.add("run", true);
+    fake.records.borrow_mut().get_mut("new").unwrap().created_at = now_unix();
+    let cfg = json!({"reapStoppedAfterHours": 1});
+    let msg = run_cleanup_with(&fake, false, cfg).unwrap();
+    assert_eq!(msg, "removed 1 lease(s): old");
+    let records = fake.records.borrow();
+    assert!(records.contains_key("new") && records.contains_key("run"));
+}
+
+#[test]
+fn cleanup_rejects_bad_reap_key() {
+    let fake = Fake::default();
+    let err = run_cleanup_with(&fake, false, json!({"reapStoppedAfterHours": 0})).unwrap_err();
+    assert!(err.contains("config.reapStoppedAfterHours"), "{err}");
 }
 
 #[test]
@@ -118,7 +144,8 @@ fn cleanup_destroy_failure_continues_then_errors() {
     fake.add("b2", false);
     fake.add("c3", false);
     fake.destroy_fails.borrow_mut().insert("b2".to_owned());
-    let err = run_cleanup(&fake, false).unwrap_err();
+    let cfg = json!({"reapStoppedAfterHours": 1});
+    let err = run_cleanup_with(&fake, false, cfg).unwrap_err();
     assert!(err.contains("b2: destroy failed"), "{err}");
     assert!(fake.called("destroy:c3"));
     assert!(!fake.records.borrow().contains_key("c3"));
