@@ -1,5 +1,7 @@
 //! Unit tests for the VM backend; no KVM and no network.
 
+#![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -214,4 +216,132 @@ fn alive_is_false_without_a_live_cloud_hypervisor() {
     assert!(!backend.alive(&rec));
     rec.ch_pid = Some(std::process::id());
     assert!(!backend.alive(&rec));
+}
+
+/// A stand-in process whose comm reads as cloud-hypervisor; killed on drop.
+struct FakeCh {
+    /// Keeps the renamed binary.
+    _dir: tempfile::TempDir,
+    /// The running child.
+    child: std::process::Child,
+}
+
+impl FakeCh {
+    fn spawn() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("cloud-hypervisor");
+        std::fs::copy("/bin/sleep", &bin).unwrap();
+        let child = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let ch = Self { _dir: dir, child };
+        let pid = ch.child.id();
+        for _ in 0..100 {
+            if crate::host::pid_alive(pid, super::CH_COMM) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ch
+    }
+}
+
+impl Drop for FakeCh {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Serves one canned reply per connection on `sock`; yields request lines.
+fn serve(sock: &Path, replies: Vec<String>) -> std::thread::JoinHandle<Vec<String>> {
+    use std::io::{Read, Write};
+    let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+    std::thread::spawn(move || {
+        replies
+            .into_iter()
+            .map(|reply| {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                text.lines().next().unwrap_or_default().to_owned()
+            })
+            .collect()
+    })
+}
+
+/// A canned 200 vm.info reply.
+fn info(state: &str) -> String {
+    let body = format!(r#"{{"state":"{state}"}}"#);
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// A backend plus a record whose run dir holds a marker file.
+fn live_fixture(dir: &Path, ch: Option<&FakeCh>) -> (RealBackend, LeaseRecord) {
+    let backend = RealBackend::new(config(dir), PathBuf::from("/bin/cb"));
+    let mut rec = record("a");
+    rec.run_dir = dir.join("r");
+    std::fs::create_dir_all(&rec.run_dir).unwrap();
+    std::fs::write(rec.run_dir.join("marker"), "").unwrap();
+    rec.ch_pid = ch.map(|c| c.child.id());
+    (backend, rec)
+}
+
+#[test]
+fn alive_but_unresponsive_errors_without_cold_boot() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    let err = backend.bring_up(&rec, &mut Vec::new()).unwrap_err();
+    assert!(err.contains("lease a"), "{err}");
+    assert!(err.contains("alive but not responding"), "{err}");
+    assert!(rec.run_dir.join("marker").exists());
+    assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
+}
+
+#[test]
+fn alive_and_paused_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    let ok = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_owned();
+    let seen = serve(&rec.api_socket(), vec![info("Paused"), ok, info("Running")]);
+    assert!(backend.bring_up(&rec, &mut Vec::new()).unwrap());
+    let lines = seen.join().unwrap();
+    assert!(lines[1].contains("vm.resume"), "{lines:?}");
+    assert!(rec.run_dir.join("marker").exists());
+}
+
+#[test]
+fn alive_and_running_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    let seen = serve(&rec.api_socket(), vec![info("Running")]);
+    assert!(!backend.bring_up(&rec, &mut Vec::new()).unwrap());
+    assert_eq!(seen.join().unwrap().len(), 1);
+    assert!(rec.run_dir.join("marker").exists());
+}
+
+#[test]
+fn dead_cloud_hypervisor_cold_boots() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, rec) = live_fixture(dir.path(), None);
+    let err = backend.bring_up(&rec, &mut Vec::new()).unwrap_err();
+    assert!(!err.contains("alive"), "{err}");
+    assert!(!rec.run_dir.join("marker").exists());
+}
+
+#[test]
+fn cold_boot_refuses_while_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    let err = backend.cold_boot(&rec, &mut Vec::new()).unwrap_err();
+    assert!(err.contains("refusing to cold boot"), "{err}");
+    assert!(rec.run_dir.join("marker").exists());
+    assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
 }
