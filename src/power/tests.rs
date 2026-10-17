@@ -75,3 +75,15 @@ fn resume_failure_propagates() {
     fake.resume_fails.set(true);
     assert!(run_resume(&fake, "r1").is_err());
 }
+
+#[test]
+fn unresponsive_pause_and_resume_error_without_acting() {
+    let fake = Fake::default();
+    fake.add("u1", true);
+    fake.unresponsive_set("u1");
+    let want = "lease u1: cloud-hypervisor is alive but not responding";
+    assert_eq!(run_pause(&fake, "u1").unwrap_err(), want);
+    assert_eq!(run_resume(&fake, "u1").unwrap_err(), want);
+    assert!(!fake.called("pause u1"));
+    assert!(!fake.called("resume u1"));
+}

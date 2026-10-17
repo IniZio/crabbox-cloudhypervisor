@@ -116,7 +116,12 @@ sessions keep `StrictHostKeyChecking` off and do not verify the host key.
 Needs the crabbox fork (branch `moor/external-pause-resume`) and
 `capabilities.pauseResume: true` in the trusted crabbox user config.
 
-Lease status is `ready` (running), `paused` or `stopped` (VM dead). A
+Lease status is `ready` (running), `paused`, `stopped` (VM dead) or
+`unresponsive` (VM process alive but its API does not answer, for example
+frozen with SIGSTOP). `resume` and non-`releaseOnly` `resolve` on an
+`unresponsive` lease fail with
+`lease <id>: cloud-hypervisor is alive but not responding` and never cold
+boot; `release` kills the process and cleans up, and `cleanup` leaves it alone. A
 `resolve` on a paused or stopped lease fails with
 `lease <id> is stopped; run crabbox resume`; a `releaseOnly` resolve still
 works so `release`, `pause` and `resume` can find it.

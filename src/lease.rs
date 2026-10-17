@@ -167,17 +167,18 @@ pub fn acquire(
     Ok(build_lease(&record, Power::Running.status(), backend))
 }
 
-/// Ok when the VM runs; else the paused or stopped error naming `id`.
+/// Ok when the VM runs; else the paused, stopped or unresponsive error naming `id`.
 fn require_running(power: Power, id: &str) -> Result<(), String> {
     match power {
         Power::Running => Ok(()),
         Power::Paused => Err(backend::paused_error(id)),
         Power::Stopped => Err(backend::stopped_error(id)),
+        Power::Unresponsive => Err(backend::unresponsive_error(id)),
     }
 }
 
 /// Describes the lease the request names; never creates or destroys.
-/// A paused or stopped lease is an error unless the request is `releaseOnly`.
+/// A paused, stopped or unresponsive lease is an error unless the request is `releaseOnly`.
 pub fn resolve(
     request: &Request,
     backend: &dyn Backend,

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::backend::{Backend, Power};
+use crate::backend::{self, Backend, Power};
 use crate::lease::{build_lease, check_agreement, target_id};
 use crate::protocol::{Lease, Request};
 use crate::state::LeaseRecord;
@@ -41,6 +41,7 @@ pub(crate) fn pause(
         }
         Power::Paused => Ok(format!("{id} already paused")),
         Power::Stopped => Ok(format!("{id} already stopped")),
+        Power::Unresponsive => Err(backend::unresponsive_error(&id)),
     }
 }
 
@@ -53,8 +54,10 @@ pub(crate) fn resume(
     let id = target_id(request)?;
     let _lock = backend.lock(&id)?;
     let (id, record) = load(request, backend, diag)?;
-    if backend.power(&record) == Power::Running {
-        return Ok(build_lease(&record, Power::Running.status(), backend));
+    match backend.power(&record) {
+        Power::Running => return Ok(build_lease(&record, Power::Running.status(), backend)),
+        Power::Unresponsive => return Err(backend::unresponsive_error(&id)),
+        Power::Paused | Power::Stopped => {}
     }
     backend.resume(&record, diag)?;
     let record = backend

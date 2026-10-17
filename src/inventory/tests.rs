@@ -150,3 +150,16 @@ fn cleanup_destroy_failure_continues_then_errors() {
     assert!(fake.called("destroy:c3"));
     assert!(!fake.records.borrow().contains_key("c3"));
 }
+
+#[test]
+fn unresponsive_lists_releases_and_survives_cleanup() {
+    let fake = Fake::default();
+    fake.add("u1", true);
+    fake.unresponsive_set("u1");
+    let rows = list(&request(Operation::List), &fake, &mut std::io::sink()).unwrap();
+    assert_eq!(rows.first().unwrap().status, "unresponsive");
+    assert_eq!(run_cleanup(&fake, false).unwrap(), "nothing to clean up");
+    assert!(!fake.destroyed_any());
+    run_release(&fake, &lease_request(Operation::Release, "u1")).unwrap();
+    assert!(fake.called("destroy:u1"));
+}

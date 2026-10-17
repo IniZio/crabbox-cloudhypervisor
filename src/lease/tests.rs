@@ -209,3 +209,18 @@ fn no_target_and_bad_id_error() {
     assert_eq!(err, "request names no lease");
     assert!(run_resolve(&fake, &lease_request(Operation::Resolve, "a/b")).is_err());
 }
+
+#[test]
+fn unresponsive_errors_on_acquire_and_resolve_but_not_release_only() {
+    let fake = Fake::default();
+    fake.add("u1", true);
+    fake.unresponsive_set("u1");
+    let want = "lease u1: cloud-hypervisor is alive but not responding";
+    assert_eq!(run_acquire(&fake, &acquire_req("u1")).unwrap_err(), want);
+    let req = lease_request(Operation::Resolve, "u1");
+    assert_eq!(run_resolve(&fake, &req).unwrap_err(), want);
+    let mut req = req;
+    req.release_only = true;
+    assert_eq!(run_resolve(&fake, &req).unwrap().status, "unresponsive");
+    assert!(!fake.destroyed_any());
+}

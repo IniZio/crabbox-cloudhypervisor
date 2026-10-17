@@ -30,6 +30,8 @@ pub(crate) struct Fake {
     pub(crate) paused: RefCell<BTreeSet<String>>,
     /// Lease ids with a live passt (orphaned when the VM is dead).
     pub(crate) passt_alive: RefCell<BTreeSet<String>>,
+    /// Alive lease ids whose cloud-hypervisor does not answer.
+    pub(crate) unresponsive: RefCell<BTreeSet<String>>,
     /// `resume` fails.
     pub(crate) resume_fails: Cell<bool>,
 }
@@ -38,6 +40,11 @@ impl Fake {
     /// Marks an alive lease as paused.
     pub(crate) fn pause_set(&self, id: &str) {
         self.paused.borrow_mut().insert(id.to_owned());
+    }
+
+    /// Marks an alive lease as unresponsive.
+    pub(crate) fn unresponsive_set(&self, id: &str) {
+        self.unresponsive.borrow_mut().insert(id.to_owned());
     }
 
     /// Marks a lease's passt as alive.
@@ -196,6 +203,8 @@ impl Backend for Fake {
     fn power(&self, record: &LeaseRecord) -> Power {
         if !self.alive(record) {
             Power::Stopped
+        } else if self.unresponsive.borrow().contains(&record.lease_id) {
+            Power::Unresponsive
         } else if self.paused.borrow().contains(&record.lease_id) {
             Power::Paused
         } else {

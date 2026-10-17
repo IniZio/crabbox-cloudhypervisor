@@ -345,3 +345,63 @@ fn cold_boot_refuses_while_alive() {
     assert!(rec.run_dir.join("marker").exists());
     assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
 }
+
+#[test]
+fn power_of_maps_api_answers_and_failures() {
+    use crate::backend::Power;
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (_, rec) = live_fixture(dir.path(), Some(&ch));
+    assert_eq!(
+        RealBackend::power_of(&rec),
+        Power::Unresponsive,
+        "no socket"
+    );
+    let seen = serve(&rec.api_socket(), vec![info("Running")]);
+    assert_eq!(RealBackend::power_of(&rec), Power::Running);
+    seen.join().unwrap();
+    std::fs::remove_file(rec.api_socket()).unwrap();
+    let seen = serve(&rec.api_socket(), vec![info("Paused")]);
+    assert_eq!(RealBackend::power_of(&rec), Power::Paused);
+    seen.join().unwrap();
+    std::fs::remove_file(rec.api_socket()).unwrap();
+    let _silent = std::os::unix::net::UnixListener::bind(rec.api_socket()).unwrap();
+    assert_eq!(RealBackend::power_of(&rec), Power::Unresponsive, "silent");
+    let (_, dead) = live_fixture(dir.path(), None);
+    assert_eq!(RealBackend::power_of(&dead), Power::Stopped);
+}
+
+#[test]
+fn destroy_kills_a_stopped_cloud_hypervisor() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    backend.store.write(&rec).unwrap();
+    let _silent = std::os::unix::net::UnixListener::bind(rec.api_socket()).unwrap();
+    let pid = ch.child.id().to_string();
+    assert!(std::process::Command::new("kill")
+        .args(["-s", "STOP", &pid])
+        .status()
+        .unwrap()
+        .success());
+    backend.destroy("a", &mut Vec::new()).unwrap();
+    assert!(!crate::host::pid_alive(ch.child.id(), super::CH_COMM));
+    assert!(!rec.run_dir.exists());
+}
+
+#[test]
+fn reap_removes_stale_sockets_only_when_ch_is_dead() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = ["a", "p", "p.repair", "v"];
+    let ch = FakeCh::spawn();
+    let (_, mut rec) = live_fixture(dir.path(), Some(&ch));
+    for n in names {
+        std::fs::write(rec.run_dir.join(n), "").unwrap();
+    }
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    assert!(names.iter().all(|n| rec.run_dir.join(n).exists()), "alive");
+    rec.ch_pid = Some(u32::MAX);
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    assert!(names.iter().all(|n| !rec.run_dir.join(n).exists()), "dead");
+    assert!(rec.run_dir.join("marker").exists());
+}
