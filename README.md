@@ -4,8 +4,8 @@ A [crabbox](https://github.com/openclaw/crabbox) external provider that leases
 local, rootless [cloud-hypervisor](https://www.cloudhypervisor.org/) microVMs.
 Each lease is a fresh Ubuntu 24.04 guest reachable over SSH, with outbound
 network access. It speaks crabbox external provider protocol v1 (JSON on
-stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`,
-`touch` and `cleanup`.
+stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `pause`,
+`resume`, `touch` and `cleanup`.
 
 ## Host prerequisites
 
@@ -67,7 +67,7 @@ All keys go under `external.config`. All are optional.
 | `diskGiB` | `20` | guest disk size, at least 8 |
 | `readyTimeoutSeconds` | `300` | wait for the guest to become ready (1-3600) |
 | `stateDir` | `$XDG_STATE_HOME/crabbox-cloudhypervisor` | per-lease state (absolute path) |
-| `runtimeDir` | `$XDG_RUNTIME_DIR/crabbox-cloudhypervisor`, else `<stateDir>/run` | unix sockets (absolute path) |
+| `runtimeDir` | `$XDG_RUNTIME_DIR/crabbox-cloudhypervisor`, else `<stateDir>/run` | unix sockets (absolute path, at most 85 bytes) |
 | `cacheDir` | `$XDG_CACHE_HOME/crabbox-cloudhypervisor` | downloaded assets (absolute path) |
 | `image` | pinned Ubuntu image | `{url, sha256}` override |
 | `firmware` | pinned CLOUDHV.fd | `{url, sha256}` override |
@@ -99,11 +99,33 @@ The `proxy` subcommand connects to the lease's cloud-hypervisor vsock socket
 and relays stdin/stdout to guest port 22. Each lease has its own SSH key.
 Outbound traffic goes through passt (NAT and DNS, no inbound).
 
+The provider generates a per-lease ed25519 host key and injects it through
+cloud-init (sshd offers only that key). Every `acquire`, `resolve` and `resume`
+returns it as `ssh.hostKey` (`ssh-ed25519 AAAA...`, no hostname or comment), so
+it never rotates and the guest is verified with `StrictHostKeyChecking=yes`.
+Host key pinning needs the crabbox fork's `hostKey` support.
+
+## Pause and resume
+
+- `pause` runs cloud-hypervisor `vm.pause`. RAM stays allocated.
+- `resume` resumes a paused VM in place. If the VM is dead (host reboot, killed
+  process) it cold-boots from the lease's existing disk and seed.
+- Snapshot to disk is future work.
+
+Needs the crabbox fork (branch `moor/external-pause-resume`) and
+`capabilities.pauseResume: true` in the trusted crabbox user config.
+
+Lease status is `ready` (running), `paused` or `stopped` (VM dead). A
+`resolve` on a paused or stopped lease fails with
+`lease <id> is stopped; run crabbox resume`; a `releaseOnly` resolve still
+works so `release`, `pause` and `resume` can find it.
+
 ## State and cache
 
 - Leases: `<stateDir>/leases/<leaseId>/` (lease.json, disk, seed image, SSH key,
   console log).
-- Sockets: `<runtimeDir>`.
+- Sockets: `<runtimeDir>/<12-hex hash of the lease id>/` (`a`, `v`, `p`,
+  `p.repair`).
 - Downloads and the converted base image: `<cacheDir>`.
 
 `release` removes the lease directory. `cloud-hypervisor` and `passt` processes
@@ -114,14 +136,18 @@ orphaned lease directories.
 
 `crabbox doctor` calls the provider's `doctor` op. It checks `/dev/kvm`,
 `/dev/vhost-vsock`, the host tools and their versions, that the state and
-runtime directories are writable, that socket paths fit the 108-byte limit, and
-whether the firmware and image are cached and verified.
+runtime directories are writable, that socket paths fit the 108-byte limit
+(`runtimeDir` at most 85 bytes), and whether the firmware and image are cached
+and verified. Warnings and failures are also written to stderr, so crabbox
+shows them, not just `doctor finished`.
 
 ## Limitations
 
-- No pause/resume and no `hostKey` yet.
 - amd64 only.
-- The guest host key is not pinned. SSH runs with `StrictHostKeyChecking=no`,
-  which is acceptable only because the connection is a local vsock proxy.
 - Leases are not stopped on a timer by the provider. Release them with
   `crabbox stop`.
+- Pause keeps the guest RAM allocated on the host (cloud-hypervisor
+  `vm.pause`); snapshot-to-disk is future work.
+- Pause/resume and `ssh.hostKey` pinning need the crabbox fork
+  (`moor/external-pause-resume` and its `hostKey` support) with
+  `capabilities.pauseResume: true` in trusted user config.
