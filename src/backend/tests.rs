@@ -7,6 +7,7 @@ fn power_status_strings() {
     assert_eq!(Power::Running.status(), "ready");
     assert_eq!(Power::Paused.status(), "paused");
     assert_eq!(Power::Stopped.status(), "stopped");
+    assert_eq!(Power::Unresponsive.status(), "unresponsive");
 }
 
 #[test]

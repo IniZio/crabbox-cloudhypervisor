@@ -19,6 +19,9 @@ const POWER_API_TIMEOUT: Duration = Duration::from_secs(2);
 /// Delay between state polls.
 const POLL_EVERY: Duration = Duration::from_millis(200);
 
+/// One cloud-hypervisor API call used to stop a VM.
+type Step = fn(&ChClient) -> Result<(), String>;
+
 /// Sends TERM, then KILL if the process outlives `grace`.
 fn terminate(pid: u32, comm: &str, grace: Duration, diag: &mut dyn Write) {
     if !host::pid_alive(pid, comm) {
@@ -45,25 +48,32 @@ fn key_fields(text: &str) -> Result<String, String> {
 
 impl RealBackend {
     /// Asks cloud-hypervisor to shut down over its API; failures only warn.
-    fn stop_via_api(record: &LeaseRecord, diag: &mut dyn Write) {
+    /// Returns false when the first call fails, so a hung process is not retried.
+    fn stop_via_api(record: &LeaseRecord, diag: &mut dyn Write) -> bool {
         let client = ChClient::new(&record.api_socket()).with_timeout(STOP_API_TIMEOUT);
-        let steps = [
-            ("vm.shutdown", client.shutdown()),
-            ("vm.delete", client.delete()),
-            ("vmm.shutdown", client.vmm_shutdown()),
+        let steps: [(&str, Step); 3] = [
+            ("vm.shutdown", ChClient::shutdown),
+            ("vm.delete", ChClient::delete),
+            ("vmm.shutdown", ChClient::vmm_shutdown),
         ];
-        for (name, result) in steps {
-            if let Err(e) = result {
+        for (n, (name, step)) in steps.into_iter().enumerate() {
+            if let Err(e) = step(&client) {
                 let _ = writeln!(diag, "warn: {name}: {e}");
+                if n == 0 {
+                    return false;
+                }
             }
         }
+        true
     }
 
     /// Stops cloud-hypervisor and passt for a record.
     pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) {
         if let Some(pid) = record.ch_pid {
-            if record.api_socket().exists() && host::pid_alive(pid, CH_COMM) {
-                Self::stop_via_api(record, diag);
+            if record.api_socket().exists()
+                && host::pid_alive(pid, CH_COMM)
+                && Self::stop_via_api(record, diag)
+            {
                 let _ = host::wait_gone(pid, CH_COMM, Duration::from_secs(5));
             }
             terminate(pid, CH_COMM, Duration::from_secs(2), diag);
@@ -110,7 +120,8 @@ impl RealBackend {
         let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
         match client.state().as_deref() {
             Ok("Paused") => Power::Paused,
-            _ => Power::Running,
+            Ok(_) => Power::Running,
+            Err(_) => Power::Unresponsive,
         }
     }
 
@@ -224,10 +235,16 @@ impl RealBackend {
         started
     }
 
-    /// Kills a passt left behind by a dead cloud-hypervisor.
+    /// Kills a passt left behind by a dead cloud-hypervisor and removes the
+    /// lease's stale sockets. Never touches a lease that never had a CH pid.
     pub(super) fn reap_orphan_passt(record: &LeaseRecord, diag: &mut dyn Write) {
         if Self::ch_alive(record) {
             return;
+        }
+        if record.ch_pid.is_some() {
+            for name in ["a", "p", "p.repair", "v"] {
+                let _ = fs::remove_file(record.run_dir.join(name));
+            }
         }
         if let Some(pid) = record.passt_pid.filter(|p| host::pid_alive(*p, PASST_COMM)) {
             terminate(pid, PASST_COMM, Duration::from_secs(2), diag);

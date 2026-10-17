@@ -27,16 +27,19 @@ pub enum Power {
     Paused,
     /// VM process gone.
     Stopped,
+    /// VM process alive but its API does not answer (frozen or hung).
+    Unresponsive,
 }
 
 impl Power {
-    /// Wire status string: "ready" | "paused" | "stopped".
+    /// Wire status string: "ready" | "paused" | "stopped" | "unresponsive".
     #[must_use]
     pub const fn status(self) -> &'static str {
         match self {
             Self::Running => "ready",
             Self::Paused => "paused",
             Self::Stopped => "stopped",
+            Self::Unresponsive => "unresponsive",
         }
     }
 }
@@ -51,6 +54,12 @@ pub fn stopped_error(id: &str) -> String {
 #[must_use]
 pub fn paused_error(id: &str) -> String {
     format!("lease {id} is paused; run crabbox resume")
+}
+
+/// Error text for any operation that needs a live API on a hung cloud-hypervisor.
+#[must_use]
+pub fn unresponsive_error(id: &str) -> String {
+    format!("lease {id}: cloud-hypervisor is alive but not responding")
 }
 
 /// Everything the operations need from the host; the real impl lives in `vm`.
