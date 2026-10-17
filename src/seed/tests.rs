@@ -69,6 +69,15 @@ fn hostname_cases() {
 }
 
 #[test]
+fn ready_marker_is_synced_and_self_heals() {
+    let u = user_data(&params());
+    assert!(u.contains("  - [sh, -c, 'touch /var/lib/crabbox-ready && sync']\n"));
+    assert!(u.contains("      test -f /var/lib/crabbox-ready && exit 0\n"));
+    assert!(u.contains("grep -q 'status: done' || exit 1\n"));
+    assert!(u.contains("      touch /var/lib/crabbox-ready && sync\n"));
+}
+
+#[test]
 fn write_seed_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let img = dir.path().join("seed.img");
