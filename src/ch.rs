@@ -57,8 +57,7 @@ impl ChClient {
         stream
             .write_all(build_request(method, endpoint, body).as_bytes())
             .map_err(io_err)?;
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).map_err(io_err)?;
+        let raw = read_response(&mut stream).map_err(io_err)?;
         parse_response(&raw)
     }
 
@@ -154,13 +153,22 @@ fn error_message(endpoint: &str, status: u16, body: &str) -> String {
     format!("cloud-hypervisor {endpoint}: HTTP {status}: {detail}")
 }
 
-/// Splits a raw response into status and decoded body.
-fn parse_response(raw: &[u8]) -> Result<(u16, String), String> {
+/// Parsed response head.
+struct Head {
+    /// HTTP status code.
+    status: u16,
+    /// Whether the body uses chunked transfer encoding.
+    chunked: bool,
+    /// Declared `Content-Length`, if any.
+    length: Option<usize>,
+}
+
+/// Parses the head; `None` while the head terminator has not arrived.
+fn parse_head(raw: &[u8]) -> Result<Option<(Head, &[u8])>, String> {
     let bad = || "cloud-hypervisor api: malformed response".to_owned();
-    let split = raw
-        .windows(HEAD_END.len())
-        .position(|w| w == HEAD_END)
-        .ok_or_else(bad)?;
+    let Some(split) = raw.windows(HEAD_END.len()).position(|w| w == HEAD_END) else {
+        return Ok(None);
+    };
     let head = String::from_utf8_lossy(raw.get(..split).ok_or_else(bad)?).into_owned();
     let rest = raw
         .get(split.saturating_add(HEAD_END.len())..)
@@ -180,13 +188,60 @@ fn parse_response(raw: &[u8]) -> Result<(u16, String), String> {
             _ => {}
         }
     }
-    let body = if chunked {
+    Ok(Some((
+        Head {
+            status,
+            chunked,
+            length,
+        },
+        rest,
+    )))
+}
+
+/// Whether `raw` holds a whole response, without waiting for EOF.
+fn is_complete(raw: &[u8]) -> bool {
+    match parse_head(raw) {
+        Ok(Some((head, rest))) => {
+            if head.chunked {
+                decode_chunked(rest).is_ok()
+            } else if let Some(n) = head.length {
+                rest.len() >= n
+            } else {
+                matches!(head.status, 100..=199 | 204 | 304)
+            }
+        }
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
+/// Reads until the response is complete or the peer closes.
+fn read_response(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            return Ok(raw);
+        }
+        raw.extend_from_slice(buf.get(..n).unwrap_or_default());
+        if is_complete(&raw) {
+            return Ok(raw);
+        }
+    }
+}
+
+/// Splits a raw response into status and decoded body.
+fn parse_response(raw: &[u8]) -> Result<(u16, String), String> {
+    let bad = || "cloud-hypervisor api: malformed response".to_owned();
+    let (head, rest) = parse_head(raw)?.ok_or_else(bad)?;
+    let body = if head.chunked {
         decode_chunked(rest)?
     } else {
-        let end = length.map_or(rest.len(), |n| n.min(rest.len()));
+        let end = head.length.map_or(rest.len(), |n| n.min(rest.len()));
         rest.get(..end).ok_or_else(bad)?.to_vec()
     };
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    Ok((head.status, String::from_utf8_lossy(&body).into_owned()))
 }
 
 /// Decodes a `Transfer-Encoding: chunked` body.

@@ -150,3 +150,53 @@ fn unreachable_socket_is_error() {
         "{err}"
     );
 }
+
+/// Serves one reply, then keeps the connection open for 5s.
+fn serve_open(reply: Vec<u8>) -> (tempfile::TempDir, ChClient) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ch.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+        stream.write_all(&reply).unwrap();
+        std::thread::sleep(Duration::from_secs(5));
+    });
+    let client = ChClient::new(&path).with_timeout(Duration::from_secs(3));
+    (dir, client)
+}
+
+/// Asserts the call finished well under the client timeout.
+fn quick<T>(f: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let out = f();
+    assert!(start.elapsed() < Duration::from_secs(1), "waited for EOF");
+    out
+}
+
+#[test]
+fn open_connection_content_length() {
+    let reply = http("200 ", r#"{"version":"v1"}"#).into_bytes();
+    let (_d, c) = serve_open(reply);
+    assert_eq!(quick(|| c.ping().unwrap())["version"], "v1");
+}
+
+#[test]
+fn open_connection_204_without_length() {
+    let (_d, c) = serve_open(b"HTTP/1.1 204 \r\nServer: x\r\n\r\n".to_vec());
+    quick(|| c.boot().unwrap());
+}
+
+#[test]
+fn open_connection_500_json_error() {
+    let (_d, c) = serve_open(http("500 ", r#"["boom","bad"]"#).into_bytes());
+    let err = quick(|| c.boot().unwrap_err());
+    assert!(err.ends_with("HTTP 500: boom: bad"), "{err}");
+}
+
+#[test]
+fn open_connection_chunked() {
+    let reply = b"HTTP/1.1 200 \r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1}\r\n0\r\n\r\n";
+    let (_d, c) = serve_open(reply.to_vec());
+    assert_eq!(quick(|| c.ping().unwrap())["a"], 1);
+}
