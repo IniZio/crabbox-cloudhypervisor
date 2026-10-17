@@ -1,0 +1,17 @@
+# taplo settings.
+include = [
+  "Cargo.toml",
+  "deny.toml",
+  "_typos.toml",
+  "clippy.toml",
+  "rustfmt.toml",
+  "rust-toolchain.toml",
+  "taplo.toml",
+]
+
+[formatting]
+align_entries = false
+array_auto_collapse = true
+array_auto_expand = true
+indent_string = "  "
+reorder_keys = false

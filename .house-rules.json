@@ -1,0 +1,336 @@
+{
+  "$schema": "https://raw.githubusercontent.com/IniZio/groundwork/main/plugins/house-rules/house-rules.schema.json",
+  "rules": {
+    "commit-message": [
+      "error",
+      {
+        "preset": "conventional"
+      }
+    ],
+    "artifact-structure": [
+      "error",
+      {
+        "govern": [
+          ".groundwork/**/*.md"
+        ],
+        "types": {
+          "motive": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/motive.md",
+            "description": "Agent view of the charter: objective, decisions, open questions",
+            "instruction": "One per unit of work; record decisions via $GW event append; holds AC and agent detail",
+            "frontmatter": {
+              "type": "object",
+              "required": [
+                "created",
+                "status"
+              ],
+              "properties": {
+                "created": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "complete",
+                    "abandoned"
+                  ]
+                }
+              }
+            },
+            "headings": [
+              "Objective",
+              "Decisions",
+              "Open questions"
+            ],
+            "template": "---\ncreated: {{created}}\nstatus: {{status}}\n---\n\n# {{title}}\n\nAgent view. The human view of this change is the PR body draft at .groundwork/work/{slug}/pr-body.md.\n\n## Objective\n\nState the intent this motive exists to achieve, in one or two sentences.\n\n## Decisions\n\nList each settled decision with its reason.\n\n## Open questions\n\nList unresolved questions that still need an answer.\n\n## Acceptance criteria\n\n- [ ] State one testable criterion. Evidence: name the test, command, or artifact that proves it.\n"
+          },
+          "spec": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/spec.md",
+            "description": "Agent view of the spec: requirements and AC, folded into durable docs",
+            "instruction": "Set folds_into to the durable doc, or none with a reason; holds AC",
+            "frontmatter": {
+              "type": "object",
+              "required": [
+                "folds_into"
+              ],
+              "properties": {
+                "folds_into": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "if": {
+                "properties": {
+                  "folds_into": {
+                    "const": "none"
+                  }
+                },
+                "required": [
+                  "folds_into"
+                ]
+              },
+              "then": {
+                "required": [
+                  "reason"
+                ]
+              }
+            },
+            "headings": [
+              "Purpose",
+              "Requirements"
+            ],
+            "template": "---\nfolds_into: {{folds_into}}\nreason: {{reason}}\nchange_kinds: []\nrepro_test: \"\"\n---\n\n# {{title}}\n\nAgent view. The human view of this change is the PR body draft at .groundwork/work/{slug}/pr-body.md.\n\nchange_kinds lists every kind that applies: bugfix, refactor, cli-flag, config-key, data-format, migration, dependency. The H2 gate auto-passes only bugfix (with repro_test naming the failing test) and refactor. Any other kind, an unknown kind, an empty list, or a TBD acceptance criterion holds the run for a human.\n\n## Purpose\n\nState what this spec covers and why it exists.\n\n## Requirements\n\nList each requirement as a testable statement.\n\n## Acceptance criteria\n\n- [ ] State one observable condition. Name the evidence that proves it (test name, command output, or artifact).\n\n## Execution notes\n\nOptional. Record files, commands, and ledger ids that the work needs.\n"
+          },
+          "ticket": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/tickets/{nn}-{name:kebab}.md",
+            "description": "Agent view of one actionable task, holds acceptance criteria",
+            "instruction": "Number tickets with a two-digit prefix; holds AC",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Goal",
+              "Acceptance criteria"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\nAgent view. The human view of this change is the PR body draft at .groundwork/work/{slug}/pr-body.md.\n\n## Goal\n\nState the outcome this ticket delivers in one or two sentences.\n\n## Acceptance criteria\n\nList the observable conditions that must hold for the ticket to count as done.\n\n## Execution notes\n\nOptional. Record files, commands, and ledger ids that the work needs.\n"
+          },
+          "map": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/map.md",
+            "description": "Overview map of the work and its parts",
+            "instruction": "Keep to a short overview; link tickets and docs",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Overview"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\n## Overview\n\nSummarize what this map covers and how its parts relate.\n"
+          },
+          "research": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/research/{name:kebab}.md",
+            "description": "Investigation of one question with graded confidence",
+            "instruction": "State the question and confidence in frontmatter",
+            "frontmatter": {
+              "type": "object",
+              "required": [
+                "question",
+                "confidence"
+              ],
+              "properties": {
+                "question": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                }
+              }
+            },
+            "headings": [
+              "Question",
+              "Findings"
+            ],
+            "template": "---\nquestion: {{question}}\nconfidence: {{confidence}}\n---\n\n# {{title}}\n\n## Question\n\nState the question being investigated and why it matters.\n\n## Findings\n\nRecord what the sources show, each claim tied to a cited source.\n"
+          },
+          "plan": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/plan.md",
+            "description": "Ordered steps to deliver the work",
+            "instruction": "List steps; update as the work changes",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Steps"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\n## Steps\n\nList the ordered steps needed to complete the work.\n"
+          },
+          "design": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/design.md",
+            "description": "Agent view of the design: context and chosen approach",
+            "instruction": "Explain context first, then the design; holds agent detail and AC",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Context",
+              "Design"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\nAgent view. The human view of this change is the PR body draft at .groundwork/work/{slug}/pr-body.md.\n\n## Context\n\nState the problem, constraints, and background that shape this design.\n\n## Design\n\nDescribe the chosen approach, its main parts, and how they fit together.\n\n## Acceptance criteria\n\n- [ ] State one testable criterion. Evidence: name the test, command, or artifact that proves it.\n"
+          },
+          "handoff": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/handoff.md",
+            "description": "State for the next session: done and next",
+            "instruction": "Write when pausing so a successor can resume",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Done",
+              "Next"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\n## Done\n\nList what is finished and where the result lives.\n\n## Next\n\nList the remaining steps in order, with any blockers.\n"
+          },
+          "evidence": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/evidence/{name:kebab}.md",
+            "description": "Captured proof that a requirement is met",
+            "instruction": "One file per proof; no template",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Evidence"
+            ]
+          },
+          "out-of-scope": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/out-of-scope.md",
+            "description": "Ideas and requests deliberately not done",
+            "instruction": "Record rejected scope here, not in .out-of-scope/",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Out of scope"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\n## Out of scope\n\nList what this work deliberately excludes, with a short reason for each item.\n"
+          },
+          "lessons": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/lessons.md",
+            "description": "Lessons learned during the work",
+            "instruction": "Capture lessons here, not in a lessons/ folder",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "Lessons"
+            ],
+            "template": "---\ntitle: {{title}}\n---\n\n# {{title}}\n\n## Lessons\n\nRecord what was learned, what to repeat, and what to change next time.\n"
+          },
+          "adr": {
+            "tier": "working",
+            "generates": ".groundwork/adr/{nnnn}-{name:kebab}.md",
+            "description": "Agent-view decision record that can span motives: context, decision, rejected alternatives",
+            "instruction": "Number with a four-digit prefix; link it from a DECISION event via $GW event append --type DECISION --data '{\"adr\":\"<path>\"}'; supersede an accepted record instead of editing it",
+            "frontmatter": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "accepted",
+                    "superseded"
+                  ]
+                },
+                "superseded_by": {
+                  "type": "string"
+                }
+              },
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "superseded"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "required": [
+                  "superseded_by"
+                ]
+              }
+            },
+            "headings": [
+              "Context",
+              "Decision",
+              "Rejected alternatives",
+              "Consequences"
+            ],
+            "template": "---\nstatus: accepted\n---\n\n# {{title}}\n\n## Context\n\nState the forces and constraints that made this decision necessary.\n\n## Decision\n\nState the decision taken, in one or two sentences.\n\n## Rejected alternatives\n\nList each rejected option with why it lost.\n\n## Consequences\n\nRecord what becomes easier or harder because of this decision.\n"
+          },
+          "pr-body": {
+            "tier": "working",
+            "generates": ".groundwork/work/{slug}/pr-body.md",
+            "description": "Draft PR body: the human view of this change, reviewed before implementation and published as the PR description",
+            "instruction": "Only what could flip a reviewer's yes/no; What changed is approved at H1/H2, so fill Evidence and Residual risk as work lands",
+            "frontmatter": {
+              "type": "object"
+            },
+            "headings": [
+              "What changed",
+              "Evidence",
+              "Residual risk"
+            ],
+            "template": "## What changed\n\nState the point of the change in one or two sentences. Say what a user or reader sees now that they did not see before. Then give the reasons a reviewer needs to judge it.\n\n## Evidence\n\nOne bullet for each acceptance criterion. Write the criterion text. Link it to its proof: a GitHub permalink pinned to a commit, a test name, or a screenshot.\n\n- <criterion text> — <permalink, test name, or screenshot>\n\n## Residual risk\n\nName what this change does not cover, and what could still go wrong. Write \"None known\" if nothing remains.\n"
+          }
+        },
+        "forbidden": [
+          {
+            "pattern": "**/doc/adr/**",
+            "redirect": "Agent-view decision records go in `.groundwork/adr/{nnnn}-{name:kebab}.md`; link with `$GW event append --type DECISION --data '{\"adr\":\"<path>\"}'`"
+          },
+          {
+            "pattern": "**/docs/adr/**",
+            "redirect": "Agent-view decision records go in `.groundwork/adr/{nnnn}-{name:kebab}.md`; link with `$GW event append --type DECISION --data '{\"adr\":\"<path>\"}'`"
+          },
+          {
+            "pattern": ".scratch/**",
+            "redirect": "Use `.groundwork/work/{slug}/`"
+          },
+          {
+            "pattern": ".out-of-scope/**",
+            "redirect": "Use `.groundwork/work/{slug}/out-of-scope.md`"
+          },
+          {
+            "pattern": "lessons/**",
+            "redirect": "Use `.groundwork/work/{slug}/lessons.md`"
+          },
+          {
+            "pattern": "learning-records/**",
+            "redirect": "Use `.groundwork/work/{slug}/lessons.md`"
+          },
+          {
+            "pattern": "to-questionnaire-*.md",
+            "redirect": "Use `.groundwork/work/{slug}/`"
+          },
+          {
+            "pattern": "**/to-questionnaire-*.md",
+            "redirect": "Use `.groundwork/work/{slug}/`"
+          },
+          {
+            "pattern": "doc/*/motive.md",
+            "redirect": "doc/ describes the current code only; draft change intent in `.groundwork/work/{slug}/pr-body.md`"
+          },
+          {
+            "pattern": "doc/*/spec.md",
+            "redirect": "doc/ describes the current code only; draft change intent in `.groundwork/work/{slug}/pr-body.md`"
+          },
+          {
+            "pattern": "doc/*/tickets/**",
+            "redirect": "doc/ describes the current code only; draft change intent in `.groundwork/work/{slug}/pr-body.md`"
+          }
+        ]
+      }
+    ]
+  }
+}
