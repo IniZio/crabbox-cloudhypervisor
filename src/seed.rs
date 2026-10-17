@@ -13,6 +13,14 @@ const LABEL: [u8; 11] = *b"CIDATA     ";
 /// Longest DNS label.
 const MAX_HOSTNAME: usize = 63;
 
+/// Indented body of `/usr/local/bin/crabbox-ready`. If cloud-init finished but the
+/// marker never reached disk (VMM killed), it recreates the marker instead of hanging.
+const READY_SCRIPT: &str = "      #!/bin/sh
+      test -f /var/lib/crabbox-ready && exit 0
+      cloud-init status 2>/dev/null | grep -q 'status: done' || exit 1
+      touch /var/lib/crabbox-ready && sync
+";
+
 /// Values substituted into the cloud-init documents.
 pub struct SeedParams<'a> {
     /// cloud-init instance id (new id per lease regenerates host keys).
@@ -80,13 +88,11 @@ write_files:
   - path: /usr/local/bin/crabbox-ready
     permissions: '0755'
     content: |
-      #!/bin/sh
-      test -f /var/lib/crabbox-ready
-runcmd:
+{READY_SCRIPT}runcmd:
   - [systemctl, daemon-reload]
   - [systemctl, enable, --now, crabbox-ssh-vsock.socket]
   - [sh, -c, 'for i in 1 2 3 4 5; do apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git rsync curl jq python3 tar && break; sleep 3; done']
-  - [touch, /var/lib/crabbox-ready]
+  - [sh, -c, 'touch /var/lib/crabbox-ready && sync']
 "
     )
 }
