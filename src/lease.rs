@@ -177,8 +177,22 @@ fn require_running(power: Power, id: &str) -> Result<(), String> {
     }
 }
 
+/// Reaps a lease's orphan passt only when no operation holds its lock.
+///
+/// A create or resume in flight has a passt pid recorded before cloud-hypervisor
+/// starts; reaping then would kill the new passt.
+pub fn reap_if_idle(backend: &dyn Backend, record: &LeaseRecord, diag: &mut dyn Write) {
+    if let Ok(Some(_lock)) = backend.try_lock(&record.lease_id) {
+        backend.reap(record, diag);
+    }
+}
+
 /// Describes the lease the request names; never creates or destroys.
-/// A paused, stopped or unresponsive lease is an error unless the request is `releaseOnly`.
+///
+/// A paused or stopped lease is returned with its status, because crabbox
+/// status, extend and heartbeat resolve it and decide for themselves. An
+/// unresponsive lease is an error unless the request is `releaseOnly`: crabbox
+/// does not know that status and would wait on SSH that never answers.
 pub fn resolve(
     request: &Request,
     backend: &dyn Backend,
@@ -189,10 +203,10 @@ pub fn resolve(
         .find(&id)?
         .ok_or_else(|| format!("lease {id} not found"))?;
     check_agreement(request, &record)?;
-    backend.reap(&record, diag);
+    reap_if_idle(backend, &record, diag);
     let power = backend.power(&record);
-    if !request.release_only {
-        require_running(power, &id)?;
+    if !request.release_only && power == Power::Unresponsive {
+        return Err(backend::unresponsive_error(&id));
     }
     Ok(build_lease(&record, power.status(), backend))
 }

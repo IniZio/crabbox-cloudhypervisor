@@ -79,25 +79,13 @@ fn fixture() -> FakeBackend {
 }
 
 #[test]
-fn resolve_dead_errors_with_resume_hint() {
+fn plain_resolve_returns_dead_and_paused_leases_with_status() {
     let backend = fixture();
-    let (out, code) = call(&backend, &req("resolve", &json!({"id": DEAD})));
-    assert_eq!(code, 1);
-    assert_eq!(
-        out,
-        json!({"error": format!("lease {DEAD} is stopped; run crabbox resume")})
-    );
-}
-
-#[test]
-fn resolve_paused_errors_with_resume_hint() {
-    let backend = fixture();
-    let (out, code) = call(&backend, &req("resolve", &json!({"id": PAUSED})));
-    assert_eq!(code, 1);
-    assert_eq!(
-        out,
-        json!({"error": format!("lease {PAUSED} is paused; run crabbox resume")})
-    );
+    for (id, status) in [(DEAD, "stopped"), (PAUSED, "paused")] {
+        let (out, code) = call(&backend, &req("resolve", &json!({"id": id})));
+        assert_eq!(code, 0, "{id}");
+        assert_eq!(out["lease"]["status"], status, "{id}");
+    }
 }
 
 #[test]

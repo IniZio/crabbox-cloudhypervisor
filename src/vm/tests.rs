@@ -54,6 +54,9 @@ fn record(id: &str) -> LeaseRecord {
         ch_pid: None,
         passt_pid: None,
         run_dir: PathBuf::from("/r").join(id),
+        boot_id: None,
+        ch_start: None,
+        passt_start: None,
     }
 }
 
@@ -228,14 +231,19 @@ struct FakeCh {
 
 impl FakeCh {
     fn spawn() -> Self {
+        Self::spawn_as("cloud-hypervisor", super::CH_COMM)
+    }
+
+    /// A sleeping process named `name` whose comm starts with `comm`.
+    fn spawn_as(name: &str, comm: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("cloud-hypervisor");
+        let bin = dir.path().join(name);
         std::fs::copy("/bin/sleep", &bin).unwrap();
         let child = std::process::Command::new(&bin).arg("30").spawn().unwrap();
         let ch = Self { _dir: dir, child };
         let pid = ch.child.id();
         for _ in 0..100 {
-            if crate::host::pid_alive(pid, super::CH_COMM) {
+            if crate::host::pid_alive(pid, comm) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -404,4 +412,110 @@ fn reap_removes_stale_sockets_only_when_ch_is_dead() {
     RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
     assert!(names.iter().all(|n| !rec.run_dir.join(n).exists()), "dead");
     assert!(rec.run_dir.join("marker").exists());
+}
+
+/// A passt stand-in recorded with the pid and start time it really has.
+fn stamped_passt(dir: &Path) -> (FakeCh, RealBackend, LeaseRecord) {
+    let passt = FakeCh::spawn_as("passt", super::PASST_COMM);
+    let (backend, mut rec) = live_fixture(dir, None);
+    rec.set_passt_pid(passt.child.id());
+    (passt, backend, rec)
+}
+
+#[test]
+fn reap_kills_an_orphan_passt() {
+    let dir = tempfile::tempdir().unwrap();
+    let (passt, _, mut rec) = stamped_passt(dir.path());
+    rec.ch_pid = Some(u32::MAX);
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    assert!(!crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
+}
+
+#[test]
+fn reap_spares_a_passt_when_its_lease_never_had_a_cloud_hypervisor() {
+    let dir = tempfile::tempdir().unwrap();
+    let (passt, _, rec) = stamped_passt(dir.path());
+    assert_eq!(rec.ch_pid, None);
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
+}
+
+#[test]
+fn a_recorded_pid_reused_by_another_process_is_never_signalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let other_ch = FakeCh::spawn();
+    let (other_passt, _, mut rec) = stamped_passt(dir.path());
+    rec.set_ch_pid(other_ch.child.id());
+    rec.ch_start = rec.ch_start.map(|t| t + 1);
+    rec.passt_start = rec.passt_start.map(|t| t + 1);
+    assert!(!RealBackend::ch_alive(&rec));
+    assert_eq!(RealBackend::power_of(&rec), crate::backend::Power::Stopped);
+    RealBackend::stop_processes(&rec, &mut Vec::new());
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    assert!(crate::host::pid_alive(other_ch.child.id(), super::CH_COMM));
+    assert!(crate::host::pid_alive(
+        other_passt.child.id(),
+        super::PASST_COMM
+    ));
+}
+
+#[test]
+fn a_record_from_another_boot_is_not_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (_, mut rec) = live_fixture(dir.path(), None);
+    rec.set_ch_pid(ch.child.id());
+    assert!(RealBackend::ch_alive(&rec));
+    rec.boot_id = Some("another-boot".to_owned());
+    assert!(!RealBackend::ch_alive(&rec));
+}
+
+#[test]
+fn list_leaves_a_locked_lease_alone() {
+    use crate::fake::request;
+    use crate::protocol::Operation;
+    let dir = tempfile::tempdir().unwrap();
+    let (passt, backend, mut rec) = stamped_passt(dir.path());
+    rec.ch_pid = Some(u32::MAX);
+    backend.store.write(&rec).unwrap();
+    let busy = backend.lock("a").unwrap();
+    let req = request(Operation::List);
+    let rows = crate::inventory::list(&req, &backend, &mut Vec::new()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
+    drop(busy);
+    crate::inventory::list(&req, &backend, &mut Vec::new()).unwrap();
+    assert!(!crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
+}
+
+#[test]
+fn pause_fails_when_the_vm_never_reports_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = live_fixture(dir.path(), Some(&ch));
+    let ok = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_owned();
+    let _seen = serve(&rec.api_socket(), vec![ok, info("Running")]);
+    let err = backend.pause(&rec, &mut Vec::new()).unwrap_err();
+    assert!(err.contains("did not reach Paused"), "{err}");
+}
+
+#[test]
+fn guest_secrets_are_written_with_mode_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::process::Command::new("ssh-keygen")
+        .arg("-?")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path());
+    cfg.ssh_keygen = PathBuf::from("ssh-keygen");
+    let backend = RealBackend::new(cfg, PathBuf::from("/bin/cb"));
+    std::fs::create_dir_all(backend.store.lease_dir("a")).unwrap();
+    backend.make_host_key("a").unwrap();
+    let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(backend.store.known_hosts_path("a")), 0o600);
+    assert_eq!(mode(backend.store.host_key_path("a")), 0o600);
 }

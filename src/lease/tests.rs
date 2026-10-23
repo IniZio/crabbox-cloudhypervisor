@@ -140,21 +140,20 @@ fn resolve_ready_returns_lease() {
 }
 
 #[test]
-fn resolve_stopped_and_paused_error_unless_release_only() {
+fn resolve_returns_stopped_and_paused_leases_with_their_status() {
     let fake = Fake::default();
     fake.add("b2", false);
     fake.add("c3", true);
     fake.pause_set("c3");
-    let err = run_resolve(&fake, &lease_request(Operation::Resolve, "b2")).unwrap_err();
-    assert_eq!(err, "lease b2 is stopped; run crabbox resume");
-    let err = run_resolve(&fake, &lease_request(Operation::Resolve, "c3")).unwrap_err();
-    assert_eq!(err, "lease c3 is paused; run crabbox resume");
-    let mut req = lease_request(Operation::Resolve, "b2");
-    req.release_only = true;
-    assert_eq!(run_resolve(&fake, &req).unwrap().status, "stopped");
-    let mut req = lease_request(Operation::Resolve, "c3");
-    req.release_only = true;
-    assert_eq!(run_resolve(&fake, &req).unwrap().status, "paused");
+    for release_only in [false, true] {
+        let mut req = lease_request(Operation::Resolve, "b2");
+        req.release_only = release_only;
+        assert_eq!(run_resolve(&fake, &req).unwrap().status, "stopped");
+        let mut req = lease_request(Operation::Resolve, "c3");
+        req.release_only = release_only;
+        assert_eq!(run_resolve(&fake, &req).unwrap().status, "paused");
+    }
+    assert!(!fake.destroyed_any());
 }
 
 #[test]

@@ -170,7 +170,8 @@ impl RealBackend {
         let passt_sock = record.passt_socket();
         let args = ["--vhost-user", "-f", "-s"].map(OsString::from);
         let args = [&args[..], &[passt_sock.clone().into_os_string()]].concat();
-        record.passt_pid = Some(host::spawn_detached(&self.config.passt, &args, &log)?);
+        let passt_pid = host::spawn_detached(&self.config.passt, &args, &log)?;
+        record.set_passt_pid(passt_pid);
         self.store.write(record)?;
         if !wait_until(PASST_WAIT, || passt_sock.exists()) {
             return Err("passt did not create its socket".to_owned());
@@ -181,7 +182,7 @@ impl RealBackend {
             record.api_socket().into_os_string(),
         ];
         let pid = host::spawn_detached(&self.config.cloud_hypervisor, &args, &log)?;
-        record.ch_pid = Some(pid);
+        record.set_ch_pid(pid);
         self.store.write(record)?;
         let client = ChClient::new(&record.api_socket());
         if !wait_until(CH_WAIT, || client.ping().is_ok()) {
@@ -232,6 +233,9 @@ impl RealBackend {
             ch_pid: None,
             passt_pid: None,
             run_dir: run_dir.to_path_buf(),
+            boot_id: None,
+            ch_start: None,
+            passt_start: None,
         };
         remove_tree(run_dir)?;
         self.store.write(&record)?;
@@ -258,9 +262,7 @@ impl Backend for RealBackend {
     }
 
     fn alive(&self, record: &LeaseRecord) -> bool {
-        record
-            .ch_pid
-            .is_some_and(|pid| host::pid_alive(pid, CH_COMM))
+        Self::ch_alive(record)
     }
 
     fn power(&self, record: &LeaseRecord) -> Power {
@@ -281,6 +283,10 @@ impl Backend for RealBackend {
 
     fn reap(&self, record: &LeaseRecord, diag: &mut dyn Write) {
         Self::reap_orphan_passt(record, diag);
+    }
+
+    fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {
+        self.store.try_lock(lease_id)
     }
 
     fn lock(&self, lease_id: &str) -> Result<LeaseLock, String> {

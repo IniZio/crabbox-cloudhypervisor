@@ -119,3 +119,15 @@ fn write_seed_overwrites_and_reports_errors() {
     write_seed(&img, "c", "d").unwrap();
     assert!(write_seed(&dir.path().join("no/such/seed.img"), "a", "b").is_err());
 }
+
+#[test]
+fn seed_image_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("seed.img");
+    write_seed(&img, "a", "b").unwrap();
+    assert_eq!(
+        fs::metadata(&img).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}

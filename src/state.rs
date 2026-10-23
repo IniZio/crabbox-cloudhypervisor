@@ -56,9 +56,40 @@ pub struct LeaseRecord {
     pub passt_pid: Option<u32>,
     /// Runtime directory holding the sockets.
     pub run_dir: PathBuf,
+    /// Boot the pids below belong to.
+    #[serde(default)]
+    pub boot_id: Option<String>,
+    /// Start time (clock ticks) of the cloud-hypervisor process.
+    #[serde(default)]
+    pub ch_start: Option<u64>,
+    /// Start time (clock ticks) of the passt process.
+    #[serde(default)]
+    pub passt_start: Option<u64>,
 }
 
 impl LeaseRecord {
+    /// Records cloud-hypervisor's pid with its start time and the boot id.
+    pub fn set_ch_pid(&mut self, pid: u32) {
+        self.boot_id = crate::host::boot_id();
+        self.ch_pid = Some(pid);
+        self.ch_start = crate::host::proc_start(pid);
+    }
+
+    /// Records passt's pid with its start time and the boot id.
+    pub fn set_passt_pid(&mut self, pid: u32) {
+        self.boot_id = crate::host::boot_id();
+        self.passt_pid = Some(pid);
+        self.passt_start = crate::host::proc_start(pid);
+    }
+
+    /// Forgets both processes.
+    pub const fn clear_pids(&mut self) {
+        self.ch_pid = None;
+        self.passt_pid = None;
+        self.ch_start = None;
+        self.passt_start = None;
+    }
+
     /// cloud-hypervisor API socket.
     #[must_use]
     pub fn api_socket(&self) -> PathBuf {
@@ -288,19 +319,34 @@ impl Store {
 
     /// Blocks until it holds the exclusive lock for the lease.
     pub fn lock(&self, lease_id: &str) -> Result<LeaseLock, String> {
+        let file = self.open_lock(lease_id)?;
+        file.lock()
+            .map_err(|e| format!("lock lease {lease_id}: {e}"))?;
+        Ok(LeaseLock { file: Some(file) })
+    }
+
+    /// Takes the lock if nobody holds it; `Ok(None)` when it is busy.
+    pub fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {
+        let file = self.open_lock(lease_id)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(LeaseLock { file: Some(file) })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(format!("lock lease {lease_id}: {e}")),
+        }
+    }
+
+    /// Opens (creating) the lock file of a lease.
+    fn open_lock(&self, lease_id: &str) -> Result<File, String> {
         validate_lease_id(lease_id)?;
         let dir = self.root.join(LOCKS_DIR);
         mkdir_private(&dir)?;
-        let file = OpenOptions::new()
+        OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
             .open(dir.join(format!("{lease_id}.lock")))
-            .map_err(|e| format!("open lock {lease_id}: {e}"))?;
-        file.lock()
-            .map_err(|e| format!("lock lease {lease_id}: {e}"))?;
-        Ok(LeaseLock { file: Some(file) })
+            .map_err(|e| format!("open lock {lease_id}: {e}"))
     }
 }

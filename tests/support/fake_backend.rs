@@ -40,6 +40,9 @@ impl FakeBackend {
             ch_pid: Some(1),
             passt_pid: None,
             run_dir: PathBuf::from("/run/x"),
+            boot_id: None,
+            ch_start: None,
+            passt_start: None,
         };
         self.records
             .borrow_mut()
@@ -75,6 +78,10 @@ impl Backend for FakeBackend {
             .borrow()
             .get(&record.lease_id)
             .is_some_and(|(_, alive)| *alive)
+    }
+
+    fn try_lock(&self, _lease_id: &str) -> Result<Option<LeaseLock>, String> {
+        Ok(Some(LeaseLock::none()))
     }
 
     fn lock(&self, _lease_id: &str) -> Result<LeaseLock, String> {

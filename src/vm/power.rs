@@ -22,15 +22,16 @@ const POLL_EVERY: Duration = Duration::from_millis(200);
 /// One cloud-hypervisor API call used to stop a VM.
 type Step = fn(&ChClient) -> Result<(), String>;
 
-/// Sends TERM, then KILL if the process outlives `grace`.
-fn terminate(pid: u32, comm: &str, grace: Duration, diag: &mut dyn Write) {
-    if !host::pid_alive(pid, comm) {
+/// Sends TERM, then KILL if the process outlives `grace`; `alive` says whether
+/// `pid` is still the recorded process.
+fn terminate(pid: u32, alive: impl Fn() -> bool, grace: Duration, diag: &mut dyn Write) {
+    if !alive() {
         return;
     }
     if let Err(e) = host::kill(pid, "TERM") {
         let _ = writeln!(diag, "warn: {e}");
     }
-    if !host::wait_gone(pid, comm, grace) {
+    if !host::wait_until_dead(&alive, grace) {
         if let Err(e) = host::kill(pid, "KILL") {
             let _ = writeln!(diag, "warn: {e}");
         }
@@ -70,16 +71,19 @@ impl RealBackend {
     /// Stops cloud-hypervisor and passt for a record.
     pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) {
         if let Some(pid) = record.ch_pid {
-            if record.api_socket().exists()
-                && host::pid_alive(pid, CH_COMM)
-                && Self::stop_via_api(record, diag)
-            {
-                let _ = host::wait_gone(pid, CH_COMM, Duration::from_secs(5));
+            let alive = || Self::ch_alive(record);
+            if record.api_socket().exists() && alive() && Self::stop_via_api(record, diag) {
+                let _ = host::wait_until_dead(alive, Duration::from_secs(5));
             }
-            terminate(pid, CH_COMM, Duration::from_secs(2), diag);
+            terminate(pid, alive, Duration::from_secs(2), diag);
         }
         if let Some(pid) = record.passt_pid {
-            terminate(pid, PASST_COMM, Duration::from_secs(2), diag);
+            terminate(
+                pid,
+                || Self::passt_alive(record),
+                Duration::from_secs(2),
+                diag,
+            );
         }
     }
 
@@ -111,10 +115,7 @@ impl RealBackend {
 
     /// Live power state of a record.
     pub(super) fn power_of(record: &LeaseRecord) -> Power {
-        let alive = record
-            .ch_pid
-            .is_some_and(|pid| host::pid_alive(pid, CH_COMM));
-        if !alive {
+        if !Self::ch_alive(record) {
             return Power::Stopped;
         }
         let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
@@ -157,10 +158,22 @@ impl RealBackend {
     }
 
     /// True iff the record's cloud-hypervisor process is alive.
-    fn ch_alive(record: &LeaseRecord) -> bool {
+    pub(super) fn ch_alive(record: &LeaseRecord) -> bool {
         record
             .ch_pid
-            .is_some_and(|pid| host::pid_alive(pid, CH_COMM))
+            .is_some_and(|pid| host::owns(pid, CH_COMM, record.ch_start, record.boot_id.as_deref()))
+    }
+
+    /// True iff the record's passt process is alive and is the one recorded.
+    fn passt_alive(record: &LeaseRecord) -> bool {
+        record.passt_pid.is_some_and(|pid| {
+            host::owns(
+                pid,
+                PASST_COMM,
+                record.passt_start,
+                record.boot_id.as_deref(),
+            )
+        })
     }
 
     /// Resumes a paused VM, or cold boots a dead one, then waits for ssh.
@@ -222,8 +235,7 @@ impl RealBackend {
         let mut record = record.clone();
         remove_tree(&record.run_dir)?;
         mkdir_private(&record.run_dir)?;
-        record.ch_pid = None;
-        record.passt_pid = None;
+        record.clear_pids();
         self.store.write(&record)?;
         let firmware = spec::firmware_cache_path(&self.config);
         let started = self
@@ -238,16 +250,19 @@ impl RealBackend {
     /// Kills a passt left behind by a dead cloud-hypervisor and removes the
     /// lease's stale sockets. Never touches a lease that never had a CH pid.
     pub(super) fn reap_orphan_passt(record: &LeaseRecord, diag: &mut dyn Write) {
-        if Self::ch_alive(record) {
+        if record.ch_pid.is_none() || Self::ch_alive(record) {
             return;
         }
-        if record.ch_pid.is_some() {
-            for name in ["a", "p", "p.repair", "v"] {
-                let _ = fs::remove_file(record.run_dir.join(name));
-            }
+        for name in ["a", "p", "p.repair", "v"] {
+            let _ = fs::remove_file(record.run_dir.join(name));
         }
-        if let Some(pid) = record.passt_pid.filter(|p| host::pid_alive(*p, PASST_COMM)) {
-            terminate(pid, PASST_COMM, Duration::from_secs(2), diag);
+        if let Some(pid) = record.passt_pid.filter(|_| Self::passt_alive(record)) {
+            terminate(
+                pid,
+                || Self::passt_alive(record),
+                Duration::from_secs(2),
+                diag,
+            );
             let _ = writeln!(diag, "reaped orphan passt {pid} for {}", record.lease_id);
         }
     }
