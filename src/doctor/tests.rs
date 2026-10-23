@@ -17,6 +17,14 @@ fn config(root: &Path) -> Config {
         cpus: 2,
         memory_mib: 4096,
         disk_gib: 20,
+        growth: crate::config::Growth {
+            cpus_max: 4,
+            memory_mib_max: 8192,
+            disk_max_gib: 100,
+            disk_step_gib: 10,
+            disk_free_percent: 15,
+            disk_free_gib: 4,
+        },
         image: Asset {
             url: "https://example.invalid/i.img".to_owned(),
             sha256: "0123456789abcdef0123".to_owned(),

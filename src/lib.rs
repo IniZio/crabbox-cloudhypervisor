@@ -8,6 +8,7 @@ pub mod backend;
 pub mod ch;
 pub mod config;
 pub mod doctor;
+pub mod grow;
 pub mod host;
 pub mod inventory;
 pub mod lease;
@@ -19,6 +20,7 @@ pub mod ready;
 pub mod seed;
 pub mod state;
 pub mod vm;
+pub mod watch;
 
 #[cfg(test)]
 mod fake;
@@ -37,6 +39,8 @@ pub struct Outcome {
 
 /// Usage text for the `proxy` subcommand.
 const PROXY_USAGE: &str = "usage: proxy <leaseId> --state-dir <dir>";
+/// Usage text for the `watch` subcommand.
+const WATCH_USAGE: &str = "usage: watch <leaseId> --state-dir <dir>";
 
 /// Builds the config from a request and the process environment.
 fn config_of(request: &Request) -> Result<config::Config, String> {
@@ -137,14 +141,26 @@ fn state_dir_arg(args: &[String]) -> Option<&str> {
     None
 }
 
-/// Runs `proxy <leaseId> --state-dir <dir>` (`args` are those after `proxy`).
-pub fn run_proxy(args: &[String], _diag: &mut dyn Write) -> Result<(), String> {
-    let dir = state_dir_arg(args).ok_or(PROXY_USAGE)?;
+/// The lease id and state dir of a `<cmd> <leaseId> --state-dir <dir>` call.
+fn lease_args<'a>(args: &'a [String], usage: &str) -> Result<(&'a str, &'a str), String> {
+    let dir = state_dir_arg(args).ok_or(usage)?;
     let id = args
         .iter()
         .find(|a| !a.starts_with("--") && a.as_str() != dir)
-        .ok_or(PROXY_USAGE)?;
+        .ok_or(usage)?;
     state::validate_lease_id(id)?;
+    Ok((id, dir))
+}
+
+/// Runs `watch <leaseId> --state-dir <dir>`; log lines go to `diag`.
+pub fn run_watch(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
+    let (id, dir) = lease_args(args, WATCH_USAGE)?;
+    watch::run(id, std::path::Path::new(dir), diag)
+}
+
+/// Runs `proxy <leaseId> --state-dir <dir>` (`args` are those after `proxy`).
+pub fn run_proxy(args: &[String], _diag: &mut dyn Write) -> Result<(), String> {
+    let (id, dir) = lease_args(args, PROXY_USAGE)?;
     let record = state::Store::new(std::path::Path::new(dir))
         .read(id)?
         .ok_or_else(|| format!("lease {id} not found"))?;

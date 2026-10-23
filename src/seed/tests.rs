@@ -131,3 +131,12 @@ fn seed_image_is_private() {
         0o600
     );
 }
+
+#[test]
+fn user_data_onlines_hot_added_cpus_and_memory() {
+    let u = user_data(&params());
+    assert!(u.contains(
+        "  - path: /etc/udev/rules.d/80-crabbox-hotadd.rules\n    content: |\n      SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n"
+    ));
+    assert!(u.contains("ATTR{state}==\"offline\", ATTR{state}=\"online\"\n"));
+}

@@ -65,6 +65,12 @@ pub struct LeaseRecord {
     /// Start time (clock ticks) of the passt process.
     #[serde(default)]
     pub passt_start: Option<u64>,
+    /// Pid of the growth watcher, once started.
+    #[serde(default)]
+    pub watch_pid: Option<u32>,
+    /// Start time (clock ticks) of the growth watcher.
+    #[serde(default)]
+    pub watch_start: Option<u64>,
 }
 
 impl LeaseRecord {
@@ -82,12 +88,20 @@ impl LeaseRecord {
         self.passt_start = crate::host::proc_start(pid);
     }
 
-    /// Forgets both processes.
+    /// Records the growth watcher's pid with its start time.
+    pub fn set_watch_pid(&mut self, pid: u32) {
+        self.watch_pid = Some(pid);
+        self.watch_start = crate::host::proc_start(pid);
+    }
+
+    /// Forgets every process.
     pub const fn clear_pids(&mut self) {
         self.ch_pid = None;
         self.passt_pid = None;
+        self.watch_pid = None;
         self.ch_start = None;
         self.passt_start = None;
+        self.watch_start = None;
     }
 
     /// cloud-hypervisor API socket.
@@ -229,6 +243,18 @@ impl Store {
     #[must_use]
     pub fn process_log(&self, id: &str) -> PathBuf {
         self.lease_dir(id).join("vmm.log")
+    }
+
+    /// What the growth watcher reads at start.
+    #[must_use]
+    pub fn watch_spec_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("watch.json")
+    }
+
+    /// Log of every grow and every growth failure.
+    #[must_use]
+    pub fn grow_log(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("grow.log")
     }
 
     /// Reads a record; `Ok(None)` when the dir or file is missing.

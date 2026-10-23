@@ -17,6 +17,8 @@ fn record(id: &str) -> LeaseRecord {
         boot_id: None,
         ch_start: None,
         passt_start: None,
+        watch_pid: None,
+        watch_start: None,
     }
 }
 

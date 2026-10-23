@@ -2,6 +2,7 @@
 
 mod power;
 pub mod spec;
+mod watcher;
 
 use std::ffi::OsString;
 use std::fs;
@@ -16,7 +17,6 @@ use crate::ch::ChClient;
 use crate::config::Config;
 use crate::host;
 use crate::protocol::Desired;
-use crate::ready::ReadyProbe;
 use crate::seed::{self, SeedParams};
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
 
@@ -236,6 +236,8 @@ impl RealBackend {
             boot_id: None,
             ch_start: None,
             passt_start: None,
+            watch_pid: None,
+            watch_start: None,
         };
         remove_tree(run_dir)?;
         self.store.write(&record)?;
@@ -244,6 +246,7 @@ impl RealBackend {
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, diag)?;
         self.boot_vm(&record, &assets.firmware, diag)?;
+        self.start_watcher(&mut record, diag)?;
         Ok(record)
     }
 }
@@ -312,15 +315,8 @@ impl Backend for RealBackend {
 
     fn wait_ready(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
         let id = record.lease_id.as_str();
-        let probe = ReadyProbe {
-            ssh: self.config.ssh.clone(),
-            key: self.store.key_path(id),
-            proxy_command: self.proxy_command(id),
-            user: backend::SSH_USER.to_owned(),
-            host: id.to_owned(),
-            known_hosts: self.store.known_hosts_path(id),
-            host_key_alias: format!("crabbox-{id}"),
-        };
+        let c = &self.config;
+        let probe = spec::guest_ssh(&c.ssh, &self.store, &self.exe, &c.state_dir, id);
         let result = probe.wait(
             self.config.ready_timeout,
             Duration::from_secs(1),
