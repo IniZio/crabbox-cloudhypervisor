@@ -70,6 +70,7 @@ fn vm_config_has_the_spike_shape() {
     let want = json!({
         "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
         "memory": {"size": 4_294_967_296_u64, "shared": true},
+        "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": "/fw.fd"},
         "disks": [
             {"path": "/d.raw", "image_type": "Raw", "readonly": false},
@@ -86,6 +87,27 @@ fn vm_config_has_the_spike_shape() {
         "console": {"mode": "Off"},
     });
     assert_eq!(got, want);
+}
+
+#[test]
+fn vm_config_returns_freed_guest_memory_to_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let rec = record("abc");
+    let got = spec::vm_config(
+        &cfg,
+        Path::new("/fw.fd"),
+        Path::new("/d.raw"),
+        Path::new("/s.img"),
+        Path::new("/serial.log"),
+        &rec,
+    );
+    assert_eq!(got.pointer("/balloon/size"), Some(&json!(0)));
+    assert_eq!(got.pointer("/balloon/deflate_on_oom"), Some(&json!(true)));
+    assert_eq!(
+        got.pointer("/balloon/free_page_reporting"),
+        Some(&json!(true))
+    );
 }
 
 #[test]

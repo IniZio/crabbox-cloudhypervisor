@@ -26,6 +26,7 @@ pub fn vm_config(
     json!({
         "cpus": {"boot_vcpus": config.cpus, "max_vcpus": config.cpus},
         "memory": {"size": config.memory_mib * 1024 * 1024, "shared": true},
+        "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": firmware},
         "disks": [
             {"path": disk, "image_type": "Raw", "readonly": false},
