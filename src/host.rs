@@ -39,6 +39,25 @@ pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), Strin
     Ok(())
 }
 
+/// Bytes available to unprivileged users on the filesystem holding `path`:
+/// statvfs `f_bavail * f_frsize`, read through `stat -f`.
+pub fn free_bytes(path: &Path) -> Result<u64, String> {
+    let output = Command::new("stat")
+        .args(["-f", "-c", "%a %S", "--"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("host free space: cannot run stat: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.split_whitespace().map(str::parse::<u64>);
+    match (output.status.success(), fields.next(), fields.next()) {
+        (true, Some(Ok(blocks)), Some(Ok(size))) => Ok(blocks.saturating_mul(size)),
+        _ => Err(format!(
+            "host free space: stat failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
 /// Generates an ed25519 keypair at `key` and returns the trimmed public key line.
 pub fn ssh_keygen(program: &Path, key: &Path, comment: &str) -> Result<String, String> {
     let mut pubkey = key.as_os_str().to_owned();

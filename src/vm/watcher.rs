@@ -12,9 +12,6 @@ use crate::host;
 use crate::state::LeaseRecord;
 use crate::watch::WatchSpec;
 
-/// Process name of the watcher: this binary's name cut to 15 characters.
-const WATCH_COMM: &str = "crabbox-cloudhy";
-
 impl RealBackend {
     /// Writes the watch spec and spawns `<exe> watch <id> --state-dir <dir>`.
     pub(super) fn start_watcher(
@@ -61,15 +58,27 @@ impl RealBackend {
         }
     }
 
-    /// True iff the record's watcher is alive and is the one recorded.
-    fn watch_alive(record: &LeaseRecord) -> bool {
-        record.watch_pid.is_some_and(|pid| {
-            host::owns(
-                pid,
-                WATCH_COMM,
-                record.watch_start,
-                record.boot_id.as_deref(),
-            )
-        })
+    /// Starts a watcher unless the record's own is still running, so a lease
+    /// never has none and never two.
+    pub(super) fn ensure_watcher(
+        &self,
+        record: &LeaseRecord,
+        diag: &mut dyn Write,
+    ) -> Result<(), String> {
+        if Self::watch_alive(record) {
+            return Ok(());
+        }
+        self.start_watcher(&mut record.clone(), diag)
+    }
+
+    /// True iff the record's watcher is alive and is the one recorded: same
+    /// pid, start time and boot, whatever the binary is named.
+    pub(super) fn watch_alive(record: &LeaseRecord) -> bool {
+        record
+            .watch_pid
+            .is_some_and(|pid| host::owns(pid, "", record.watch_start, record.boot_id.as_deref()))
     }
 }
+
+#[cfg(test)]
+mod tests;

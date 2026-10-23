@@ -153,6 +153,10 @@ impl Backend for FakeBackend {
         Ok(format!("ssh-ed25519 AAAAFAKE{lease_id}"))
     }
 
+    fn growth_blocked(&self, _lease_id: &str) -> String {
+        String::new()
+    }
+
     fn reap(&self, record: &LeaseRecord, _diag: &mut dyn Write) {
         if !self.alive(record) {
             self.passt_orphans.borrow_mut().remove(&record.lease_id);

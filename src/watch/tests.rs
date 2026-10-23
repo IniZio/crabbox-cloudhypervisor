@@ -1,7 +1,9 @@
 #![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Command;
 
 use super::*;
@@ -39,6 +41,14 @@ struct Fake {
     resize_error: Option<String>,
     /// Online CPUs a sample reports after a vCPU raise.
     onlined: Option<u32>,
+    /// Free bytes on the host filesystem.
+    host_free: u64,
+    /// Last blocked reason recorded.
+    blocked: RefCell<Option<String>>,
+    /// `alive` answers true this many more times.
+    lives: Cell<u32>,
+    /// What `running` answers.
+    running: bool,
     /// Calls made, as text.
     calls: RefCell<Vec<String>>,
 }
@@ -56,6 +66,10 @@ impl Fake {
             fs_results: RefCell::new(vec![Ok(9 * GIB)]),
             resize_error: None,
             onlined: None,
+            host_free: 500 * GIB,
+            blocked: RefCell::new(None),
+            lives: Cell::new(0),
+            running: true,
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -66,11 +80,30 @@ impl Fake {
 }
 
 impl Machine for Fake {
+    fn alive(&self) -> bool {
+        let left = self.lives.get();
+        self.lives.set(left.saturating_sub(1));
+        left > 0
+    }
+
+    fn running(&self) -> bool {
+        self.running
+    }
+
+    fn host_free(&self) -> Result<u64, String> {
+        Ok(self.host_free)
+    }
+
+    fn set_blocked(&self, reason: Option<&str>) {
+        *self.blocked.borrow_mut() = reason.map(str::to_owned);
+    }
+
     fn current(&self) -> Result<Current, String> {
         Ok(*self.current.borrow())
     }
 
     fn sample(&self) -> Result<Sample, String> {
+        self.calls.borrow_mut().push("sample".to_owned());
         let mut samples = self.samples.borrow_mut();
         let mut s = if samples.len() > 1 {
             samples.remove(0)
@@ -135,11 +168,19 @@ fn low_space() -> Sample {
 
 /// Runs `n` ticks; returns the log.
 fn ticks(planner: &mut Planner, fake: &Fake, n: usize) -> String {
-    let mut log = Vec::new();
+    let mut out = Vec::new();
+    let mut log = Log::new(&mut out);
     for _ in 0..n {
         tick(planner, fake, Duration::ZERO, &mut log).unwrap();
+        log.end_tick();
     }
-    String::from_utf8(log).unwrap()
+    drop(log);
+    String::from_utf8(out).unwrap()
+}
+
+/// Calls other than samples.
+fn changes(fake: &Fake) -> Vec<String> {
+    fake.calls().into_iter().filter(|c| c != "sample").collect()
 }
 
 #[test]
@@ -167,7 +208,7 @@ fn low_space_grows_the_disk_then_the_filesystem_and_logs_both() {
     let fake = Fake::new(low_space());
     let mut p = Planner::new(GROWTH);
     let log = ticks(&mut p, &fake, 2);
-    assert_eq!(fake.calls(), ["grow_fs", "grow_disk 20", "grow_fs"]);
+    assert_eq!(changes(&fake), ["grow_fs", "grow_disk 20", "grow_fs"]);
     assert!(log.contains("grew disk 10.0 GiB -> 20.0 GiB"), "{log}");
     assert!(
         log.contains("root filesystem fills the disk: 9.0 GiB"),
@@ -195,7 +236,7 @@ fn a_failed_filesystem_grow_is_logged_and_retried_without_growing_the_disk() {
         vec![Ok(9 * GIB), Err("growpart: boom".to_owned()), Ok(19 * GIB)];
     let log = ticks(&mut Planner::new(GROWTH), &fake, 3);
     assert_eq!(
-        fake.calls(),
+        changes(&fake),
         ["grow_fs", "grow_disk 20", "grow_fs", "grow_fs"]
     );
     assert!(
@@ -338,4 +379,74 @@ fn grow_fs_script_fails_on_a_real_growpart_error() {
         "{calls}"
     );
     assert!(!calls.contains("resize2fs"));
+}
+
+#[test]
+fn the_watcher_does_not_tick_while_the_vm_is_paused() {
+    let paused = Fake {
+        lives: Cell::new(3),
+        running: false,
+        ..Fake::new(low_space())
+    };
+    let mut out = Vec::new();
+    let mut p = Planner::new(GROWTH);
+    watch_loop(
+        &paused,
+        &mut p,
+        Duration::ZERO,
+        Duration::ZERO,
+        &mut Log::new(&mut out),
+    );
+    assert!(paused.calls().is_empty(), "{:?}", paused.calls());
+    let running = Fake {
+        lives: Cell::new(3),
+        ..Fake::new(low_space())
+    };
+    watch_loop(
+        &running,
+        &mut p,
+        Duration::ZERO,
+        Duration::ZERO,
+        &mut Log::new(&mut out),
+    );
+    assert!(running.calls().contains(&"grow_disk 20".to_owned()));
+}
+
+#[test]
+fn a_host_without_room_for_the_step_blocks_the_grow_and_says_why_once() {
+    let fake = Fake {
+        host_free: 5 * GIB,
+        ..Fake::new(low_space())
+    };
+    let log = ticks(&mut Planner::new(GROWTH), &fake, 5);
+    assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
+    let why = "host filesystem holding the disk has under 10.0 GiB free; disk stays at 10.0 GiB";
+    assert_eq!(fake.blocked.borrow().as_deref(), Some(why));
+    assert_eq!(log.matches(why).count(), 1, "{log}");
+}
+
+#[test]
+fn room_on_the_host_clears_a_blocked_grow() {
+    let fake = Fake::new(low_space());
+    *fake.blocked.borrow_mut() = Some("old".to_owned());
+    ticks(&mut Planner::new(GROWTH), &fake, 2);
+    assert_eq!(*fake.blocked.borrow(), None);
+    assert!(fake.calls().contains(&"grow_disk 20".to_owned()));
+}
+
+#[test]
+fn a_repeated_failure_is_logged_once_then_with_its_count_when_it_clears() {
+    let fake = Fake::new(calm());
+    let boom = || Err("growpart: boom".to_owned());
+    *fake.fs_results.borrow_mut() = vec![boom(), boom(), boom(), boom(), Ok(9 * GIB)];
+    let log = ticks(&mut Planner::new(GROWTH), &fake, 5);
+    assert_eq!(
+        log.matches("grow failed: root filesystem").count(),
+        2,
+        "{log}"
+    );
+    assert!(
+        log.contains("cleared after 4 times: grow failed: root filesystem: growpart: boom"),
+        "{log}"
+    );
 }

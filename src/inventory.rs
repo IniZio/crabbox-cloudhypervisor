@@ -25,6 +25,7 @@ pub fn list(
             reap_if_idle(backend, &r, diag);
             LeaseRow {
                 status: backend.power(&r).status().to_owned(),
+                growth_blocked: backend.growth_blocked(&r.lease_id),
                 lease_id: r.lease_id,
                 slug: r.slug,
                 name: r.name,

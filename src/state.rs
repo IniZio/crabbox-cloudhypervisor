@@ -251,6 +251,12 @@ impl Store {
         self.lease_dir(id).join("watch.json")
     }
 
+    /// Why the disk last could not grow; absent when nothing blocks it.
+    #[must_use]
+    pub fn grow_blocked_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("grow-blocked")
+    }
+
     /// Log of every grow and every growth failure.
     #[must_use]
     pub fn grow_log(&self, id: &str) -> PathBuf {

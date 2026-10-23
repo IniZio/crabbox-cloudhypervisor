@@ -115,6 +115,9 @@ pub trait Backend {
     /// `Err` if missing.
     fn host_key(&self, lease_id: &str) -> Result<String, String>;
 
+    /// Why the lease's disk cannot grow; empty when nothing blocks it.
+    fn growth_blocked(&self, lease_id: &str) -> String;
+
     /// If CH is dead but passt is alive, kills passt (orphan). Best effort;
     /// notes to `diag`. Never fails.
     fn reap(&self, record: &LeaseRecord, diag: &mut dyn Write);

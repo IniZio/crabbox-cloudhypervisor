@@ -36,6 +36,8 @@ pub(crate) struct Fake {
     pub(crate) busy: RefCell<BTreeSet<String>>,
     /// `resume` fails.
     pub(crate) resume_fails: Cell<bool>,
+    /// Lease id to why its disk cannot grow.
+    pub(crate) blocked: RefCell<BTreeMap<String, String>>,
 }
 
 impl Fake {
@@ -257,6 +259,14 @@ impl Backend for Fake {
         } else {
             Err(format!("no host key for {lease_id}"))
         }
+    }
+
+    fn growth_blocked(&self, lease_id: &str) -> String {
+        self.blocked
+            .borrow()
+            .get(lease_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn reap(&self, record: &LeaseRecord, _diag: &mut dyn Write) {

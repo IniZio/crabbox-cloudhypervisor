@@ -92,20 +92,26 @@ guest over ssh (root fs size and free space, `/proc/stat`, `/proc/meminfo`,
 - **Disk.** When free space on `/` falls below the floor, `vm.resize-disk` grows
   the image by `diskGrowStepGiB` (never past `diskMaxGiB`), then the guest runs
   `growpart` and `resize2fs` on the root partition. If that guest step fails, the
-  watcher retries it before it grows the image again.
+  watcher retries it before it grows the image again. A grow needs the host
+  filesystem holding the image to have room for the whole step; otherwise the
+  disk stays as it is, and `list` and `resolve` report why in the lease's
+  `growthBlocked` field.
 - **vCPUs.** The VM boots with `max_vcpus = cpusMax`. After 3 samples in a row
   (30 seconds) above 90% CPU busy, `vm.resize` doubles the vCPU count, up to
   `cpusMax`. A udev rule from the seed brings the new vCPUs online.
 - **Memory.** The VM boots with `hotplug_size` = `memoryMiBMax - memoryMiB`
-  (ACPI hotplug). After 3 samples in a row above 90% memory in use (from
+  (ACPI hotplug). After 2 samples in a row above 80% memory in use (from
   `MemAvailable`), `vm.resize` doubles memory in whole 128 MiB blocks, up to
-  `memoryMiBMax`. ACPI-added memory stays until the VM stops.
+  `memoryMiBMax`. The trigger is earlier than CPU's because the guest's OOM
+  killer acts before memory is full. ACPI-added memory stays until the VM stops.
 
 Raises last until the VM stops; a cold boot (`resume` of a stopped lease) starts
 at `cpus` and `memoryMiB` again, with the disk at its grown size. Every grow and
 every failure goes to `<stateDir>/leases/<leaseId>/grow.log`, one timestamped
-line each. The watcher skips paused VMs and exits when its cloud-hypervisor
-exits; `release` and `stop` also stop it.
+line each; a failure that repeats is written once, then again with its count
+when it clears. The watcher skips paused VMs and exits when its cloud-hypervisor
+exits; `release` and `stop` also stop it. `resume` starts a watcher when the
+lease has none running, and never a second one.
 
 ## What is pinned
 

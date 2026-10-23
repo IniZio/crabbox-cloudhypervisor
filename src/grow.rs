@@ -9,10 +9,15 @@ use crate::vm::spec::MEMORY_BLOCK;
 pub const GIB: u64 = 1024 * 1024 * 1024;
 /// Bytes per MiB.
 pub const MIB: u64 = 1024 * 1024;
-/// CPU or memory use above this percent counts as pressure.
+/// CPU busy above this percent counts as pressure.
 pub const HOT_PERCENT: u64 = 90;
-/// Consecutive samples under pressure before a raise.
+/// Consecutive samples under CPU pressure before a raise.
 pub const SUSTAINED_SAMPLES: u32 = 3;
+/// Memory in use above this percent counts as pressure. Lower than CPU's,
+/// because the OOM killer acts before memory is full.
+pub const MEM_HOT_PERCENT: u64 = 80;
+/// Consecutive samples under memory pressure before a raise.
+pub const MEM_SUSTAINED_SAMPLES: u32 = 2;
 
 /// Cumulative CPU time from the `cpu` line of `/proc/stat`, in ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +191,7 @@ impl Planner {
     fn memory(&mut self, sample: &Sample, current: &Current) -> Option<Action> {
         let used = sample.mem_total.saturating_sub(sample.mem_avail);
         let hot = sample.mem_total > 0
-            && used.saturating_mul(100) > sample.mem_total.saturating_mul(HOT_PERCENT);
+            && used.saturating_mul(100) > sample.mem_total.saturating_mul(MEM_HOT_PERCENT);
         self.hot_mem = if hot {
             self.hot_mem.saturating_add(1)
         } else {
@@ -198,7 +203,7 @@ impl Planner {
             .saturating_mul(MIB)
             .saturating_sub(current.memory_bytes);
         let add = current.memory_bytes.min(room) / MEMORY_BLOCK * MEMORY_BLOCK;
-        if self.hot_mem < SUSTAINED_SAMPLES || add == 0 {
+        if self.hot_mem < MEM_SUSTAINED_SAMPLES || add == 0 {
             return None;
         }
         self.hot_mem = 0;

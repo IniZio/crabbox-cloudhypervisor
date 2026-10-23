@@ -186,7 +186,7 @@ fn a_calm_sample_resets_cpu_pressure() {
 }
 
 #[test]
-fn ninety_percent_exactly_is_not_pressure() {
+fn exactly_ninety_percent_cpu_and_eighty_percent_memory_are_not_pressure() {
     let mut p = settled();
     for tick in 1..=5 {
         let s = Sample {
@@ -195,7 +195,7 @@ fn ninety_percent_exactly_is_not_pressure() {
                 total: tick * 100,
             },
             mem_total: 2000 * MIB,
-            mem_avail: 200 * MIB,
+            mem_avail: 400 * MIB,
             ..calm(tick)
         };
         assert!(p.plan(&s, &NOW).is_empty());
@@ -203,17 +203,18 @@ fn ninety_percent_exactly_is_not_pressure() {
 }
 
 #[test]
-fn sustained_memory_pressure_doubles_memory_up_to_the_cap() {
+fn two_samples_over_eighty_percent_memory_double_it_up_to_the_cap() {
     let mut p = settled();
     let tight = |tick| Sample {
-        mem_avail: 100 * MIB,
+        mem_avail: 400 * MIB,
         ..calm(tick)
     };
-    for tick in 1..SUSTAINED_SAMPLES {
-        assert!(p.plan(&tight(u64::from(tick)), &NOW).is_empty());
-    }
+    assert!(
+        p.plan(&tight(1), &NOW).is_empty(),
+        "one sample is not sustained"
+    );
     assert_eq!(
-        p.plan(&tight(3), &NOW),
+        p.plan(&tight(2), &NOW),
         vec![Action::RaiseMemory {
             from: 2048 * MIB,
             to: 4096 * MIB
@@ -240,7 +241,7 @@ fn a_memory_raise_is_whole_hotplug_blocks() {
         ..calm(tick)
     };
     let mut last = Vec::new();
-    for tick in 0..u64::from(SUSTAINED_SAMPLES) {
+    for tick in 0..u64::from(MEM_SUSTAINED_SAMPLES) {
         last = p.plan(&tight(tick), &NOW);
     }
     assert_eq!(
