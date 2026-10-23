@@ -124,6 +124,36 @@ fn cleanup_reap_key_removes_only_old_stopped() {
 }
 
 #[test]
+fn cleanup_reap_key_counts_hours() {
+    let fake = Fake::default();
+    fake.add("two_hours", false);
+    fake.records
+        .borrow_mut()
+        .get_mut("two_hours")
+        .unwrap()
+        .created_at = now_unix() - 2 * 3600;
+    let kept = run_cleanup_with(&fake, false, json!({"reapStoppedAfterHours": 3})).unwrap();
+    assert_eq!(kept, "nothing to clean up");
+    let gone = run_cleanup_with(&fake, false, json!({"reapStoppedAfterHours": 1})).unwrap();
+    assert_eq!(gone, "removed 1 lease(s): two_hours");
+}
+
+#[test]
+fn list_and_cleanup_skip_reaping_a_locked_lease() {
+    let fake = Fake::default();
+    fake.add("busy", false);
+    fake.passt_set("busy");
+    fake.lock_busy("busy");
+    list(&request(Operation::List), &fake, &mut Vec::new()).unwrap();
+    run_cleanup(&fake, true).unwrap();
+    assert!(!fake.called("reap busy"));
+    fake.add("free", false);
+    fake.passt_set("free");
+    list(&request(Operation::List), &fake, &mut Vec::new()).unwrap();
+    assert!(fake.called("reap free"));
+}
+
+#[test]
 fn cleanup_rejects_bad_reap_key() {
     let fake = Fake::default();
     let err = run_cleanup_with(&fake, false, json!({"reapStoppedAfterHours": 0})).unwrap_err();

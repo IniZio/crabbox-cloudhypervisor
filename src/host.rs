@@ -116,6 +116,36 @@ pub fn pid_alive(pid: u32, comm_prefix: &str) -> bool {
         .is_ok_and(|comm| comm.trim_end().starts_with(comm_prefix))
 }
 
+/// Start time of `pid` in clock ticks since boot (field 22 of `/proc/<pid>/stat`).
+#[must_use]
+pub fn proc_start(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Identifier of the current boot; a pid means nothing across boots.
+#[must_use]
+pub fn boot_id() -> Option<String> {
+    let id = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(id.trim().to_owned())
+}
+
+/// True iff `pid` is the process recorded as `start` in boot `boot`.
+///
+/// Without a recorded start (a record from before stamps) only the comm check
+/// applies. With one, a reused pid of another process reads as dead.
+#[must_use]
+pub fn owns(pid: u32, comm_prefix: &str, start: Option<u64>, boot: Option<&str>) -> bool {
+    if !pid_alive(pid, comm_prefix) {
+        return false;
+    }
+    let Some(start) = start else {
+        return true;
+    };
+    proc_start(pid) == Some(start) && boot.is_some_and(|b| boot_id().as_deref() == Some(b))
+}
+
 /// Sends `signal` (e.g. "TERM") to `pid`; a missing process counts as success.
 pub fn kill(pid: u32, signal: &str) -> Result<(), String> {
     let output = Command::new("kill")
@@ -140,9 +170,15 @@ pub fn kill(pid: u32, signal: &str) -> Result<(), String> {
 /// A zombie child of ours counts as gone.
 #[must_use]
 pub fn wait_gone(pid: u32, comm_prefix: &str, timeout: Duration) -> bool {
+    wait_until_dead(|| pid_alive(pid, comm_prefix), timeout)
+}
+
+/// Polls every 100ms until `alive` turns false; true if that happens before `timeout`.
+#[must_use]
+pub fn wait_until_dead(alive: impl Fn() -> bool, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if !pid_alive(pid, comm_prefix) {
+        if !alive() {
             return true;
         }
         if Instant::now() >= deadline {

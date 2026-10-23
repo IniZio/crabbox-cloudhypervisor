@@ -102,9 +102,9 @@ Outbound traffic goes through passt (NAT and DNS, no inbound).
 The provider generates a per-lease ed25519 host key and injects it through
 cloud-init (sshd offers only that key). Every `acquire`, `resolve` and `resume`
 returns it as `ssh.hostKey` (`ssh-ed25519 AAAA...`, no hostname or comment), so
-it never rotates. The provider uses it for its own readiness check only.
-crabbox's external backend does not read `ssh.hostKey` today, so crabbox
-sessions keep `StrictHostKeyChecking` off and do not verify the host key.
+it never rotates. The provider uses it for its own readiness check. The crabbox
+fork (branch `moor/main`) pins `ssh.hostKey` for the lease and keeps enforcing an
+earlier pin when a response omits it; upstream crabbox ignores it.
 
 ## Pause and resume
 
@@ -121,10 +121,17 @@ Lease status is `ready` (running), `paused`, `stopped` (VM dead) or
 frozen with SIGSTOP). `resume` and non-`releaseOnly` `resolve` on an
 `unresponsive` lease fail with
 `lease <id>: cloud-hypervisor is alive but not responding` and never cold
-boot; `release` kills the process and cleans up, and `cleanup` leaves it alone. A
-`resolve` on a paused or stopped lease fails with
-`lease <id> is stopped; run crabbox resume`; a `releaseOnly` resolve still
-works so `release`, `pause` and `resume` can find it.
+boot; `release` kills the process and cleans up, and `cleanup` leaves it alone.
+`resolve` on a paused or stopped lease returns the lease with its status, which
+is what crabbox `status`, `extend` and heartbeat need; crabbox itself refuses to
+open a session on it. `acquire` of such a lease fails with
+`lease <id> is stopped; run crabbox resume`. crabbox does not know the
+`unresponsive` status, so `resolve` keeps failing for it instead of returning it.
+
+The lease record keeps each process's start time and the boot id next to its
+pid. A pid that now belongs to another process, or that survives a reboot, is
+never signalled. `list` and `cleanup` skip a lease that an operation currently
+holds, so a create or resume in flight keeps its passt.
 
 ## State and cache
 
@@ -166,4 +173,4 @@ shows them, not just `doctor finished`.
   `vm.pause`); snapshot-to-disk is future work.
 - Pause/resume needs the crabbox fork (`moor/external-pause-resume`) with
   `capabilities.pauseResume: true` in trusted user config.
-- crabbox does not verify the guest host key (see above).
+- Upstream crabbox ignores `ssh.hostKey` (see above).

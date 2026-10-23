@@ -79,6 +79,9 @@ pub trait Backend {
     /// Takes an exclusive blocking lock for the lease; released on drop.
     fn lock(&self, lease_id: &str) -> Result<LeaseLock, String>;
 
+    /// Takes the lease lock if it is free; `Ok(None)` when another process holds it.
+    fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String>;
+
     /// Creates and boots a VM; persists the record before returning.
     /// On its own failure it removes everything it made.
     fn create(&self, desired: &Desired, diag: &mut dyn Write) -> Result<LeaseRecord, String>;

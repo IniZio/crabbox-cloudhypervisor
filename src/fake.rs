@@ -32,6 +32,8 @@ pub(crate) struct Fake {
     pub(crate) passt_alive: RefCell<BTreeSet<String>>,
     /// Alive lease ids whose cloud-hypervisor does not answer.
     pub(crate) unresponsive: RefCell<BTreeSet<String>>,
+    /// Lease ids whose lock another process holds.
+    pub(crate) busy: RefCell<BTreeSet<String>>,
     /// `resume` fails.
     pub(crate) resume_fails: Cell<bool>,
 }
@@ -45,6 +47,11 @@ impl Fake {
     /// Marks an alive lease as unresponsive.
     pub(crate) fn unresponsive_set(&self, id: &str) {
         self.unresponsive.borrow_mut().insert(id.to_owned());
+    }
+
+    /// Marks a lease as locked by someone else.
+    pub(crate) fn lock_busy(&self, id: &str) {
+        self.busy.borrow_mut().insert(id.to_owned());
     }
 
     /// Marks a lease's passt as alive.
@@ -85,6 +92,9 @@ pub(crate) fn record(id: &str) -> LeaseRecord {
         ch_pid: Some(1),
         passt_pid: None,
         run_dir: PathBuf::from("/run/x"),
+        boot_id: None,
+        ch_start: None,
+        passt_start: None,
     }
 }
 
@@ -149,6 +159,13 @@ impl Backend for Fake {
 
     fn alive(&self, record: &LeaseRecord) -> bool {
         self.alive_set.borrow().contains(&record.lease_id)
+    }
+
+    fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {
+        if self.busy.borrow().contains(lease_id) {
+            return Ok(None);
+        }
+        Ok(Some(LeaseLock::none()))
     }
 
     fn lock(&self, lease_id: &str) -> Result<LeaseLock, String> {

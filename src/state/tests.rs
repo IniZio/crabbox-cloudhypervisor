@@ -14,6 +14,9 @@ fn record(id: &str) -> LeaseRecord {
         ch_pid: Some(1),
         passt_pid: None,
         run_dir: PathBuf::from("/run/x"),
+        boot_id: None,
+        ch_start: None,
+        passt_start: None,
     }
 }
 

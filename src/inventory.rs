@@ -5,7 +5,7 @@ use std::io::Write;
 
 use crate::backend::{Backend, Power};
 use crate::config::reap_stopped_after_hours;
-use crate::lease::{check_agreement, target_id};
+use crate::lease::{check_agreement, reap_if_idle, target_id};
 use crate::protocol::{LeaseRow, Request};
 use crate::state::now_unix;
 
@@ -22,7 +22,7 @@ pub fn list(
         .list()?
         .into_iter()
         .map(|r| {
-            backend.reap(&r, diag);
+            reap_if_idle(backend, &r, diag);
             LeaseRow {
                 status: backend.power(&r).status().to_owned(),
                 lease_id: r.lease_id,
@@ -79,7 +79,7 @@ pub fn cleanup(
     let now = now_unix();
     let mut ids: BTreeSet<String> = backend.orphans()?.into_iter().collect();
     for record in backend.list()? {
-        backend.reap(&record, diag);
+        reap_if_idle(backend, &record, diag);
         let old = max_age.is_some_and(|max| now.saturating_sub(record.created_at) > max);
         if old && backend.power(&record) == Power::Stopped {
             ids.insert(record.lease_id);
