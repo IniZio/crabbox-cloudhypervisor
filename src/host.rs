@@ -133,17 +133,16 @@ pub fn boot_id() -> Option<String> {
 
 /// True iff `pid` is the process recorded as `start` in boot `boot`.
 ///
-/// Without a recorded start (a record from before stamps) only the comm check
-/// applies. With one, a reused pid of another process reads as dead.
+/// A record without a start time or boot id never matches, so its pid is never
+/// signalled.
 #[must_use]
 pub fn owns(pid: u32, comm_prefix: &str, start: Option<u64>, boot: Option<&str>) -> bool {
-    if !pid_alive(pid, comm_prefix) {
+    let (Some(start), Some(boot)) = (start, boot) else {
         return false;
-    }
-    let Some(start) = start else {
-        return true;
     };
-    proc_start(pid) == Some(start) && boot.is_some_and(|b| boot_id().as_deref() == Some(b))
+    pid_alive(pid, comm_prefix)
+        && proc_start(pid) == Some(start)
+        && boot_id().as_deref() == Some(boot)
 }
 
 /// Sends `signal` (e.g. "TERM") to `pid`; a missing process counts as success.
