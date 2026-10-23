@@ -62,9 +62,15 @@ All keys go under `external.config`. All are optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cpus` | `2` | vCPUs (1-64). All are booted; idle vCPUs cost almost nothing, so set boot = the most you want a Box to use |
-| `memoryMiB` | `4096` | guest memory ceiling, at least 512. Memory the guest frees is returned to the host, so a high value costs nothing while idle |
-| `diskGiB` | `20` | guest disk size, at least 8 |
+| `cpus` | `2` | vCPUs the guest boots with (1-64) |
+| `cpusMax` | `2 × cpus`, at most 64 | most vCPUs the guest is raised to under sustained CPU pressure (`cpus`-64) |
+| `memoryMiB` | `4096` | memory the guest boots with, at least 512. Memory the guest frees is returned to the host |
+| `memoryMiBMax` | `2 × memoryMiB` | most memory the guest is raised to under sustained memory pressure (at least `memoryMiB`) |
+| `diskGiB` | `20` | guest disk size at create, at least 8 |
+| `diskMaxGiB` | `100`, or `diskGiB` if larger | largest the disk grows to (at least `diskGiB`) |
+| `diskGrowStepGiB` | `10` | GiB added per disk grow (at least 1) |
+| `diskGrowFreePercent` | `15` | grow when free space on `/` falls below this percent of its size (1-90)... |
+| `diskGrowFreeGiB` | `4` | ...or below this many GiB, whichever is larger |
 | `readyTimeoutSeconds` | `300` | wait for the guest to become ready (1-3600) |
 | `stateDir` | `$XDG_STATE_HOME/crabbox-cloudhypervisor` | per-lease state (absolute path) |
 | `runtimeDir` | `$XDG_RUNTIME_DIR/crabbox-cloudhypervisor`, else `<stateDir>/run` | unix sockets (absolute path, at most 85 bytes) |
@@ -75,6 +81,31 @@ All keys go under `external.config`. All are optional.
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
+
+## Growth while a Box runs
+
+Every lease runs a watcher process (`crabbox-cloudhypervisor watch <leaseId>
+--state-dir <dir>`) next to its cloud-hypervisor. Every 10 seconds it reads the
+guest over ssh (root fs size and free space, `/proc/stat`, `/proc/meminfo`,
+`nproc`) and grows what is short, without a reboot:
+
+- **Disk.** When free space on `/` falls below the floor, `vm.resize-disk` grows
+  the image by `diskGrowStepGiB` (never past `diskMaxGiB`), then the guest runs
+  `growpart` and `resize2fs` on the root partition. If that guest step fails, the
+  watcher retries it before it grows the image again.
+- **vCPUs.** The VM boots with `max_vcpus = cpusMax`. After 3 samples in a row
+  (30 seconds) above 90% CPU busy, `vm.resize` doubles the vCPU count, up to
+  `cpusMax`. A udev rule from the seed brings the new vCPUs online.
+- **Memory.** The VM boots with `hotplug_size` = `memoryMiBMax - memoryMiB`
+  (ACPI hotplug). After 3 samples in a row above 90% memory in use (from
+  `MemAvailable`), `vm.resize` doubles memory in whole 128 MiB blocks, up to
+  `memoryMiBMax`. ACPI-added memory stays until the VM stops.
+
+Raises last until the VM stops; a cold boot (`resume` of a stopped lease) starts
+at `cpus` and `memoryMiB` again, with the disk at its grown size. Every grow and
+every failure goes to `<stateDir>/leases/<leaseId>/grow.log`, one timestamped
+line each. The watcher skips paused VMs and exits when its cloud-hypervisor
+exits; `release` and `stop` also stop it.
 
 ## What is pinned
 
@@ -136,13 +167,13 @@ holds, so a create or resume in flight keeps its passt.
 ## State and cache
 
 - Leases: `<stateDir>/leases/<leaseId>/` (lease.json, disk, seed image, SSH key,
-  console log).
+  console log, watch.json, grow.log).
 - Sockets: `<runtimeDir>/<12-hex hash of the lease id>/` (`a`, `v`, `p`,
   `p.repair`).
 - Downloads and the converted base image: `<cacheDir>`.
 
-`release` removes the lease directory. `cloud-hypervisor` and `passt` processes
-run detached per lease and are stopped on release. Only `release` destroys a
+`release` removes the lease directory. `cloud-hypervisor`, `passt` and the
+growth watcher run detached per lease and are stopped on release. Only `release` destroys a
 lease.
 
 `cleanup` never deletes stopped or paused leases. It reaps orphan `passt`
@@ -167,6 +198,8 @@ shows them, not just `doctor finished`.
 ## Limitations
 
 - amd64 only.
+- Disk growth assumes an ext4 root on a partition (`growpart` + `resize2fs`), as
+  in the pinned Ubuntu image. Disks and vCPUs only grow; they never shrink.
 - Leases are not stopped on a timer by the provider. Release them with
   `crabbox stop`.
 - Pause keeps the guest RAM allocated on the host (cloud-hypervisor
