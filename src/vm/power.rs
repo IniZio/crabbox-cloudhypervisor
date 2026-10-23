@@ -70,6 +70,7 @@ impl RealBackend {
 
     /// Stops cloud-hypervisor and passt for a record.
     pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) {
+        Self::note_unstamped(record, diag);
         if let Some(pid) = record.ch_pid {
             let alive = || Self::ch_alive(record);
             if record.api_socket().exists() && alive() && Self::stop_via_api(record, diag) {
@@ -164,6 +165,20 @@ impl RealBackend {
             .is_some_and(|pid| host::owns(pid, CH_COMM, record.ch_start, record.boot_id.as_deref()))
     }
 
+    /// Notes that a record names pids it cannot verify, so none is signalled.
+    fn note_unstamped(record: &LeaseRecord, diag: &mut dyn Write) {
+        let unverifiable = (record.ch_pid.is_some() && record.ch_start.is_none())
+            || (record.passt_pid.is_some() && record.passt_start.is_none())
+            || record.boot_id.is_none();
+        if unverifiable && (record.ch_pid.is_some() || record.passt_pid.is_some()) {
+            let _ = writeln!(
+                diag,
+                "lease {}: record has no process start time or boot id; treating it as another boot",
+                record.lease_id
+            );
+        }
+    }
+
     /// True iff the record's passt process is alive and is the one recorded.
     fn passt_alive(record: &LeaseRecord) -> bool {
         record.passt_pid.is_some_and(|pid| {
@@ -253,6 +268,7 @@ impl RealBackend {
         if record.ch_pid.is_none() || Self::ch_alive(record) {
             return;
         }
+        Self::note_unstamped(record, diag);
         for name in ["a", "p", "p.repair", "v"] {
             let _ = fs::remove_file(record.run_dir.join(name));
         }

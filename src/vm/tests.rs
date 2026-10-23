@@ -294,7 +294,9 @@ fn live_fixture(dir: &Path, ch: Option<&FakeCh>) -> (RealBackend, LeaseRecord) {
     rec.run_dir = dir.join("r");
     std::fs::create_dir_all(&rec.run_dir).unwrap();
     std::fs::write(rec.run_dir.join("marker"), "").unwrap();
-    rec.ch_pid = ch.map(|c| c.child.id());
+    if let Some(ch) = ch {
+        rec.set_ch_pid(ch.child.id());
+    }
     (backend, rec)
 }
 
@@ -518,4 +520,23 @@ fn guest_secrets_are_written_with_mode_0600() {
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(backend.store.known_hosts_path("a")), 0o600);
     assert_eq!(mode(backend.store.host_key_path("a")), 0o600);
+}
+
+#[test]
+fn a_record_without_start_times_is_never_signalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (passt, _, mut rec) = stamped_passt(dir.path());
+    rec.set_ch_pid(ch.child.id());
+    rec.ch_start = None;
+    rec.passt_start = None;
+    rec.boot_id = None;
+    assert!(!RealBackend::ch_alive(&rec));
+    let mut diag = Vec::new();
+    RealBackend::stop_processes(&rec, &mut diag);
+    RealBackend::reap_orphan_passt(&rec, &mut diag);
+    assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
+    assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
+    let log = String::from_utf8(diag).unwrap();
+    assert!(log.contains("treating it as another boot"), "{log}");
 }
