@@ -124,6 +124,7 @@ pub fn build_lease(record: &LeaseRecord, status: &str, backend: &dyn Backend) ->
             ready_check: backend::READY_CHECK.to_owned(),
             host_key: backend.host_key(id).unwrap_or_default(),
         },
+        growth_blocked: backend.growth_blocked(id),
     }
 }
 

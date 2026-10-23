@@ -4,29 +4,24 @@
 //! to change, applies it through the cloud-hypervisor API and logs each grow
 //! and each failure. It exits when the lease's cloud-hypervisor exits.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::ch::ChClient;
 use crate::config::Growth;
 use crate::grow::{Action, CpuTimes, Current, Planner, Sample, GIB, MIB};
-use crate::ready::ReadyProbe;
-use crate::state::{self, LeaseRecord, Store};
-use crate::vm::spec;
+
+mod log;
+mod real;
+
+pub use log::Log;
+pub use real::run;
 
 /// Time between samples.
 pub const INTERVAL: Duration = Duration::from_secs(10);
 /// Wait after a raise before reading what the guest sees.
-const SETTLE: Duration = Duration::from_secs(2);
-/// Longest a sample may take.
-const SAMPLE_LIMIT: Duration = Duration::from_secs(30);
-/// Longest a partition and filesystem grow may take.
-const GROW_FS_LIMIT: Duration = Duration::from_secs(120);
+pub const SETTLE: Duration = Duration::from_secs(2);
 
 /// Guest command printing root fs size and free bytes, CPU and memory counters.
 pub const SAMPLE_SCRIPT: &str =
@@ -58,23 +53,26 @@ pub struct WatchSpec {
     pub ssh: PathBuf,
 }
 
-/// What the watcher needs from the VMM and the guest; tests fake it.
+/// What the watcher needs from the VMM, the host and the guest; tests fake it.
 pub trait Machine {
+    /// True while the lease's cloud-hypervisor process lives.
+    fn alive(&self) -> bool;
+    /// True while the VM runs (not paused).
+    fn running(&self) -> bool;
     /// Sizes the VMM currently gives the guest.
     fn current(&self) -> Result<Current, String>;
     /// One reading of the guest.
     fn sample(&self) -> Result<Sample, String>;
+    /// Bytes free on the host filesystem that holds the disk image.
+    fn host_free(&self) -> Result<u64, String>;
+    /// Records why the disk cannot grow (`None` clears it) for the lease status.
+    fn set_blocked(&self, reason: Option<&str>);
     /// Grows the root disk image to `bytes` while the VM runs.
     fn grow_disk(&self, bytes: u64) -> Result<(), String>;
     /// Grows the root partition and filesystem; returns the new fs size, bytes.
     fn grow_fs(&self) -> Result<u64, String>;
     /// Sets the vCPU count or memory size.
     fn resize(&self, vcpus: Option<u32>, ram_bytes: Option<u64>) -> Result<(), String>;
-}
-
-/// Writes one timestamped log line.
-fn note(log: &mut dyn Write, message: &str) {
-    let _ = writeln!(log, "{} {message}", state::now_unix());
 }
 
 /// Bytes as GiB with one decimal.
@@ -89,37 +87,28 @@ pub fn tick(
     planner: &mut Planner,
     machine: &dyn Machine,
     settle: Duration,
-    log: &mut dyn Write,
+    log: &mut Log<'_>,
 ) -> Result<(), String> {
     let current = machine.current()?;
     let sample = machine.sample()?;
     for action in planner.plan(&sample, &current) {
         match action {
-            Action::GrowDisk { from, to } => match machine.grow_disk(to) {
-                Ok(()) => note(log, &format!("grew disk {} -> {}", gib(from), gib(to))),
-                Err(e) => note(
-                    log,
-                    &format!("grow failed: disk {} -> {}: {e}", gib(from), gib(to)),
-                ),
-            },
+            Action::GrowDisk { from, to } => grow_disk(machine, from, to, log),
             Action::GrowFs => match machine.grow_fs() {
                 Ok(size) => {
                     planner.fs_grown(true);
-                    note(log, &format!("root filesystem fills the disk: {}", gib(size)));
+                    log.note(&format!("root filesystem fills the disk: {}", gib(size)));
                 }
                 Err(e) => {
                     planner.fs_grown(false);
-                    note(log, &format!("grow failed: root filesystem: {e}"));
+                    log.fail(format!("grow failed: root filesystem: {e}"));
                 }
             },
-            Action::DiskAtMax { max } => note(
-                log,
-                &format!(
-                    "root filesystem low on space ({} free) and disk at diskMaxGiB ({}); not growing",
-                    gib(sample.fs_avail),
-                    gib(max)
-                ),
-            ),
+            Action::DiskAtMax { max } => log.note(&format!(
+                "root filesystem low on space ({} free) and disk at diskMaxGiB ({}); not growing",
+                gib(sample.fs_avail),
+                gib(max)
+            )),
             Action::RaiseCpus { from, to } => raise_cpus(machine, from, to, settle, log),
             Action::RaiseMemory { from, to } => raise_memory(machine, from, to, settle, log),
         }
@@ -127,42 +116,66 @@ pub fn tick(
     Ok(())
 }
 
+/// Grows the disk image when the host filesystem has room for the whole step;
+/// a sparse grow past the host's free space would fail later as guest I/O errors.
+fn grow_disk(machine: &dyn Machine, from: u64, to: u64, log: &mut Log<'_>) {
+    let need = to.saturating_sub(from);
+    match machine.host_free() {
+        Ok(free) if free >= need => machine.set_blocked(None),
+        Ok(_) => {
+            let reason = format!(
+                "host filesystem holding the disk has under {} free; disk stays at {}",
+                gib(need),
+                gib(from)
+            );
+            machine.set_blocked(Some(&reason));
+            log.fail(format!("grow failed: {reason}"));
+            return;
+        }
+        Err(e) => {
+            log.fail(format!("grow failed: cannot read host free space: {e}"));
+            return;
+        }
+    }
+    match machine.grow_disk(to) {
+        Ok(()) => log.note(&format!("grew disk {} -> {}", gib(from), gib(to))),
+        Err(e) => log.fail(format!(
+            "grow failed: disk {} -> {}: {e}",
+            gib(from),
+            gib(to)
+        )),
+    }
+}
+
 /// Raises vCPUs and checks the guest brought them online.
-fn raise_cpus(machine: &dyn Machine, from: u32, to: u32, settle: Duration, log: &mut dyn Write) {
+fn raise_cpus(machine: &dyn Machine, from: u32, to: u32, settle: Duration, log: &mut Log<'_>) {
     if let Err(e) = machine.resize(Some(to), None) {
-        note(log, &format!("grow failed: vCPUs {from} -> {to}: {e}"));
+        log.fail(format!("grow failed: vCPUs {from} -> {to}: {e}"));
         return;
     }
     std::thread::sleep(settle);
     match machine.sample() {
-        Ok(s) if s.online_cpus >= to => {
-            note(
-                log,
-                &format!("raised vCPUs {from} -> {to}; guest sees {}", s.online_cpus),
-            );
-        }
-        Ok(s) => note(
-            log,
-            &format!(
-                "grow failed: raised vCPUs {from} -> {to} but the guest has {} online",
-                s.online_cpus
-            ),
-        ),
-        Err(e) => note(
-            log,
-            &format!("raised vCPUs {from} -> {to}; cannot read the guest: {e}"),
-        ),
+        Ok(s) if s.online_cpus >= to => log.note(&format!(
+            "raised vCPUs {from} -> {to}; guest sees {}",
+            s.online_cpus
+        )),
+        Ok(s) => log.fail(format!(
+            "grow failed: raised vCPUs {from} -> {to} but the guest has {} online",
+            s.online_cpus
+        )),
+        Err(e) => log.note(&format!(
+            "raised vCPUs {from} -> {to}; cannot read the guest: {e}"
+        )),
     }
 }
 
 /// Raises memory and reports what the guest now sees.
-fn raise_memory(machine: &dyn Machine, from: u64, to: u64, settle: Duration, log: &mut dyn Write) {
+fn raise_memory(machine: &dyn Machine, from: u64, to: u64, settle: Duration, log: &mut Log<'_>) {
     let (from_mib, to_mib) = (from / MIB, to / MIB);
     if let Err(e) = machine.resize(None, Some(to)) {
-        note(
-            log,
-            &format!("grow failed: memory {from_mib} -> {to_mib} MiB: {e}"),
-        );
+        log.fail(format!(
+            "grow failed: memory {from_mib} -> {to_mib} MiB: {e}"
+        ));
         return;
     }
     std::thread::sleep(settle);
@@ -170,10 +183,7 @@ fn raise_memory(machine: &dyn Machine, from: u64, to: u64, settle: Duration, log
         |e| format!("cannot read the guest: {e}"),
         |s| format!("guest MemTotal {} MiB", s.mem_total / MIB),
     );
-    note(
-        log,
-        &format!("raised memory {from_mib} -> {to_mib} MiB; {seen}"),
-    );
+    log.note(&format!("raised memory {from_mib} -> {to_mib} MiB; {seen}"));
 }
 
 /// Parses [`SAMPLE_SCRIPT`] output.
@@ -221,112 +231,32 @@ pub fn parse_sample(text: &str) -> Result<Sample, String> {
     })
 }
 
-/// The live VMM and guest of one lease.
-struct RealMachine {
-    /// cloud-hypervisor API.
-    client: ChClient,
-    /// ssh into the guest.
-    ssh: ReadyProbe,
-    /// Root disk image.
-    disk: PathBuf,
-}
-
-impl Machine for RealMachine {
-    fn current(&self) -> Result<Current, String> {
-        let info = self.client.info()?;
-        let field = |path: &str| {
-            info.pointer(path)
-                .and_then(Value::as_u64)
-                .ok_or_else(|| format!("cloud-hypervisor vm.info: missing {path}"))
-        };
-        Ok(Current {
-            disk_bytes: fs::metadata(&self.disk)
-                .map_err(|e| format!("stat root disk: {e}"))?
-                .len(),
-            vcpus: u32::try_from(field("/config/cpus/boot_vcpus")?)
-                .map_err(|_| "cloud-hypervisor vm.info: vcpus out of range".to_owned())?,
-            memory_bytes: field("/config/memory/size")?,
-        })
-    }
-
-    fn sample(&self) -> Result<Sample, String> {
-        parse_sample(&self.ssh.output(SAMPLE_SCRIPT, SAMPLE_LIMIT)?)
-    }
-
-    fn grow_disk(&self, bytes: u64) -> Result<(), String> {
-        self.client.resize_disk(spec::ROOT_DISK_ID, bytes)
-    }
-
-    fn grow_fs(&self) -> Result<u64, String> {
-        let out = self.ssh.output(GROW_FS_SCRIPT, GROW_FS_LIMIT)?;
-        out.trim()
-            .parse()
-            .map_err(|_| "grow fs: cannot read the new size".to_owned())
-    }
-
-    fn resize(&self, vcpus: Option<u32>, ram_bytes: Option<u64>) -> Result<(), String> {
-        self.client.resize(vcpus, ram_bytes)
-    }
-}
-
-/// Runs the watcher for `lease_id` until its cloud-hypervisor exits.
-pub fn run(lease_id: &str, state_dir: &Path, log: &mut dyn Write) -> Result<(), String> {
-    state::validate_lease_id(lease_id)?;
-    let store = Store::new(state_dir);
-    let record = store
-        .read(lease_id)?
-        .ok_or_else(|| format!("lease {lease_id} not found"))?;
-    let text =
-        fs::read(store.watch_spec_path(lease_id)).map_err(|e| format!("read watch spec: {e}"))?;
-    let watch: WatchSpec =
-        serde_json::from_slice(&text).map_err(|e| format!("parse watch spec: {e}"))?;
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate adapter binary: {e}"))?;
-    let machine = RealMachine {
-        client: ChClient::new(&record.api_socket()),
-        ssh: spec::guest_ssh(&watch.ssh, &store, &exe, state_dir, lease_id),
-        disk: store.disk_path(lease_id),
-    };
-    let g = watch.growth;
-    note(
-        log,
-        &format!(
-            "watching {lease_id}: disk up to {} GiB, vCPUs up to {}, memory up to {} MiB",
-            g.disk_max_gib, g.cpus_max, g.memory_mib_max
-        ),
-    );
-    watch_loop(&record, &machine, &mut Planner::new(g), log);
-    Ok(())
-}
-
-/// Ticks while the VM lives; a read failure is logged once until it clears.
-fn watch_loop(
-    record: &LeaseRecord,
+/// Ticks while the VM lives, skipping while it is paused. Failures are
+/// counted per distinct message; a read failure before the guest was first
+/// reached (boot) is not one.
+pub fn watch_loop(
     machine: &dyn Machine,
     planner: &mut Planner,
-    log: &mut dyn Write,
+    interval: Duration,
+    settle: Duration,
+    log: &mut Log<'_>,
 ) {
-    let client = ChClient::new(&record.api_socket()).with_timeout(Duration::from_secs(5));
-    let (mut reached, mut failing) = (false, None::<String>);
-    while crate::vm::RealBackend::ch_alive(record) {
-        if client.state().as_deref() == Ok("Running") {
-            match tick(planner, machine, SETTLE, log) {
+    let mut reached = false;
+    while machine.alive() {
+        if machine.running() {
+            match tick(planner, machine, settle, log) {
                 Ok(()) => {
-                    if failing.take().is_some() && reached {
-                        note(log, "guest readable again");
-                    }
                     reached = true;
+                    log.end_tick();
                 }
-                Err(e) => {
-                    if reached && failing.as_ref() != Some(&e) {
-                        note(log, &format!("grow check failed: {e}"));
-                    }
-                    failing = Some(e);
-                }
+                Err(e) if reached => log.fail(format!("grow check failed: {e}")),
+                Err(_) => {}
             }
         }
-        std::thread::sleep(INTERVAL);
+        std::thread::sleep(interval);
     }
-    note(log, "cloud-hypervisor exited; watcher stops");
+    log.finish();
+    log.note("cloud-hypervisor exited; watcher stops");
 }
 
 #[cfg(test)]

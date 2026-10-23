@@ -200,11 +200,14 @@ impl RealBackend {
     ) -> Result<(), String> {
         let current = self.store.read(&record.lease_id)?;
         let record = current.as_ref().unwrap_or(record);
-        if !self.bring_up(record, diag)? {
-            return Ok(());
+        let changed = self.bring_up(record, diag)?;
+        let now = self.store.read(&record.lease_id)?;
+        let now = now.as_ref().unwrap_or(record);
+        self.ensure_watcher(now, diag)?;
+        if changed {
+            self.wait_ready(now, diag)?;
         }
-        let booted = self.store.read(&record.lease_id)?;
-        self.wait_ready(booted.as_ref().unwrap_or(record), diag)
+        Ok(())
     }
 
     /// Resumes or cold boots; false means the VM already ran and nothing changed.

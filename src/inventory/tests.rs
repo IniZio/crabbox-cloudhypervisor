@@ -193,3 +193,22 @@ fn unresponsive_lists_releases_and_survives_cleanup() {
     run_release(&fake, &lease_request(Operation::Release, "u1")).unwrap();
     assert!(fake.called("destroy:u1"));
 }
+
+#[test]
+fn list_and_resolve_report_a_blocked_disk_grow() {
+    let fake = Fake::default();
+    fake.add("a1", true);
+    fake.add("b2", true);
+    let why = "host filesystem holding the disk has under 10.0 GiB free; disk stays at 20.0 GiB";
+    fake.blocked
+        .borrow_mut()
+        .insert("a1".to_owned(), why.to_owned());
+    let rows = list(&request(Operation::List), &fake, &mut std::io::sink()).unwrap();
+    let blocked: Vec<&str> = rows.iter().map(|r| r.growth_blocked.as_str()).collect();
+    assert_eq!(blocked, [why, ""]);
+    let json = crate::protocol::leases_response(&rows);
+    assert_eq!(json.matches("\"growthBlocked\"").count(), 1, "{json}");
+    let record = fake.find("a1").unwrap().unwrap();
+    let lease = crate::lease::build_lease(&record, "ready", &fake);
+    assert!(crate::protocol::lease_response(&lease).contains(why));
+}

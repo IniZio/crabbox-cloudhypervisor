@@ -15,7 +15,7 @@ use crate::protocol::Desired;
 use crate::state::LeaseRecord;
 
 /// A config rooted in `root` that points every tool at `/bin/false`.
-fn config(root: &Path) -> Config {
+pub(super) fn config(root: &Path) -> Config {
     let tool = PathBuf::from("/bin/false");
     Config {
         state_dir: root.join("state"),
@@ -52,7 +52,7 @@ fn config(root: &Path) -> Config {
 }
 
 /// A record for lease `id` with its run dir in `/r/<id>`.
-fn record(id: &str) -> LeaseRecord {
+pub(super) fn record(id: &str) -> LeaseRecord {
     LeaseRecord {
         lease_id: id.to_owned(),
         slug: "slug".to_owned(),

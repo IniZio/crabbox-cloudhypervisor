@@ -284,6 +284,10 @@ impl Backend for RealBackend {
         self.read_host_key(lease_id)
     }
 
+    fn growth_blocked(&self, lease_id: &str) -> String {
+        fs::read_to_string(self.store.grow_blocked_path(lease_id)).unwrap_or_default()
+    }
+
     fn reap(&self, record: &LeaseRecord, diag: &mut dyn Write) {
         Self::reap_orphan_passt(record, diag);
     }

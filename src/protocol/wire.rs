@@ -39,6 +39,9 @@ pub struct Lease {
     pub status: String,
     /// SSH connection details.
     pub ssh: Ssh,
+    /// Why the disk cannot grow, when something blocks it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub growth_blocked: String,
 }
 
 /// One inventory row reported by list.
@@ -55,4 +58,7 @@ pub struct LeaseRow {
     pub cloud_id: String,
     /// Lease status.
     pub status: String,
+    /// Why the disk cannot grow, when something blocks it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub growth_blocked: String,
 }

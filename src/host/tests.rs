@@ -91,3 +91,19 @@ fn wait_gone_times_out_for_live_process() {
         Duration::from_millis(250)
     ));
 }
+
+#[test]
+fn free_bytes_matches_df_for_the_same_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let ours = free_bytes(dir.path()).unwrap();
+    let out = Command::new("df")
+        .args(["-B1", "--output=avail"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let df: u64 = text.lines().last().unwrap().trim().parse().unwrap();
+    let slack = 64 * 1024 * 1024;
+    assert!(ours.abs_diff(df) < slack, "stat {ours} vs df {df}");
+    assert!(free_bytes(Path::new("/no/such/dir")).is_err());
+}
