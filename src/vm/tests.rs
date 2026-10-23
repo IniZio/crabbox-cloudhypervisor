@@ -24,6 +24,14 @@ fn config(root: &Path) -> Config {
         cpus: 2,
         memory_mib: 4096,
         disk_gib: 20,
+        growth: crate::config::Growth {
+            cpus_max: 4,
+            memory_mib_max: 8192,
+            disk_max_gib: 100,
+            disk_step_gib: 10,
+            disk_free_percent: 15,
+            disk_free_gib: 4,
+        },
         image: Asset {
             url: "https://example.invalid/i.img".to_owned(),
             sha256: "0123456789abcdef0123".to_owned(),
@@ -57,6 +65,8 @@ fn record(id: &str) -> LeaseRecord {
         boot_id: None,
         ch_start: None,
         passt_start: None,
+        watch_pid: None,
+        watch_start: None,
     }
 }
 
@@ -74,12 +84,12 @@ fn vm_config_has_the_spike_shape() {
         &rec,
     );
     let want = json!({
-        "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
-        "memory": {"size": 4_294_967_296_u64, "shared": true},
+        "cpus": {"boot_vcpus": 2, "max_vcpus": 4},
+        "memory": {"size": 4_294_967_296_u64, "shared": true, "hotplug_size": 4_294_967_296_u64},
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": "/fw.fd"},
         "disks": [
-            {"path": "/d.raw", "image_type": "Raw", "readonly": false},
+            {"id": "root", "path": "/d.raw", "image_type": "Raw", "readonly": false},
             {"path": "/s.img", "image_type": "Raw", "readonly": true},
         ],
         "net": [{
@@ -93,6 +103,34 @@ fn vm_config_has_the_spike_shape() {
         "console": {"mode": "Off"},
     });
     assert_eq!(got, want);
+}
+
+/// `vm_config` for a config changed by `edit`.
+fn vm_config_with(edit: impl FnOnce(&mut Config)) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path());
+    edit(&mut cfg);
+    let p = Path::new("/x");
+    spec::vm_config(&cfg, p, p, p, p, &record("abc"))
+}
+
+#[test]
+fn vm_config_reserves_hotplug_memory_in_whole_blocks() {
+    let got = vm_config_with(|c| c.growth.memory_mib_max = 4096 + 200);
+    assert_eq!(
+        got.pointer("/memory/hotplug_size"),
+        Some(&json!(256_u64 * 1024 * 1024))
+    );
+}
+
+#[test]
+fn vm_config_without_headroom_boots_fixed_size() {
+    let got = vm_config_with(|c| {
+        c.growth.memory_mib_max = 4096;
+        c.growth.cpus_max = 2;
+    });
+    assert_eq!(got.pointer("/memory/hotplug_size"), None);
+    assert_eq!(got.pointer("/cpus/max_vcpus"), Some(&json!(2)));
 }
 
 #[test]

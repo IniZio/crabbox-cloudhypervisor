@@ -121,24 +121,24 @@ impl ReadyProbe {
 
     /// Runs one ssh attempt; returns success and the last stderr line.
     fn attempt(&self, limit: Duration) -> (bool, String) {
-        let spawned = Command::new(&self.ssh)
-            .args(self.args(READY_REMOTE))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn();
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(error) => return (false, format!("cannot run ssh: {}", error.kind())),
-        };
-        let (sender, receiver) = mpsc::channel();
-        if let Some(mut stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                let _ = stderr.read_to_string(&mut text);
-                let _ = sender.send(text);
-            });
+        match self.output(READY_REMOTE, limit) {
+            Ok(_) => (true, String::new()),
+            Err(error) => (false, error),
         }
+    }
+
+    /// Runs `remote` once, killed after `limit`; stdout on exit 0, else the
+    /// last stderr line.
+    pub fn output(&self, remote: &str, limit: Duration) -> Result<String, String> {
+        let mut child = Command::new(&self.ssh)
+            .args(self.args(remote))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("cannot run ssh: {}", error.kind()))?;
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
         let started = Instant::now();
         let success = loop {
             match child.try_wait() {
@@ -151,11 +151,29 @@ impl ReadyProbe {
                 }
             }
         };
-        let text = receiver
-            .recv_timeout(Duration::from_millis(500))
-            .unwrap_or_default();
-        (success, last_line(&text))
+        let collect = |r: mpsc::Receiver<String>| {
+            r.recv_timeout(Duration::from_millis(500))
+                .unwrap_or_default()
+        };
+        if success {
+            Ok(collect(stdout))
+        } else {
+            Err(last_line(&collect(stderr)))
+        }
     }
+}
+
+/// Reads a child pipe to the end on its own thread.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    if let Some(mut pipe) = pipe {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text);
+            let _ = sender.send(text);
+        });
+    }
+    receiver
 }
 
 /// Last non-empty line, trimmed and cut to `STDERR_MAX` characters.

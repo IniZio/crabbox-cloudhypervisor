@@ -25,6 +25,14 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         cpus: 2,
         memory_mib: 4096,
         disk_gib: 20,
+        growth: crate::config::Growth {
+            cpus_max: 4,
+            memory_mib_max: 8192,
+            disk_max_gib: 100,
+            disk_step_gib: 10,
+            disk_free_percent: 15,
+            disk_free_gib: 4,
+        },
         image: Asset {
             url: IMAGE_URL.to_owned(),
             sha256: IMAGE_SHA256.to_owned(),
@@ -135,6 +143,11 @@ fn overrides_apply() {
         cpus: 8,
         memory_mib: 1024,
         disk_gib: 40,
+        growth: Growth {
+            cpus_max: 16,
+            memory_mib_max: 2048,
+            ..expected("/s", "/r", "/c").growth
+        },
         image: asset("https://i/x"),
         firmware: asset("https://f/x"),
         cloud_hypervisor: PathBuf::from("/b/ch"),
@@ -147,6 +160,61 @@ fn overrides_apply() {
         ..expected("/s", "/r", "/c")
     };
     assert_eq!(parse(&cfg, &[]).unwrap(), want);
+}
+
+#[test]
+fn growth_caps_default_to_double_the_boot_size_and_a_100_gib_disk() {
+    let c = parse(&json!({"cpus": 3, "memoryMiB": 1024, "diskGiB": 10}), HOME).unwrap();
+    assert_eq!(
+        c.growth,
+        Growth {
+            cpus_max: 6,
+            memory_mib_max: 2048,
+            disk_max_gib: 100,
+            disk_step_gib: 10,
+            disk_free_percent: 15,
+            disk_free_gib: 4,
+        }
+    );
+    let big = parse(&json!({"cpus": 40, "diskGiB": 200}), HOME).unwrap();
+    assert_eq!((big.growth.cpus_max, big.growth.disk_max_gib), (64, 200));
+}
+
+#[test]
+fn growth_keys_override_the_defaults() {
+    let cfg = json!({
+        "cpusMax": 12, "memoryMiBMax": 65536, "diskMaxGiB": 500,
+        "diskGrowStepGiB": 25, "diskGrowFreePercent": 5, "diskGrowFreeGiB": 0
+    });
+    let want = Growth {
+        cpus_max: 12,
+        memory_mib_max: 65536,
+        disk_max_gib: 500,
+        disk_step_gib: 25,
+        disk_free_percent: 5,
+        disk_free_gib: 0,
+    };
+    assert_eq!(parse(&cfg, HOME).unwrap().growth, want);
+}
+
+#[test]
+fn a_growth_cap_below_the_boot_size_is_rejected() {
+    for (cfg, key) in [
+        (json!({"cpus": 4, "cpusMax": 3}), "cpusMax"),
+        (
+            json!({"memoryMiB": 4096, "memoryMiBMax": 2048}),
+            "memoryMiBMax",
+        ),
+        (json!({"diskGiB": 40, "diskMaxGiB": 30}), "diskMaxGiB"),
+        (json!({"diskGrowStepGiB": 0}), "diskGrowStepGiB"),
+        (json!({"diskGrowFreePercent": 91}), "diskGrowFreePercent"),
+    ] {
+        let e = err_for(&cfg);
+        assert!(
+            e.starts_with(&format!("config.{key} must be an integer")),
+            "{e}"
+        );
+    }
 }
 
 #[test]

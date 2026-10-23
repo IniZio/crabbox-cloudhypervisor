@@ -24,7 +24,7 @@ type Step = fn(&ChClient) -> Result<(), String>;
 
 /// Sends TERM, then KILL if the process outlives `grace`; `alive` says whether
 /// `pid` is still the recorded process.
-fn terminate(pid: u32, alive: impl Fn() -> bool, grace: Duration, diag: &mut dyn Write) {
+pub(super) fn terminate(pid: u32, alive: impl Fn() -> bool, grace: Duration, diag: &mut dyn Write) {
     if !alive() {
         return;
     }
@@ -71,6 +71,7 @@ impl RealBackend {
     /// Stops cloud-hypervisor and passt for a record.
     pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) {
         Self::note_unstamped(record, diag);
+        Self::stop_watcher(record, diag);
         if let Some(pid) = record.ch_pid {
             let alive = || Self::ch_alive(record);
             if record.api_socket().exists() && alive() && Self::stop_via_api(record, diag) {
@@ -159,7 +160,7 @@ impl RealBackend {
     }
 
     /// True iff the record's cloud-hypervisor process is alive.
-    pub(super) fn ch_alive(record: &LeaseRecord) -> bool {
+    pub(crate) fn ch_alive(record: &LeaseRecord) -> bool {
         record
             .ch_pid
             .is_some_and(|pid| host::owns(pid, CH_COMM, record.ch_start, record.boot_id.as_deref()))
@@ -255,7 +256,8 @@ impl RealBackend {
         let firmware = spec::firmware_cache_path(&self.config);
         let started = self
             .start_processes(&mut record, diag)
-            .and_then(|()| self.boot_vm(&record, &firmware, diag));
+            .and_then(|()| self.boot_vm(&record, &firmware, diag))
+            .and_then(|()| self.start_watcher(&mut record, diag));
         if started.is_err() {
             Self::stop_processes(&record, diag);
         }

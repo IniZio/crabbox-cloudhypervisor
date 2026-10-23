@@ -22,6 +22,12 @@ const READY_SCRIPT: &str = "      #!/bin/sh
       touch /var/lib/crabbox-ready && sync
 ";
 
+/// Indented udev rules that bring hot-added vCPUs and memory online; Ubuntu's
+/// own rule does this only on Hyper-V and Xen.
+const HOTADD_RULES: &str = r#"      SUBSYSTEM=="cpu", ACTION=="add", TEST=="online", ATTR{online}=="0", ATTR{online}="1"
+      SUBSYSTEM=="memory", ACTION=="add", TEST=="state", ATTR{state}=="offline", ATTR{state}="online"
+"#;
+
 /// Values substituted into the cloud-init documents.
 pub struct SeedParams<'a> {
     /// cloud-init instance id (new id per lease regenerates host keys).
@@ -86,7 +92,9 @@ write_files:
       ExecStartPre=/usr/bin/mkdir -p /run/sshd
       ExecStart=-/usr/sbin/sshd -i
       StandardInput=socket
-  - path: /usr/local/bin/crabbox-ready
+  - path: /etc/udev/rules.d/80-crabbox-hotadd.rules
+    content: |
+{HOTADD_RULES}  - path: /usr/local/bin/crabbox-ready
     permissions: '0755'
     content: |
 {READY_SCRIPT}runcmd:

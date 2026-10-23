@@ -1,5 +1,6 @@
 //! Reads one protocol request on stdin and writes one response on stdout.
-//! `proxy <leaseId> --state-dir <dir>` runs the vsock SSH proxy instead.
+//! `proxy <leaseId> --state-dir <dir>` runs the vsock SSH proxy instead, and
+//! `watch <leaseId> --state-dir <dir>` the lease's growth watcher.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -15,10 +16,17 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some((cmd, rest)) if cmd == "watch" => {
+            if let Err(error) = crabbox_cloudhypervisor::run_watch(rest, &mut stderr) {
+                let _ = writeln!(stderr, "crabbox-cloudhypervisor: watch: {error}");
+                return ExitCode::from(1);
+            }
+            ExitCode::SUCCESS
+        }
         Some((cmd, _)) => {
             let _ = writeln!(
                 stderr,
-                "crabbox-cloudhypervisor: unknown subcommand {cmd:?}; usage: crabbox-cloudhypervisor [proxy <leaseId> --state-dir <dir>]"
+                "crabbox-cloudhypervisor: unknown subcommand {cmd:?}; usage: crabbox-cloudhypervisor [proxy|watch <leaseId> --state-dir <dir>]"
             );
             ExitCode::from(2)
         }

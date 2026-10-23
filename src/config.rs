@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Pinned guest image URL (Ubuntu noble cloud image).
@@ -31,6 +32,24 @@ pub struct Asset {
     pub sha256: String,
 }
 
+/// Limits and triggers for growing a running guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Growth {
+    /// Highest vCPU count the guest may be raised to.
+    pub cpus_max: u32,
+    /// Highest memory, in MiB, the guest may be raised to.
+    pub memory_mib_max: u64,
+    /// Largest root disk, in GiB.
+    pub disk_max_gib: u64,
+    /// GiB added to the disk per grow.
+    pub disk_step_gib: u64,
+    /// The disk grows when free space falls below this percent of the root fs...
+    pub disk_free_percent: u64,
+    /// ...or below this many GiB, whichever is larger.
+    pub disk_free_gib: u64,
+}
+
 /// Validated provider configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -46,6 +65,8 @@ pub struct Config {
     pub memory_mib: u64,
     /// Guest disk size in GiB.
     pub disk_gib: u64,
+    /// Runtime growth limits.
+    pub growth: Growth,
     /// Guest base image.
     pub image: Asset,
     /// UEFI firmware.
@@ -87,14 +108,18 @@ impl Config {
             Some(p) => p,
             None => default_cache_dir(env)?,
         };
+        let cpus = u32::try_from(int_key(config, "cpus", 2, 1, 64)?)
+            .map_err(|_| "config.cpus must be an integer between 1 and 64".to_owned())?;
+        let memory_mib = int_key(config, "memoryMiB", 4096, 512, u64::MAX)?;
+        let disk_gib = int_key(config, "diskGiB", 20, 8, u64::MAX)?;
         Ok(Self {
             state_dir,
             runtime_dir,
             cache_dir,
-            cpus: u32::try_from(int_key(config, "cpus", 2, 1, 64)?)
-                .map_err(|_| "config.cpus must be an integer between 1 and 64".to_owned())?,
-            memory_mib: int_key(config, "memoryMiB", 4096, 512, u64::MAX)?,
-            disk_gib: int_key(config, "diskGiB", 20, 8, u64::MAX)?,
+            cpus,
+            memory_mib,
+            disk_gib,
+            growth: growth(config, cpus, memory_mib, disk_gib)?,
             image: asset_key(config, "image", IMAGE_URL, IMAGE_SHA256)?,
             firmware: asset_key(config, "firmware", FIRMWARE_URL, FIRMWARE_SHA256)?,
             cloud_hypervisor: bin_key(config, "cloudHypervisor", "cloud-hypervisor")?,
@@ -113,6 +138,32 @@ impl Config {
             reap_stopped_after_hours: reap_stopped_after_hours(config)?,
         })
     }
+}
+
+/// Reads the growth keys; each cap defaults to headroom above the boot size.
+fn growth(config: &Value, cpus: u32, memory_mib: u64, disk_gib: u64) -> Result<Growth, String> {
+    let cpus_max = int_key(
+        config,
+        "cpusMax",
+        (u64::from(cpus) * 2).min(64),
+        u64::from(cpus),
+        64,
+    )?;
+    Ok(Growth {
+        cpus_max: u32::try_from(cpus_max)
+            .map_err(|_| "config.cpusMax must be an integer between cpus and 64".to_owned())?,
+        memory_mib_max: int_key(
+            config,
+            "memoryMiBMax",
+            memory_mib.saturating_mul(2),
+            memory_mib,
+            u64::MAX,
+        )?,
+        disk_max_gib: int_key(config, "diskMaxGiB", disk_gib.max(100), disk_gib, u64::MAX)?,
+        disk_step_gib: int_key(config, "diskGrowStepGiB", 10, 1, u64::MAX)?,
+        disk_free_percent: int_key(config, "diskGrowFreePercent", 15, 1, 90)?,
+        disk_free_gib: int_key(config, "diskGrowFreeGiB", 4, 0, u64::MAX)?,
+    })
 }
 
 /// Reads the optional `reapStoppedAfterHours` (integer >= 1; absent = off).
