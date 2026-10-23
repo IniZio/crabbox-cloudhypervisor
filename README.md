@@ -62,8 +62,8 @@ All keys go under `external.config`. All are optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cpus` | `2` | vCPUs (1-64) |
-| `memoryMiB` | `4096` | guest memory, at least 512 |
+| `cpus` | `2` | vCPUs (1-64). All are booted; idle vCPUs cost almost nothing, so set boot = the most you want a Box to use |
+| `memoryMiB` | `4096` | guest memory ceiling, at least 512. Memory the guest frees is returned to the host, so a high value costs nothing while idle |
 | `diskGiB` | `20` | guest disk size, at least 8 |
 | `readyTimeoutSeconds` | `300` | wait for the guest to become ready (1-3600) |
 | `stateDir` | `$XDG_STATE_HOME/crabbox-cloudhypervisor` | per-lease state (absolute path) |
