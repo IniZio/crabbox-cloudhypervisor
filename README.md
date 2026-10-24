@@ -15,6 +15,8 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
 - `cloud-hypervisor` (tested with v52.0).
 - `passt` with `--vhost-user` support (tested with 2026_06_11).
 - `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`.
+- For cache volumes: `mke2fs`, `e2fsck` and `resize2fs` (e2fsprogs). Without
+  them every cache volume is skipped and the Box starts cold.
 - crabbox itself, with `rsync` and `git` for syncing.
 
 ## Install
@@ -78,6 +80,10 @@ All keys go under `external.config`. All are optional.
 | `image` | pinned Ubuntu image | `{url, sha256}` override |
 | `firmware` | pinned CLOUDHV.fd | `{url, sha256}` override |
 | `cloudHypervisor`, `passt`, `qemuImg`, `ssh`, `sshKeygen`, `curl` | looked up on `PATH` | binary paths |
+| `cacheVolumeDir` | `<stateDir>/volumes` | cache volume store (absolute path) |
+| `cacheStoreMaxGB` | `200` | store budget in GiB; least recently used groups go first above it |
+| `cacheMaxVolumeGB` | `40` | largest group filesystem in GiB |
+| `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -112,6 +118,49 @@ line each; a failure that repeats is written once, then again with its count
 when it clears. The watcher skips paused VMs and exits when its cloud-hypervisor
 exits; `release` and `stop` also stop it. `resume` starts a watcher when the
 lease has none running, and never a second one.
+
+## Cache volumes
+
+With `capabilities.cacheVolumes: true` in the trusted crabbox user config,
+`acquire` reads `desired.cacheVolumes`. Each entry names a `group`, a volume
+`name`, a `key`, one or more guest `paths` (`~/...` is the login home
+`/home/crabbox`, or an absolute path) and an optional `sizeGB`.
+
+- **One image per group.** A group is one sparse raw ext4 image, attached as an
+  extra virtio disk and mounted at `/var/lib/crabbox-cache/<group>`. Each volume
+  is a directory inside it, and each of its paths is bind-mounted from its own
+  subdirectory. The units live on the root disk, so pause, resume and reboots
+  keep the mounts. Missing path parents are created for the login user.
+- **Size.** A group's filesystem is the sum of its declared `sizeGB`, at least
+  20 GiB, at most `cacheMaxVolumeGB`. The image is sparse, so only used blocks
+  take host space.
+- **Restore.** A new lease gets a private copy of the group's newest
+  generation (a reflink where the filesystem allows it, else a sparse copy of
+  the used blocks), grown host-side to the current size. With no generation it
+  gets a fresh empty filesystem. Two leases never share an image.
+- **Publish.** `release` presses the ACPI power button and waits up to 30
+  seconds for the guest to power off. Then a group publishes as the newest
+  generation only if it grew by at least 32 MiB of allocated blocks, its
+  journal is clean, `e2fsck -fn` passes and it is less than 95% full. Anything
+  else is discarded and the previous generation stays. A VM that is stopped,
+  paused or killed publishes nothing. A cache never fails a release.
+- **Echo.** The acquire response lists each name with its outcome:
+  `restored` (detail `gen <unix seconds>`), `empty` or `skipped` (detail says
+  why; the path is then a plain directory of the root disk).
+- **Store.** `<cacheVolumeDir>/<image sha prefix>-<arch>/<group>/gen-<unix
+  ns>-<lease>.img`, directories mode 0700. Working copies sit in
+  `<cacheVolumeDir>/leases/<leaseId>/` on the same filesystem. The host runs
+  only e2fsprogs on a guest-written image and never mounts it.
+- **GC.** `cleanup` removes superseded generations an hour after a newer one
+  appeared, groups unused for `cacheKeyTtlDays`, then least recently used
+  groups until the store fits `cacheStoreMaxGB`, and working copies of leases
+  that no longer exist. `dryRun` only reports.
+- **Docker.** Every seed points Docker's `data-root` at `/home/crabbox/docker`
+  (merged into an existing `/etc/docker/daemon.json`), so a cache volume on
+  `~/docker` carries image layers.
+
+`doctor` checks the three e2fsprogs tools and warns when `cacheVolumeDir`
+cannot reflink, because then each restore copies the cache's used bytes.
 
 ## What is pinned
 

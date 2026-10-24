@@ -151,6 +151,11 @@ impl ChClient {
             .ok_or_else(|| "cloud-hypervisor vm.info: missing state".to_owned())
     }
 
+    /// `PUT vm.power-button`: ACPI power button, so the guest shuts down cleanly.
+    pub fn power_button(&self) -> Result<(), String> {
+        self.call("PUT", "vm.power-button", None).map(drop)
+    }
+
     /// `PUT vm.shutdown`; an already stopped VM is not an error.
     pub fn shutdown(&self) -> Result<(), String> {
         self.call_tolerant("PUT", "vm.shutdown", &["not running", "not booted"])

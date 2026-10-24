@@ -1,5 +1,6 @@
 //! The real backend: boots and destroys cloud-hypervisor microVMs.
 
+mod cache;
 mod power;
 pub mod spec;
 mod watcher;
@@ -16,10 +17,9 @@ use crate::backend::{self, Backend, Power};
 use crate::ch::ChClient;
 use crate::config::Config;
 use crate::host;
-use crate::protocol::Desired;
+use crate::protocol::{CacheVolumeEcho, Desired};
 use crate::seed::{self, SeedParams};
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
-use crate::volumes::guest;
 
 /// Process name prefix of cloud-hypervisor (`comm` is cut to 15 characters).
 const CH_COMM: &str = "cloud-hyperviso";
@@ -149,7 +149,9 @@ impl RealBackend {
         host::clone_disk(base_raw, &self.store.disk_path(id), size)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
-        let guest = guest::setup(&[]);
+        let guest = self
+            .restore_cache(id, &desired.cache_volumes)?
+            .guest_setup();
         let params = SeedParams {
             instance_id: &instance_id,
             hostname: &hostname,
@@ -204,7 +206,7 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
-        let config = spec::vm_config(
+        let mut config = spec::vm_config(
             &self.config,
             firmware,
             &self.store.disk_path(id),
@@ -212,6 +214,7 @@ impl RealBackend {
             &self.store.serial_log(id),
             record,
         );
+        self.read_cache(id).attach(&mut config);
         let client = ChClient::new(&record.api_socket());
         client.create(&config)?;
         client.boot()?;
@@ -296,6 +299,14 @@ impl Backend for RealBackend {
         Self::reap_orphan_passt(record, diag);
     }
 
+    fn cache_echo(&self, lease_id: &str) -> Vec<CacheVolumeEcho> {
+        self.read_cache(lease_id).echo()
+    }
+
+    fn cache_gc(&self, dry_run: bool, diag: &mut dyn Write) -> String {
+        self.gc_cache(dry_run, diag)
+    }
+
     fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {
         self.store.try_lock(lease_id)
     }
@@ -348,9 +359,13 @@ impl Backend for RealBackend {
             || self.config.runtime_dir.join(lease_id),
             |r| r.run_dir.clone(),
         );
+        let quiesced = record
+            .as_ref()
+            .is_some_and(|r| self.quiesce_for_cache(r, diag));
         if let Some(record) = &record {
             Self::stop_processes(record, diag);
         }
+        self.settle_cache(lease_id, quiesced, diag);
         remove_tree(&run_dir)?;
         self.store.remove(lease_id)
     }

@@ -92,6 +92,7 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     ));
     checks.push(cache("image", &image_cache_path(config), &config.image));
     checks.push(raw_base(config));
+    checks.extend(cache_checks(&config.cache.volume_dir));
     for check in checks.iter().filter(|c| c.level != Level::Ok) {
         let _ = writeln!(diag, "{}", line(check));
     }
@@ -155,6 +156,51 @@ fn tool_checks(config: &Config) -> Vec<Check> {
     checks.push(tool("ssh-keygen", &config.ssh_keygen, "-?", false));
     checks.push(tool("setsid", Path::new("setsid"), "--version", false));
     checks
+}
+
+/// Cache volume tools and reflink support; a missing piece only degrades caching.
+fn cache_checks(volume_dir: &Path) -> Vec<Check> {
+    let mut checks: Vec<Check> = crate::volumes::ext4::TOOLS
+        .iter()
+        .map(|name| {
+            let mut c = tool(name, Path::new(name), "-V", false);
+            if c.level == Level::Fail {
+                c.level = Level::Warn;
+                c.detail = format!("{name} not runnable; cache volumes are skipped");
+            }
+            c
+        })
+        .collect();
+    checks.push(reflink(volume_dir));
+    checks
+}
+
+/// Probes whether the cache store's filesystem can reflink.
+fn reflink(dir: &Path) -> Check {
+    let src = dir.join(format!(".doctor-reflink-{}", std::process::id()));
+    let mut dst = src.clone().into_os_string();
+    dst.push(".clone");
+    let made = fs::create_dir_all(dir).and_then(|()| fs::write(&src, b"probe"));
+    let cloned = made.is_ok()
+        && Command::new("cp")
+            .arg("--reflink=always")
+            .arg(&src)
+            .arg(&dst)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+    let _ = fs::remove_file(&src);
+    let _ = fs::remove_file(&dst);
+    if cloned {
+        Check::new(Level::Ok, "cache_reflink", "supported")
+    } else {
+        Check::new(
+            Level::Warn,
+            "cache_reflink",
+            "cacheVolumeDir cannot reflink; each acquire copies the cache's used bytes",
+        )
+    }
 }
 
 /// First line of the tool output (stdout, else stderr), trimmed.

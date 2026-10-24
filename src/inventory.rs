@@ -67,11 +67,30 @@ fn remove_one(backend: &dyn Backend, id: &str, diag: &mut dyn Write) -> Result<b
     Ok(true)
 }
 
-/// Removes broken lease dirs; stopped leases go only past `reapStoppedAfterHours`.
+/// Removes broken lease dirs, then stale cache generations.
 ///
-/// Running, paused and (by default) stopped leases stay untouched; only
-/// `release` destroys them. Age is `now - createdAt` from lease.json.
+/// Stopped leases go only past `reapStoppedAfterHours`. Running, paused and
+/// (by default) stopped leases stay untouched; only `release` destroys them.
+/// Age is `now - createdAt` from lease.json.
 pub fn cleanup(
+    request: &Request,
+    backend: &dyn Backend,
+    diag: &mut dyn Write,
+) -> Result<String, String> {
+    let leases = cleanup_leases(request, backend, diag)?;
+    let cache = backend.cache_gc(request.dry_run, diag);
+    Ok(match (leases.as_str(), cache.is_empty()) {
+        (_, true) => leases,
+        (NOTHING, false) => cache,
+        (_, false) => format!("{leases}; {cache}"),
+    })
+}
+
+/// Message when cleanup finds no lease to remove.
+const NOTHING: &str = "nothing to clean up";
+
+/// The lease half of [`cleanup`].
+fn cleanup_leases(
     request: &Request,
     backend: &dyn Backend,
     diag: &mut dyn Write,
@@ -87,7 +106,7 @@ pub fn cleanup(
         }
     }
     if ids.is_empty() {
-        return Ok("nothing to clean up".to_owned());
+        return Ok(NOTHING.to_owned());
     }
     if request.dry_run {
         return Ok(summary("would remove", ids.iter().map(String::as_str)));
@@ -105,7 +124,7 @@ pub fn cleanup(
         return Err(format!("cleanup failed for {}", failures.join("; ")));
     }
     if removed.is_empty() {
-        return Ok("nothing to clean up".to_owned());
+        return Ok(NOTHING.to_owned());
     }
     Ok(summary("removed", removed.into_iter()))
 }

@@ -1,9 +1,10 @@
 //! Doctor tests: devices and tools are temp files or `true`/`false`, never the host's.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{run, run_with, Probes};
+use super::{reflink, run, run_with, Level, Probes};
 use crate::config::{Asset, Config};
 use crate::vm::spec::{firmware_cache_path, image_cache_path};
 
@@ -192,4 +193,24 @@ fn real_host_report() {
         Config::from_request(&serde_json::Value::Null, &|k| std::env::var(k).ok()).unwrap();
     let r = run(&config, &mut Vec::new()).unwrap_or_else(|e| e);
     std::fs::write(std::env::var("DOCTOR_OUT").unwrap(), r).unwrap();
+}
+
+#[test]
+fn cache_tools_and_reflink_are_reported_and_never_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
+    assert!(ok, "{r}");
+    for name in ["mke2fs", "e2fsck", "resize2fs", "cache_reflink"] {
+        assert!(r.contains(&format!(" {name}: ")), "{name} in {r}");
+    }
+}
+
+#[test]
+fn unusable_cache_dir_warns_about_reflink() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("file");
+    fs::write(&blocker, b"x").unwrap();
+    let check = reflink(&blocker.join("volumes"));
+    assert_eq!(check.level, Level::Warn);
+    assert!(check.detail.contains("cannot reflink"), "{}", check.detail);
 }
