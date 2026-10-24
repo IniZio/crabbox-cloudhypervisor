@@ -27,6 +27,12 @@ pub const DEFAULT_GROUP_GIB: u64 = 20;
 const MAX_TOKEN: usize = 96;
 /// Characters allowed in a path component besides ASCII alphanumerics.
 const PATH_PUNCT: &str = "._@+-";
+/// Absolute roots a volume may sit strictly below.
+const BELOW_ROOTS: [&str; 2] = ["/opt", "/var/cache"];
+/// Absolute roots a volume may be, or sit below.
+const AT_ROOTS: [&str; 2] = ["/var/lib/containerd", "/var/lib/containers"];
+/// Home directories never cached: they hold credentials.
+const HOME_REFUSED: [&str; 1] = [".ssh"];
 
 /// A group id, volume name or key: `[A-Za-z0-9._-]{1,96}`, never `.` or `..`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -62,7 +68,9 @@ pub enum GuestPath {
 }
 
 impl GuestPath {
-    /// Parses `~/<rel>` or `/<abs>`; components are `[A-Za-z0-9._@+-]`, never `.` or `..`.
+    /// Parses `~/<rel>` (not `~/.ssh`), `/opt/<rel>`, `/var/cache/<rel>`, or
+    /// `/var/lib/containerd` and `/var/lib/containers` and below. Components
+    /// are `[A-Za-z0-9._@+-]`, never `.` or `..`.
     pub fn parse(s: &str) -> Result<Self, String> {
         let (path, rest) = match s.strip_prefix("~/") {
             Some(rel) => (Self::Home(rel.to_owned()), rel),
@@ -81,13 +89,22 @@ impl GuestPath {
         if !rest.split('/').all(component_ok) {
             return Err("has an empty, dot or unsupported component".to_owned());
         }
-        if let Self::Abs(abs) = &path {
-            let under = abs
-                .strip_prefix(MOUNT_ROOT)
-                .is_some_and(|r| r.is_empty() || r.starts_with('/'));
-            if under {
-                return Err(format!("is inside {MOUNT_ROOT}"));
+        let below = |root: &str, p: &str| {
+            p.strip_prefix(root)
+                .is_some_and(|r| r.len() > 1 && r.starts_with('/'))
+        };
+        let allowed = match &path {
+            Self::Home(rel) => !HOME_REFUSED.iter().any(|r| rel == r || below(r, rel)),
+            Self::Abs(abs) => {
+                BELOW_ROOTS.iter().any(|r| below(r, abs))
+                    || AT_ROOTS.iter().any(|r| abs == r || below(r, abs))
             }
+        };
+        if !allowed {
+            return Err(
+                "must be under ~/ (not ~/.ssh), /opt/, /var/cache/, /var/lib/containerd or /var/lib/containers"
+                    .to_owned(),
+            );
         }
         Ok(path)
     }
@@ -109,6 +126,8 @@ pub struct Volume {
     pub name: Token,
     /// Guest paths bound to it, at least one.
     pub paths: Vec<GuestPath>,
+    /// The guest seals it at close and leaves a marker in each path.
+    pub sealed: bool,
 }
 
 /// One store image and the volumes inside it.
@@ -188,7 +207,14 @@ fn parse_entry(req: &CacheVolumeRequest) -> Result<(Token, Volume), String> {
         .iter()
         .map(|p| GuestPath::parse(p).map_err(|e| format!("path {e}")))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((group, Volume { name, paths }))
+    Ok((
+        group,
+        Volume {
+            name,
+            paths,
+            sealed: req.sealed,
+        },
+    ))
 }
 
 /// Groups the request's volumes; a bad or duplicate entry is skipped, never an error.

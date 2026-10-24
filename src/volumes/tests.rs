@@ -20,6 +20,7 @@ pub(crate) fn req(group: &str, name: &str, paths: &[&str], size_gb: u64) -> Cach
         key: format!("{group}-{name}"),
         paths: paths.iter().map(|p| (*p).to_owned()).collect(),
         size_gb,
+        sealed: false,
     }
 }
 
@@ -34,7 +35,7 @@ fn token_accepts_the_key_charset_up_to_96() {
 }
 
 #[test]
-fn guest_paths_resolve_home_and_refuse_escapes() {
+fn guest_paths_resolve_home_and_absolute() {
     let home = GuestPath::parse("~/.gradle/caches").unwrap();
     assert_eq!(home, GuestPath::Home(".gradle/caches".to_owned()));
     assert_eq!(
@@ -43,25 +44,97 @@ fn guest_paths_resolve_home_and_refuse_escapes() {
     );
     let abs = GuestPath::parse("/opt/android-sdk").unwrap();
     assert_eq!(abs.resolve("/home/crabbox"), "/opt/android-sdk");
+}
+
+#[test]
+fn guest_paths_accept_only_the_cacheable_roots() {
+    for ok in [
+        "~/.npm",
+        "~/docker",
+        "~/.sshx",
+        "~/a/.ssh",
+        "/opt/android-sdk",
+        "/opt/a/b",
+        "/var/cache/apt",
+        "/var/lib/containerd",
+        "/var/lib/containerd/io.containerd.content.v1.content",
+        "/var/lib/containers",
+        "/var/lib/containers/storage",
+    ] {
+        assert!(GuestPath::parse(ok).is_ok(), "{ok:?}");
+    }
     for bad in [
+        "~/.ssh",
+        "~/.ssh/authorized_keys",
+        "/etc",
+        "/etc/docker",
+        "/opt",
+        "/var/cache",
+        "/var/lib",
+        "/var/lib/docker",
+        "/var/lib/containerdx",
+        "/var/lib/containersx",
+        "/home/crabbox/.npm",
+        "/root/.npm",
+        "/usr/local",
+        "/var/lib/crabbox-cache",
+        "/var/lib/crabbox-cache/g",
         "",
         "~",
         "~/",
         "/",
         "rel/x",
         "~/a/../b",
-        "/a/./b",
-        "/a//b",
-        "/a/b/",
-        "/a b",
-        "/a'b",
+        "/opt/a/./b",
+        "/opt/a//b",
+        "/opt/a/",
+        "/opt/a b",
+        "/opt/a'b",
         "~/a\nb",
-        "/var/lib/crabbox-cache",
-        "/var/lib/crabbox-cache/g",
     ] {
         assert!(GuestPath::parse(bad).is_err(), "{bad:?}");
     }
-    assert!(GuestPath::parse("/var/lib/crabbox-cachex").is_ok());
+}
+
+#[test]
+fn a_refused_path_skips_only_its_volume() {
+    let reqs = [
+        req("g", "keys", &["~/.ssh"], 0),
+        req("g", "etc", &["~/.npm", "/etc/docker"], 0),
+        req("g", "npm", &["~/.npm"], 0),
+    ];
+    let plan = plan(&reqs, &limits(40));
+    let names: Vec<&str> = plan.groups[0]
+        .volumes
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    assert_eq!(names, ["npm"]);
+    let skipped: Vec<&str> = plan.skipped.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(skipped, ["keys", "etc"]);
+    assert!(plan.skipped.iter().all(|(_, r)| r.starts_with("path ")));
+}
+
+#[test]
+fn plan_keeps_sealed_per_volume() {
+    let mut docker = req("gx", "docker", &["~/docker", "/var/lib/containerd"], 0);
+    docker.sealed = true;
+    let reqs = [req("g", "npm", &["~/.npm"], 0), docker];
+    let plan = plan(&reqs, &limits(40));
+    let sealed: Vec<(&str, &str, bool)> = plan
+        .groups
+        .iter()
+        .flat_map(|g| {
+            g.volumes
+                .iter()
+                .map(move |v| (g.id.as_str(), v.name.as_str(), v.sealed))
+        })
+        .collect();
+    assert_eq!(
+        sealed,
+        [("g", "npm", false), ("gx", "docker", true)],
+        "two groups per scope, sealed only where declared"
+    );
 }
 
 #[test]
