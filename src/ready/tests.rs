@@ -1,7 +1,6 @@
 //! Tests for the readiness probe.
 
 use super::{known_hosts_line, ReadyProbe};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -21,8 +20,7 @@ fn probe(ssh: &Path) -> ReadyProbe {
 /// Writes an executable shell script.
 fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::script(&path, body);
     path
 }
 

@@ -25,6 +25,8 @@ pub mod watch;
 
 #[cfg(test)]
 mod fake;
+#[cfg(test)]
+mod test_exec;
 
 use std::io::Write;
 
