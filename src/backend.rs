@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::protocol::Desired;
+use crate::protocol::{CacheVolumeEcho, Desired};
 use crate::state::{LeaseLock, LeaseRecord};
 
 /// Login user inside every guest.
@@ -121,6 +121,17 @@ pub trait Backend {
     /// If CH is dead but passt is alive, kills passt (orphan). Best effort;
     /// notes to `diag`. Never fails.
     fn reap(&self, record: &LeaseRecord, diag: &mut dyn Write);
+
+    /// What acquire did for each cache volume of the lease; empty without any.
+    fn cache_echo(&self, _lease_id: &str) -> Vec<CacheVolumeEcho> {
+        Vec::new()
+    }
+
+    /// Removes superseded, idle and over-budget cache generations; a summary,
+    /// empty when nothing was (or, with `dry_run`, would be) removed.
+    fn cache_gc(&self, _dry_run: bool, _diag: &mut dyn Write) -> String {
+        String::new()
+    }
 }
 
 #[cfg(test)]

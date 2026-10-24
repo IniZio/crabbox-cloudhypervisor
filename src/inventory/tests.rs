@@ -212,3 +212,26 @@ fn list_and_resolve_report_a_blocked_disk_grow() {
     let lease = crate::lease::build_lease(&record, "ready", &fake);
     assert!(crate::protocol::lease_response(&lease).contains(why));
 }
+
+#[test]
+fn cleanup_also_collects_cache_garbage_after_the_leases() {
+    let fake = Fake::default();
+    assert_eq!(run_cleanup(&fake, true).unwrap(), "nothing to clean up");
+    assert!(fake.called("cache_gc dry=true"));
+    *fake.cache_gc_note.borrow_mut() = "removed 2 cache path(s)".to_owned();
+    assert_eq!(
+        run_cleanup(&fake, false).unwrap(),
+        "removed 2 cache path(s)"
+    );
+    fake.add("b2", false);
+    fake.orphan_ids.borrow_mut().push("o3".to_owned());
+    let msg = run_cleanup(&fake, false).unwrap();
+    assert_eq!(msg, "removed 1 lease(s): o3; removed 2 cache path(s)");
+    let calls = fake.calls.borrow();
+    let destroy = calls.iter().position(|c| c == "destroy:o3").unwrap();
+    let gc = calls
+        .iter()
+        .rposition(|c| c == "cache_gc dry=false")
+        .unwrap();
+    assert!(destroy < gc, "leases go before the store: {calls:?}");
+}

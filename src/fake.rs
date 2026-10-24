@@ -38,6 +38,8 @@ pub(crate) struct Fake {
     pub(crate) resume_fails: Cell<bool>,
     /// Lease id to why its disk cannot grow.
     pub(crate) blocked: RefCell<BTreeMap<String, String>>,
+    /// What `cache_gc` reports.
+    pub(crate) cache_gc_note: RefCell<String>,
 }
 
 impl Fake {
@@ -276,5 +278,12 @@ impl Backend for Fake {
                 .borrow_mut()
                 .push(format!("reap {}", record.lease_id));
         }
+    }
+
+    fn cache_gc(&self, dry_run: bool, _diag: &mut dyn Write) -> String {
+        self.calls
+            .borrow_mut()
+            .push(format!("cache_gc dry={dry_run}"));
+        self.cache_gc_note.borrow().clone()
     }
 }
