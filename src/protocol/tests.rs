@@ -123,6 +123,7 @@ fn lease_response_shape() {
             host_key: String::new(),
         },
         growth_blocked: String::new(),
+        cache_volumes: Vec::new(),
     };
     let base = r#"{"protocolVersion":1,"lease":{"leaseId":"l1","slug":"s","name":"n","cloudId":"vm1","status":"ready","ssh":{"user":"crabbox","host":"vm1.local","port":"22","key":"/abs/id_ed25519","proxyCommand":"x proxy l1","readyCheck":"true""#;
     assert_eq!(lease_response(&lease), format!("{base}}}}}}}"));
@@ -255,4 +256,80 @@ fn ssh_host_key_serialized_only_when_non_empty() {
     assert!(serde_json::to_string(&ssh)
         .unwrap()
         .contains(r#""hostKey":"ssh-ed25519 AAAA""#));
+}
+
+#[test]
+fn parses_cache_volumes_from_desired() {
+    let d = r#""desired":{"leaseId":"l1","slug":"s","name":"n","cacheVolumes":[
+        {"group":"7f3a","name":"gradle","key":"7f3a-gradle","paths":["~/.gradle/caches","~/.gradle/wrapper"],"sizeGB":0},
+        {"group":"7f3a","name":"sdk","key":"7f3a-sdk","paths":["/opt/sdk"],"sizeGB":12,"required":false}]}}"#;
+    let vols = parse(d).unwrap().desired.unwrap().cache_volumes;
+    assert_eq!(
+        vols,
+        vec![
+            CacheVolumeRequest {
+                group: "7f3a".into(),
+                name: "gradle".into(),
+                key: "7f3a-gradle".into(),
+                paths: vec!["~/.gradle/caches".into(), "~/.gradle/wrapper".into()],
+                size_gb: 0,
+            },
+            CacheVolumeRequest {
+                group: "7f3a".into(),
+                name: "sdk".into(),
+                key: "7f3a-sdk".into(),
+                paths: vec!["/opt/sdk".into()],
+                size_gb: 12,
+            },
+        ]
+    );
+}
+
+#[test]
+fn cache_volumes_absent_null_or_malformed() {
+    let base = r#""desired":{"leaseId":"l1","slug":"s","name":"n""#;
+    let vols =
+        |tail: &str| parse(&format!("{base}{tail}}}}}")).map(|r| r.desired.unwrap().cache_volumes);
+    assert_eq!(vols("").unwrap(), Vec::new());
+    assert_eq!(vols(r#","cacheVolumes":null"#).unwrap(), Vec::new());
+    for bad in [
+        r#","cacheVolumes":{}"#,
+        r#","cacheVolumes":[1]"#,
+        r#","cacheVolumes":[{"paths":"~/x"}]"#,
+        r#","cacheVolumes":[{"paths":[1]}]"#,
+        r#","cacheVolumes":[{"sizeGB":-1}]"#,
+    ] {
+        assert!(vols(bad).unwrap_err().contains("cacheVolumes"), "{bad}");
+    }
+}
+
+#[test]
+fn lease_echoes_cache_volumes_only_when_present() {
+    let mut lease = Lease {
+        lease_id: "l1".to_owned(),
+        slug: "s".to_owned(),
+        name: "n".to_owned(),
+        cloud_id: "c".to_owned(),
+        status: "ready".to_owned(),
+        ssh: Ssh {
+            user: "u".to_owned(),
+            host: "h".to_owned(),
+            port: "22".to_owned(),
+            key: "/k".to_owned(),
+            proxy_command: "p".to_owned(),
+            ready_check: "r".to_owned(),
+            host_key: String::new(),
+        },
+        growth_blocked: String::new(),
+        cache_volumes: Vec::new(),
+    };
+    assert!(!lease_response(&lease).contains("cacheVolumes"));
+    lease.cache_volumes.push(CacheVolumeEcho {
+        name: "gradle".to_owned(),
+        outcome: "restored".to_owned(),
+        detail: "gen 1729781203".to_owned(),
+    });
+    assert!(lease_response(&lease).contains(
+        r#""cacheVolumes":[{"name":"gradle","outcome":"restored","detail":"gen 1729781203"}]"#
+    ));
 }

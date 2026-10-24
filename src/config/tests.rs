@@ -49,6 +49,12 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         curl: PathBuf::from("curl"),
         ready_timeout: Duration::from_secs(300),
         reap_stopped_after_hours: None,
+        cache: crate::config::CacheConfig {
+            volume_dir: PathBuf::from(state).join("volumes"),
+            store_max_gib: 200,
+            max_volume_gib: 40,
+            key_ttl_days: 30,
+        },
     }
 }
 
@@ -353,5 +359,37 @@ fn reap_stopped_after_hours_parses_and_validates() {
         let err = parse(&json!({"reapStoppedAfterHours": bad}), HOME).unwrap_err();
         assert!(err.contains("config.reapStoppedAfterHours"), "{err}");
         assert!(!err.contains("7777"), "{err}");
+    }
+}
+
+#[test]
+fn cache_keys_default_under_the_state_dir() {
+    let c = parse(&json!({"stateDir": "/s"}), HOME).unwrap();
+    assert_eq!(c.cache, expected("/s", "/r", "/c").cache);
+    assert_eq!(c.cache.volume_dir, PathBuf::from("/s/volumes"));
+}
+
+#[test]
+fn cache_keys_are_read_and_checked() {
+    let cfg = json!({"cacheVolumeDir": "/v", "cacheStoreMaxGB": 50,
+        "cacheMaxVolumeGB": 8, "cacheKeyTtlDays": 3});
+    let c = parse(&cfg, HOME).unwrap();
+    assert_eq!(
+        c.cache,
+        crate::config::CacheConfig {
+            volume_dir: PathBuf::from("/v"),
+            store_max_gib: 50,
+            max_volume_gib: 8,
+            key_ttl_days: 3,
+        }
+    );
+    for (key, bad) in [
+        ("cacheVolumeDir", json!("rel")),
+        ("cacheStoreMaxGB", json!(0)),
+        ("cacheMaxVolumeGB", json!(0)),
+        ("cacheKeyTtlDays", json!("x")),
+    ] {
+        let err = parse(&json!({ key: bad }), HOME).unwrap_err();
+        assert!(err.contains(key), "{err}");
     }
 }
