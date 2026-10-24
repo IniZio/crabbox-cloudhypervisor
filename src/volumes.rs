@@ -3,6 +3,9 @@
 //! A group is one ext4 image in the store; each volume `name` is a directory
 //! inside it, bind-mounted to every path the volume declares.
 
+pub mod ext4;
+pub mod store;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CacheConfig;

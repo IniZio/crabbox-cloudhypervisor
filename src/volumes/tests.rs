@@ -1,8 +1,31 @@
 #![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use super::*;
+
+/// True when the e2fsprogs tools these tests drive are on PATH; tests that
+/// need them return early otherwise, like the repo's other host-tool tests.
+pub(crate) fn have_e2fsprogs() -> bool {
+    ["mke2fs", "e2fsck", "resize2fs", "debugfs"]
+        .iter()
+        .all(|t| Command::new(t).arg("-V").output().is_ok())
+}
+
+/// `len` bytes that do not compress to holes.
+pub(crate) fn noise(len: u64) -> Vec<u8> {
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut out = Vec::new();
+    while (out.len() as u64) < len {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out.truncate(usize::try_from(len).unwrap());
+    out
+}
 
 pub(crate) fn limits(max_volume_gib: u64) -> CacheConfig {
     CacheConfig {
