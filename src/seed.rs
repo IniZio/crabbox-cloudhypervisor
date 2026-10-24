@@ -1,11 +1,14 @@
 //! `NoCloud` seed image: cloud-init user-data/meta-data in a FAT volume labelled `CIDATA`.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use fatfs::{format_volume, FileSystem, FormatVolumeOptions, FsOptions};
+
+use crate::volumes::guest::SeedFile;
 
 /// Image size: small, but large enough for FAT16 (needs >= 4085 clusters).
 const IMAGE_BYTES: u64 = 2 * 1024 * 1024;
@@ -40,6 +43,51 @@ pub struct SeedParams<'a> {
     pub host_private_key: &'a str,
     /// One-line OpenSSH ed25519 host public key.
     pub host_public_key: &'a str,
+    /// Extra files to write.
+    pub files: &'a [SeedFile],
+    /// Extra commands, run after `systemctl daemon-reload`.
+    pub commands: &'a [Vec<String>],
+}
+
+/// A YAML single-quoted scalar.
+fn quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// `write_files` entries for `files`.
+fn file_entries(files: &[SeedFile]) -> String {
+    let mut out = String::new();
+    for f in files {
+        let _ = writeln!(
+            out,
+            "  - path: {}\n    permissions: {}\n    content: |",
+            quoted(&f.path),
+            quoted(f.permissions)
+        );
+        for line in f.content.lines() {
+            let _ = writeln!(out, "      {line}");
+        }
+    }
+    out
+}
+
+/// `runcmd` entries for `commands`, each a flow sequence of quoted arguments.
+fn command_entries(commands: &[Vec<String>]) -> String {
+    commands.iter().fold(String::new(), |mut out, argv| {
+        let args: Vec<String> = argv.iter().map(|a| quoted(a)).collect();
+        let _ = writeln!(out, "  - [{}]", args.join(", "));
+        out
+    })
+}
+
+/// The host private key, each line indented for a YAML block scalar.
+fn indented_key(key: &str) -> String {
+    key.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .map(|l| format!("      {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Renders `#cloud-config` user-data. A multi-line key is flattened to one line.
@@ -47,14 +95,9 @@ pub struct SeedParams<'a> {
 pub fn user_data(params: &SeedParams<'_>) -> String {
     let key = params.ssh_public_key.trim().replace(['\r', '\n'], " ");
     let host_pub = params.host_public_key.trim().replace(['\r', '\n'], " ");
-    let host_priv = params
-        .host_private_key
-        .lines()
-        .map(str::trim_end)
-        .filter(|l| !l.is_empty())
-        .map(|l| format!("      {l}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let host_priv = indented_key(params.host_private_key);
+    let files = file_entries(params.files);
+    let commands = command_entries(params.commands);
     format!(
         r"#cloud-config
 users:
@@ -97,9 +140,9 @@ write_files:
 {HOTADD_RULES}  - path: /usr/local/bin/crabbox-ready
     permissions: '0755'
     content: |
-{READY_SCRIPT}runcmd:
+{READY_SCRIPT}{files}runcmd:
   - [systemctl, daemon-reload]
-  - [systemctl, enable, --now, crabbox-ssh-vsock.socket]
+{commands}  - [systemctl, enable, --now, crabbox-ssh-vsock.socket]
   - [sh, -c, 'for i in 1 2 3 4 5; do apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git rsync curl jq python3 tar && break; sleep 3; done']
   - [sh, -c, 'touch /var/lib/crabbox-ready && sync']
 "

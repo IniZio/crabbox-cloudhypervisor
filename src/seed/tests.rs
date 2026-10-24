@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
+
 use super::*;
 use std::io::Read;
 use std::process::Command;
@@ -12,6 +14,8 @@ fn params() -> SeedParams<'static> {
         host_private_key:
             "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\nBBBB\n-----END OPENSSH PRIVATE KEY-----\n",
         host_public_key: "ssh-ed25519 HOSTPUB",
+        files: &[],
+        commands: &[],
     }
 }
 
@@ -139,4 +143,61 @@ fn user_data_onlines_hot_added_cpus_and_memory() {
         "  - path: /etc/udev/rules.d/80-crabbox-hotadd.rules\n    content: |\n      SUBSYSTEM==\"cpu\", ACTION==\"add\", TEST==\"online\", ATTR{online}==\"0\", ATTR{online}=\"1\"\n"
     ));
     assert!(u.contains("ATTR{state}==\"offline\", ATTR{state}=\"online\"\n"));
+}
+
+/// user-data parsed by `PyYAML` (what cloud-init uses), as JSON; `None` without it.
+fn yaml_as_json(text: &str) -> Option<serde_json::Value> {
+    let script = "import json, sys, yaml; print(json.dumps(yaml.safe_load(sys.stdin)))";
+    let mut child = Command::new("python3")
+        .args(["-c", script])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(text.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
+    out.status
+        .success()
+        .then(|| serde_json::from_slice(&out.stdout).ok())?
+}
+
+#[test]
+fn cache_units_and_commands_survive_yaml() {
+    use crate::volumes::guest::{setup, Attached};
+    use crate::volumes::tests::{limits, req};
+    let plan = crate::volumes::plan(&[req("g-1", "npm", &["~/.npm"], 0)], &limits(40));
+    let guest = setup(&[Attached {
+        group: &plan.groups[0],
+        serial: "cbxcv0",
+    }]);
+    let p = SeedParams {
+        files: &guest.files,
+        commands: &guest.commands,
+        ..params()
+    };
+    let Some(doc) = yaml_as_json(&user_data(&p)) else {
+        return;
+    };
+    let files = doc["write_files"].as_array().unwrap();
+    let unit = files
+        .iter()
+        .find(|f| f["path"] == r"/etc/systemd/system/var-lib-crabbox\x2dcache-g\x2d1.mount")
+        .expect("group unit written");
+    assert!(unit["content"].as_str().unwrap().starts_with("[Unit]\n"));
+    let script = files
+        .iter()
+        .find(|f| f["path"] == "/usr/local/sbin/crabbox-cache-dirs")
+        .unwrap();
+    assert_eq!(script["permissions"], "0755");
+    assert!(files
+        .iter()
+        .any(|f| f["path"] == "/usr/local/bin/crabbox-ready"));
+    let runcmd = doc["runcmd"].as_array().unwrap();
+    assert_eq!(runcmd[0], serde_json::json!(["systemctl", "daemon-reload"]));
+    assert_eq!(runcmd[1][0], "sh");
+    assert_eq!(runcmd[2][3], r"var-lib-crabbox\x2dcache-g\x2d1.mount");
+    assert_eq!(
+        runcmd.last().unwrap()[2],
+        "touch /var/lib/crabbox-ready && sync"
+    );
 }
