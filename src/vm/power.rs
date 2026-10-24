@@ -288,3 +288,6 @@ impl RealBackend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
