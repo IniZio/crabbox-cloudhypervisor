@@ -4,6 +4,7 @@
 //! inside it, bind-mounted to every path the volume declares.
 
 pub mod ext4;
+pub mod guest;
 pub mod store;
 
 use std::fmt::Write as _;

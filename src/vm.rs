@@ -19,6 +19,7 @@ use crate::host;
 use crate::protocol::Desired;
 use crate::seed::{self, SeedParams};
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
+use crate::volumes::guest;
 
 /// Process name prefix of cloud-hypervisor (`comm` is cut to 15 characters).
 const CH_COMM: &str = "cloud-hyperviso";
@@ -148,12 +149,15 @@ impl RealBackend {
         host::clone_disk(base_raw, &self.store.disk_path(id), size)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
+        let guest = guest::setup(&[]);
         let params = SeedParams {
             instance_id: &instance_id,
             hostname: &hostname,
             ssh_public_key: &pubkey,
             host_private_key: &host_private_key,
             host_public_key: &host_public_key,
+            files: &guest.files,
+            commands: &guest.commands,
         };
         let (user_data, meta_data) = (seed::user_data(&params), seed::meta_data(&params));
         seed::write_seed(&self.store.seed_path(id), &user_data, &meta_data)
