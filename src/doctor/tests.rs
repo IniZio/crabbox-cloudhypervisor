@@ -200,7 +200,7 @@ fn cache_tools_and_reflink_are_reported_and_never_fail() {
     let dir = tempfile::tempdir().unwrap();
     let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
     assert!(ok, "{r}");
-    for name in ["mke2fs", "e2fsck", "resize2fs", "cache_reflink"] {
+    for name in ["mke2fs", "e2fsck", "resize2fs", "debugfs", "cache_reflink"] {
         assert!(r.contains(&format!(" {name}: ")), "{name} in {r}");
     }
 }
@@ -213,4 +213,16 @@ fn unusable_cache_dir_warns_about_reflink() {
     let check = reflink(&blocker.join("volumes"));
     assert_eq!(check.level, Level::Warn);
     assert!(check.detail.contains("cannot reflink"), "{}", check.detail);
+}
+
+#[test]
+fn reflink_probe_creates_the_store_dir_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("cache").join("volumes");
+    let _ = reflink(&store);
+    for d in [&store, &dir.path().join("cache")] {
+        let mode = fs::metadata(d).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", d.display());
+    }
 }

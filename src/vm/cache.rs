@@ -207,7 +207,7 @@ impl RealBackend {
         for (_, g) in cache.attached() {
             let group = g.group.id.as_str();
             let note = if quiesced {
-                match store.publish(&g.group.id, &g.image, g.baseline, id, SystemTime::now()) {
+                match store.publish(&g.group, &g.image, g.baseline, id, SystemTime::now()) {
                     Publish::Published { generation } => {
                         format!("published gen {}", generation / 1_000_000_000)
                     }

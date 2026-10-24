@@ -180,7 +180,8 @@ fn reflink(dir: &Path) -> Check {
     let src = dir.join(format!(".doctor-reflink-{}", std::process::id()));
     let mut dst = src.clone().into_os_string();
     dst.push(".clone");
-    let made = fs::create_dir_all(dir).and_then(|()| fs::write(&src, b"probe"));
+    let made = crate::volumes::store::mkdir_private(dir)
+        .and_then(|()| fs::write(&src, b"probe").map_err(|e| e.to_string()));
     let cloned = made.is_ok()
         && Command::new("cp")
             .arg("--reflink=always")
