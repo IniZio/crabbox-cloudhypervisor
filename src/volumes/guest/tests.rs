@@ -61,7 +61,7 @@ fn the_group_disk_mounts_by_serial_before_docker() {
         .contains("Options=noatime,discard,nofail,noinit_itable\n"));
     assert!(disk
         .content
-        .contains("Before=crabbox-cache-dirs.service docker.service\n"));
+        .contains("Before=crabbox-cache-dirs.service docker.service containerd.service\n"));
     let unit = file(&setup, "/etc/systemd/system/crabbox-cache-dirs.service");
     assert!(unit.content.contains(
         "DefaultDependencies=no\nAfter=local-fs-pre.target var-lib-crabbox\\x2dcache-g7.mount\n"
@@ -78,7 +78,9 @@ fn each_path_binds_its_own_directory_of_the_volume() {
     assert!(caches.content.contains(
         "What=/var/lib/crabbox-cache/g7/gradle/home-crabbox-.gradle-caches\nWhere=/home/crabbox/.gradle/caches\nType=none\nOptions=bind,nofail\n"
     ));
-    assert!(caches.content.contains("Before=docker.service\n"));
+    assert!(caches
+        .content
+        .contains("Before=docker.service containerd.service\n"));
     assert!(caches.content.contains("WantedBy=local-fs.target\n"));
     let wrapper = file(
         &setup,
@@ -89,6 +91,60 @@ fn each_path_binds_its_own_directory_of_the_volume() {
         .contains("What=/var/lib/crabbox-cache/g7/gradle/home-crabbox-.gradle-wrapper\n"));
     let sdk = file(&setup, r"/etc/systemd/system/opt-android\x2dsdk.mount");
     assert!(sdk.content.contains("Where=/opt/android-sdk\n"));
+}
+
+#[test]
+fn every_cache_mount_is_ordered_before_containerd_and_docker() {
+    let mut docker = req("g7x", "docker", &["~/docker", "/var/lib/containerd"], 0);
+    docker.sealed = true;
+    let reqs = [req("g7", "npm", &["~/.npm"], 0), docker];
+    let plan = plan(&reqs, &limits(40));
+    let setup = setup(&[
+        Attached {
+            group: &plan.groups[0],
+            serial: "cbxcv0",
+        },
+        Attached {
+            group: &plan.groups[1],
+            serial: "cbxcv1",
+        },
+    ]);
+    let mounts: Vec<&SeedFile> = setup
+        .files
+        .iter()
+        .filter(|f| std::path::Path::new(&f.path).extension() == Some("mount".as_ref()))
+        .collect();
+    let targets: Vec<&str> = mounts
+        .iter()
+        .filter_map(|f| f.content.split("Where=").nth(1)?.lines().next())
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "/var/lib/crabbox-cache/g7",
+            "/home/crabbox/.npm",
+            "/var/lib/crabbox-cache/g7x",
+            "/home/crabbox/docker",
+            "/var/lib/containerd",
+        ]
+    );
+    for unit in mounts {
+        let before = unit
+            .content
+            .lines()
+            .find_map(|l| l.strip_prefix("Before="))
+            .unwrap_or_default();
+        let services: Vec<&str> = before.split(' ').collect();
+        assert!(
+            services.contains(&"docker.service") && services.contains(&"containerd.service"),
+            "{}: Before={before}",
+            unit.path
+        );
+    }
+    let containerd = file(&setup, "/etc/systemd/system/var-lib-containerd.mount");
+    assert!(containerd
+        .content
+        .contains("What=/var/lib/crabbox-cache/g7x/docker/var-lib-containerd\n"));
 }
 
 #[test]
