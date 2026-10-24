@@ -1,7 +1,6 @@
 //! Tests for cached asset handling.
 
 use super::*;
-use std::os::unix::fs::PermissionsExt;
 
 const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
@@ -98,8 +97,7 @@ fn present_without_marker_is_adopted_or_deleted() {
 /// Writes a fake qemu-img script into `dir`.
 fn fake_qemu(dir: &Path, body: &str) -> PathBuf {
     let path = dir.join("qemu-img");
-    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::script(&path, body);
     path
 }
 

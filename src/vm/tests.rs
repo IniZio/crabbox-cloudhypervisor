@@ -283,7 +283,7 @@ impl FakeCh {
     fn spawn_as(name: &str, comm: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join(name);
-        std::fs::copy("/bin/sleep", &bin).unwrap();
+        crate::test_exec::sleep_as(&bin);
         let child = std::process::Command::new(&bin).arg("30").spawn().unwrap();
         let ch = Self { _dir: dir, child };
         let pid = ch.child.id();
