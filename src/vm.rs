@@ -296,7 +296,9 @@ impl Backend for RealBackend {
     }
 
     fn reap(&self, record: &LeaseRecord, diag: &mut dyn Write) {
-        Self::reap_orphan_passt(record, diag);
+        if let Err(e) = Self::reap_orphan_passt(record, diag) {
+            let _ = writeln!(diag, "warn: {e}");
+        }
     }
 
     fn cache_echo(&self, lease_id: &str) -> Vec<CacheVolumeEcho> {
@@ -363,7 +365,7 @@ impl Backend for RealBackend {
             .as_ref()
             .is_some_and(|r| self.quiesce_for_cache(r, diag));
         if let Some(record) = &record {
-            Self::stop_processes(record, diag);
+            Self::stop_processes(record, diag)?;
         }
         self.settle_cache(lease_id, quiesced, diag);
         remove_tree(&run_dir)?;

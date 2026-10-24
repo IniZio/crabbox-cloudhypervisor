@@ -7,6 +7,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rustix::io::Errno;
+use rustix::process::{kill_process, Pid, Signal};
+
 /// Reflink-copies `base` to `dest`, then grows `dest` to `size_bytes` (never shrinks).
 pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), String> {
     let output = Command::new("cp")
@@ -164,23 +167,16 @@ pub fn owns(pid: u32, comm_prefix: &str, start: Option<u64>, boot: Option<&str>)
         && boot_id().as_deref() == Some(boot)
 }
 
-/// Sends `signal` (e.g. "TERM") to `pid`; a missing process counts as success.
-pub fn kill(pid: u32, signal: &str) -> Result<(), String> {
-    let output = Command::new("kill")
-        .arg("-s")
-        .arg(signal)
-        .arg(pid.to_string())
-        .output()
-        .map_err(|e| format!("kill: cannot run kill: {e}"))?;
-    if output.status.success() || !Path::new(&format!("/proc/{pid}")).exists() {
-        return Ok(());
+/// Sends `signal` to the one process `pid`; a missing process counts as success.
+pub fn kill(pid: u32, signal: Signal) -> Result<(), String> {
+    let target = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| format!("kill: {pid} is not a process id"))?;
+    match kill_process(target, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(e) => Err(format!("kill {pid}: {e}")),
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(format!(
-        "kill: failed ({}): {}",
-        output.status,
-        stderr.trim()
-    ))
 }
 
 /// Polls every 100ms until the process is gone; true if gone before `timeout`.

@@ -49,6 +49,7 @@ name = "crabbox-cloudhypervisor"
 version = "0.1.0"
 dependencies = [
  "fatfs",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

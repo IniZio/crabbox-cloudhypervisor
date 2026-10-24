@@ -433,12 +433,7 @@ fn destroy_kills_a_stopped_cloud_hypervisor() {
     let (backend, rec) = live_fixture(dir.path(), Some(&ch));
     backend.store.write(&rec).unwrap();
     let _silent = std::os::unix::net::UnixListener::bind(rec.api_socket()).unwrap();
-    let pid = ch.child.id().to_string();
-    assert!(std::process::Command::new("kill")
-        .args(["-s", "STOP", &pid])
-        .status()
-        .unwrap()
-        .success());
+    crate::host::kill(ch.child.id(), rustix::process::Signal::STOP).unwrap();
     backend.destroy("a", &mut Vec::new()).unwrap();
     assert!(!crate::host::pid_alive(ch.child.id(), super::CH_COMM));
     assert!(!rec.run_dir.exists());
@@ -453,10 +448,10 @@ fn reap_removes_stale_sockets_only_when_ch_is_dead() {
     for n in names {
         std::fs::write(rec.run_dir.join(n), "").unwrap();
     }
-    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new()).unwrap();
     assert!(names.iter().all(|n| rec.run_dir.join(n).exists()), "alive");
     rec.ch_pid = Some(u32::MAX);
-    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new()).unwrap();
     assert!(names.iter().all(|n| !rec.run_dir.join(n).exists()), "dead");
     assert!(rec.run_dir.join("marker").exists());
 }
@@ -474,7 +469,7 @@ fn reap_kills_an_orphan_passt() {
     let dir = tempfile::tempdir().unwrap();
     let (passt, _, mut rec) = stamped_passt(dir.path());
     rec.ch_pid = Some(u32::MAX);
-    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new()).unwrap();
     assert!(!crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
 }
 
@@ -483,7 +478,7 @@ fn reap_spares_a_passt_when_its_lease_never_had_a_cloud_hypervisor() {
     let dir = tempfile::tempdir().unwrap();
     let (passt, _, rec) = stamped_passt(dir.path());
     assert_eq!(rec.ch_pid, None);
-    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new()).unwrap();
     assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
 }
 
@@ -497,8 +492,8 @@ fn a_recorded_pid_reused_by_another_process_is_never_signalled() {
     rec.passt_start = rec.passt_start.map(|t| t + 1);
     assert!(!RealBackend::ch_alive(&rec));
     assert_eq!(RealBackend::power_of(&rec), crate::backend::Power::Stopped);
-    RealBackend::stop_processes(&rec, &mut Vec::new());
-    RealBackend::reap_orphan_passt(&rec, &mut Vec::new());
+    RealBackend::stop_processes(&rec, &mut Vec::new()).unwrap();
+    RealBackend::reap_orphan_passt(&rec, &mut Vec::new()).unwrap();
     assert!(crate::host::pid_alive(other_ch.child.id(), super::CH_COMM));
     assert!(crate::host::pid_alive(
         other_passt.child.id(),
@@ -578,8 +573,8 @@ fn a_record_without_start_times_is_never_signalled() {
     rec.boot_id = None;
     assert!(!RealBackend::ch_alive(&rec));
     let mut diag = Vec::new();
-    RealBackend::stop_processes(&rec, &mut diag);
-    RealBackend::reap_orphan_passt(&rec, &mut diag);
+    RealBackend::stop_processes(&rec, &mut diag).unwrap();
+    RealBackend::reap_orphan_passt(&rec, &mut diag).unwrap();
     assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
     assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
     let log = String::from_utf8(diag).unwrap();

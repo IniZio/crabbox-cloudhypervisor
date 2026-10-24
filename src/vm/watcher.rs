@@ -47,15 +47,15 @@ impl RealBackend {
     }
 
     /// Stops the record's watcher if it is still the process recorded.
-    pub(super) fn stop_watcher(record: &LeaseRecord, diag: &mut dyn Write) {
-        if let Some(pid) = record.watch_pid {
+    pub(super) fn stop_watcher(record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        record.watch_pid.map_or(Ok(()), |pid| {
             terminate(
                 pid,
                 || Self::watch_alive(record),
                 Duration::from_secs(2),
                 diag,
-            );
-        }
+            )
+        })
     }
 
     /// Starts a watcher unless the record's own is still running, so a lease

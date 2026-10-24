@@ -68,7 +68,7 @@ fn spawn_detached_lifecycle() {
     // After comm: state ppid pgrp session ...
     assert_eq!(fields.get(3).copied(), Some(pid.to_string().as_str()));
     assert!(!pid_alive(pid, "nomatch"));
-    kill(pid, "KILL").unwrap();
+    kill(pid, Signal::KILL).unwrap();
     assert!(wait_gone(pid, "sleep", Duration::from_secs(5)));
     assert!(!pid_alive(pid, "sleep"));
 }
@@ -80,7 +80,15 @@ fn pid_alive_false_for_missing_pid() {
 
 #[test]
 fn kill_missing_pid_is_ok() {
-    kill(u32::MAX - 1, "TERM").unwrap();
+    kill(i32::MAX.unsigned_abs(), Signal::TERM).unwrap();
+}
+
+#[test]
+fn kill_refuses_a_pid_that_is_not_one_process() {
+    for pid in [0, u32::MAX - 1] {
+        let err = kill(pid, Signal::TERM).unwrap_err();
+        assert!(err.contains("not a process id"), "{err}");
+    }
 }
 
 #[test]
