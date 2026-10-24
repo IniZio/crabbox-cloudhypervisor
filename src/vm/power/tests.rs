@@ -28,6 +28,13 @@ fn terminate_returns_only_once_the_process_is_gone() {
         checks.set(checks.get() + 1);
         checks.get() <= 5
     };
-    terminate(child.0.id(), alive, Duration::ZERO, &mut Vec::new());
+    terminate(child.0.id(), alive, Duration::ZERO, &mut Vec::new()).unwrap();
     assert!(checks.get() > 5, "returned while still alive");
+}
+
+#[test]
+fn terminate_errors_when_the_process_outlives_kill() {
+    let child = Sleeper::spawn();
+    let err = terminate(child.0.id(), || true, Duration::ZERO, &mut Vec::new()).unwrap_err();
+    assert!(err.contains("still alive"), "{err}");
 }

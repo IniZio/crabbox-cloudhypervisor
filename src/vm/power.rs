@@ -5,6 +5,8 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant};
 
+use rustix::process::Signal;
+
 use super::{mkdir_private, remove_tree, spec, RealBackend, CH_COMM, PASST_COMM};
 use crate::backend::{Backend, Power};
 use crate::ch::ChClient;
@@ -18,24 +20,39 @@ const STOP_API_TIMEOUT: Duration = Duration::from_secs(5);
 const POWER_API_TIMEOUT: Duration = Duration::from_secs(2);
 /// Delay between state polls.
 const POLL_EVERY: Duration = Duration::from_millis(200);
+/// How long a process may take to exit after SIGKILL.
+const KILL_WAIT: Duration = Duration::from_secs(5);
 
 /// One cloud-hypervisor API call used to stop a VM.
 type Step = fn(&ChClient) -> Result<(), String>;
 
-/// Sends TERM, then KILL if the process outlives `grace`; `alive` says whether
-/// `pid` is still the recorded process.
-pub(super) fn terminate(pid: u32, alive: impl Fn() -> bool, grace: Duration, diag: &mut dyn Write) {
+/// Sends TERM, then KILL if the process outlives `grace`, and returns once it
+/// is gone; `alive` says whether `pid` is still the recorded process.
+pub(super) fn terminate(
+    pid: u32,
+    alive: impl Fn() -> bool,
+    grace: Duration,
+    diag: &mut dyn Write,
+) -> Result<(), String> {
     if !alive() {
-        return;
+        return Ok(());
     }
-    if let Err(e) = host::kill(pid, "TERM") {
+    if let Err(e) = host::kill(pid, Signal::TERM) {
         let _ = writeln!(diag, "warn: {e}");
     }
-    if !host::wait_until_dead(&alive, grace) {
-        if let Err(e) = host::kill(pid, "KILL") {
-            let _ = writeln!(diag, "warn: {e}");
-        }
+    if host::wait_until_dead(&alive, grace) {
+        return Ok(());
     }
+    if let Err(e) = host::kill(pid, Signal::KILL) {
+        let _ = writeln!(diag, "warn: {e}");
+    }
+    if host::wait_until_dead(&alive, KILL_WAIT) {
+        return Ok(());
+    }
+    Err(format!(
+        "process {pid} still alive {}s after SIGKILL",
+        KILL_WAIT.as_secs()
+    ))
 }
 
 /// First two whitespace fields of a public key line.
@@ -68,25 +85,27 @@ impl RealBackend {
         true
     }
 
-    /// Stops cloud-hypervisor and passt for a record.
-    pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) {
+    /// Stops the watcher, cloud-hypervisor and passt for a record; errors
+    /// name the first one still alive.
+    pub(super) fn stop_processes(record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
         Self::note_unstamped(record, diag);
-        Self::stop_watcher(record, diag);
-        if let Some(pid) = record.ch_pid {
+        let watcher = Self::stop_watcher(record, diag);
+        let ch = record.ch_pid.map_or(Ok(()), |pid| {
             let alive = || Self::ch_alive(record);
             if record.api_socket().exists() && alive() && Self::stop_via_api(record, diag) {
                 let _ = host::wait_until_dead(alive, Duration::from_secs(5));
             }
-            terminate(pid, alive, Duration::from_secs(2), diag);
-        }
-        if let Some(pid) = record.passt_pid {
+            terminate(pid, alive, Duration::from_secs(2), diag)
+        });
+        let passt = record.passt_pid.map_or(Ok(()), |pid| {
             terminate(
                 pid,
                 || Self::passt_alive(record),
                 Duration::from_secs(2),
                 diag,
-            );
-        }
+            )
+        });
+        watcher.and(ch).and(passt)
     }
 
     /// Makes the guest ssh host key and the known-hosts file; returns (private, public).
@@ -250,7 +269,7 @@ impl RealBackend {
                 record.lease_id
             ));
         }
-        Self::reap_orphan_passt(record, diag);
+        Self::reap_orphan_passt(record, diag)?;
         let mut record = record.clone();
         remove_tree(&record.run_dir)?;
         mkdir_private(&record.run_dir)?;
@@ -262,16 +281,21 @@ impl RealBackend {
             .and_then(|()| self.boot_vm(&record, &firmware, diag))
             .and_then(|()| self.start_watcher(&mut record, diag));
         if started.is_err() {
-            Self::stop_processes(&record, diag);
+            if let Err(e) = Self::stop_processes(&record, diag) {
+                let _ = writeln!(diag, "warn: {e}");
+            }
         }
         started
     }
 
     /// Kills a passt left behind by a dead cloud-hypervisor and removes the
     /// lease's stale sockets. Never touches a lease that never had a CH pid.
-    pub(super) fn reap_orphan_passt(record: &LeaseRecord, diag: &mut dyn Write) {
+    pub(super) fn reap_orphan_passt(
+        record: &LeaseRecord,
+        diag: &mut dyn Write,
+    ) -> Result<(), String> {
         if record.ch_pid.is_none() || Self::ch_alive(record) {
-            return;
+            return Ok(());
         }
         Self::note_unstamped(record, diag);
         for name in ["a", "p", "p.repair", "v"] {
@@ -283,9 +307,10 @@ impl RealBackend {
                 || Self::passt_alive(record),
                 Duration::from_secs(2),
                 diag,
-            );
+            )?;
             let _ = writeln!(diag, "reaped orphan passt {pid} for {}", record.lease_id);
         }
+        Ok(())
     }
 }
 
