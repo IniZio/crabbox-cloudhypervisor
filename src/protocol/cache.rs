@@ -17,6 +17,8 @@ pub struct CacheVolumeRequest {
     pub paths: Vec<String>,
     /// Declared size in GiB; 0 means the adapter default.
     pub size_gb: u64,
+    /// The guest seals it at close; a group publishes only with its marker.
+    pub sealed: bool,
 }
 
 /// Parses `desired.cacheVolumes`; absent or null is empty.
@@ -49,12 +51,19 @@ pub(super) fn parse_cache_volumes(
                     .as_u64()
                     .ok_or("desired.cacheVolumes[].sizeGB must be an integer >= 0")?,
             };
+            let sealed = match o.get("sealed") {
+                None | Some(Value::Null) => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or("desired.cacheVolumes[].sealed must be a boolean")?,
+            };
             Ok(CacheVolumeRequest {
                 group: text("group"),
                 name: text("name"),
                 key: text("key"),
                 paths,
                 size_gb,
+                sealed,
             })
         })
         .collect()
