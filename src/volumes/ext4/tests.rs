@@ -85,3 +85,19 @@ fn needs_recovery_reads_the_superblock_flag() {
     assert!(out.status.success());
     assert!(needs_recovery(&img).unwrap());
 }
+
+#[test]
+fn has_file_tells_a_missing_file_from_an_unreadable_image() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("a.img");
+    make(&image, 64 * 1024 * 1024).unwrap();
+    assert_eq!(has_file(&image, "/a/.crabbox-sealed"), Ok(false));
+    remove_file(&image, "/a/.crabbox-sealed").unwrap();
+    let junk = dir.path().join("junk.img");
+    std::fs::write(&junk, vec![0u8; 8192]).unwrap();
+    assert!(has_file(&junk, "/a").is_err());
+    assert!(remove_file(&junk, "/a").is_err());
+}

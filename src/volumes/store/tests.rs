@@ -4,7 +4,7 @@ use std::process::Command;
 
 use super::*;
 use crate::volumes::tests::{have_e2fsprogs, limits, noise};
-use crate::volumes::{GuestPath, Volume};
+use crate::volumes::{GuestPath, Volume, SEAL_MARKER};
 
 const MIB: u64 = 1024 * 1024;
 
@@ -20,9 +20,69 @@ fn group(id: &str, capacity: u64) -> Group {
         volumes: vec![Volume {
             name: Token::parse("npm").unwrap(),
             paths: vec![GuestPath::Home(".npm".to_owned())],
+            sealed: false,
         }],
         capacity,
     }
+}
+
+/// Group `id` holding one sealed `docker` volume with two paths.
+fn sealed_group(id: &str) -> Group {
+    Group {
+        id: Token::parse(id).unwrap(),
+        volumes: vec![Volume {
+            name: Token::parse("docker").unwrap(),
+            paths: vec![
+                GuestPath::Home("docker".to_owned()),
+                GuestPath::Abs("/opt/android-sdk".to_owned()),
+            ],
+            sealed: true,
+        }],
+        capacity: GIB,
+    }
+}
+
+/// Runs debugfs `requests` against `image` in write mode.
+fn debugfs_script(image: &Path, requests: &[String]) {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("cmds");
+    fs::write(&script, requests.join("\n") + "\n").unwrap();
+    let out = Command::new("debugfs")
+        .arg("-w")
+        .arg("-f")
+        .arg(&script)
+        .arg(image)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
+/// The guest seals `volume`: 40 MiB of data, and the marker in each path dir
+/// whose index `marked` lists.
+fn guest_seals(image: &Path, volume: &Volume, marked: &[usize]) {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = dir.path().join("blob");
+    fs::write(&blob, noise(40 * MIB)).unwrap();
+    let name = volume.name.as_str();
+    let mut requests = vec![format!("mkdir {name}")];
+    let dirs = volume.image_dirs();
+    for d in &dirs {
+        requests.push(format!("mkdir \"{d}\""));
+    }
+    requests.push(format!("write {} \"{}/data\"", blob.display(), dirs[0]));
+    for i in marked {
+        requests.push(format!("write /dev/null \"{}/{SEAL_MARKER}\"", dirs[*i]));
+    }
+    debugfs_script(image, &requests);
+}
+
+/// True when every path dir of `volume` in `image` holds the marker.
+fn marked(image: &Path, volume: &Volume) -> Vec<bool> {
+    volume
+        .image_dirs()
+        .iter()
+        .map(|d| ext4::has_file(image, &format!("{d}/{SEAL_MARKER}")).unwrap())
+        .collect()
 }
 
 /// Writes `bytes` of random data into `image` at `/npm/<name>` without mounting it.
@@ -103,7 +163,7 @@ fn first_restore_is_an_empty_sparse_working_copy() {
 fn publish_one(s: &Store, g: &Group, lease: &str, file: &str, secs: u64) -> Publish {
     let r = s.restore(g, lease);
     guest_writes(&r.image, file, 40 * MIB);
-    s.publish(&g.id, &r.image, r.baseline, lease, at(secs))
+    s.publish(g, &r.image, r.baseline, lease, at(secs))
 }
 
 #[test]
@@ -163,13 +223,7 @@ fn written(s: &Store, lease: &str, bytes: u64) -> Restored {
 }
 
 fn publish_at(s: &Store, r: &Restored, lease: &str) -> Publish {
-    s.publish(
-        &Token::parse("g").unwrap(),
-        &r.image,
-        r.baseline,
-        lease,
-        at(1),
-    )
+    s.publish(&group("g", GIB), &r.image, r.baseline, lease, at(1))
 }
 
 #[test]
@@ -226,7 +280,7 @@ fn publish_rejects_a_full_group() {
     let r = s.restore(&tight, "full");
     let usage = ext4::check(&r.image).unwrap();
     guest_writes(&r.image, "pkg", (usage.total - usage.used) * 4096 - 2 * MIB);
-    let got = s.publish(&tight.id, &r.image, r.baseline, "full", at(4));
+    let got = s.publish(&tight, &r.image, r.baseline, "full", at(4));
     assert!(
         matches!(&got, Publish::Rejected { reason } if reason.starts_with("full")),
         "{got:?}"
@@ -308,4 +362,87 @@ fn gc_removes_working_copies_of_dead_leases_and_honours_dry_run() {
     assert_eq!(real.removed, [s.work_dir("gone")]);
     assert!(!s.work_dir("gone").exists());
     assert!(s.work_dir("live").exists());
+}
+
+#[test]
+fn restore_deletes_the_seal_marker_from_the_working_copy() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let g = sealed_group("gx");
+    let first = s.restore(&g, "lease-one");
+    guest_seals(&first.image, &g.volumes[0], &[0, 1]);
+    let got = s.publish(&g, &first.image, first.baseline, "lease-one", at(5));
+    assert!(matches!(got, Publish::Published { .. }), "{got:?}");
+
+    let second = s.restore(&g, "lease-two");
+    assert!(
+        matches!(second.outcome, Outcome::Restored { .. }),
+        "{second:?}"
+    );
+    assert_eq!(marked(&second.image, &g.volumes[0]), [false, false]);
+    let generation = generations(&s.group_dir(&g.id)).pop().unwrap();
+    assert_eq!(
+        marked(&generation.path, &g.volumes[0]),
+        [true, true],
+        "the published generation keeps its marker"
+    );
+}
+
+#[test]
+fn publish_rejects_a_sealed_volume_without_the_marker_in_every_path() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let g = sealed_group("gx");
+    for marked in [&[][..], &[0], &[1]] {
+        let r = s.restore(&g, "half");
+        guest_seals(&r.image, &g.volumes[0], marked);
+        let reason = "unsealed: docker".to_owned();
+        let got = s.publish(&g, &r.image, r.baseline, "half", at(6));
+        assert_eq!(got, Publish::Rejected { reason }, "markers {marked:?}");
+        s.discard("half").unwrap();
+    }
+    assert!(gens(&s, "gx").is_empty());
+
+    let r = s.restore(&g, "sealed");
+    guest_seals(&r.image, &g.volumes[0], &[0, 1]);
+    let got = s.publish(&g, &r.image, r.baseline, "sealed", at(7));
+    assert_eq!(
+        got,
+        Publish::Published {
+            generation: 7_000_000_000
+        }
+    );
+}
+
+#[test]
+fn only_sealed_volumes_need_the_marker() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let plain = group("g", GIB);
+    let sealed = sealed_group("gx");
+    let a = s.restore(&plain, "both");
+    let b = s.restore(&sealed, "both");
+    guest_writes(&a.image, "pkg", 40 * MIB);
+    guest_seals(&b.image, &sealed.volumes[0], &[]);
+    let got_plain = s.publish(&plain, &a.image, a.baseline, "both", at(8));
+    let got_sealed = s.publish(&sealed, &b.image, b.baseline, "both", at(8));
+    assert!(
+        matches!(got_plain, Publish::Published { .. }),
+        "{got_plain:?}"
+    );
+    assert!(
+        matches!(got_sealed, Publish::Rejected { .. }),
+        "{got_sealed:?}"
+    );
+    assert_eq!(gens(&s, "g").len(), 1);
+    assert!(gens(&s, "gx").is_empty());
 }

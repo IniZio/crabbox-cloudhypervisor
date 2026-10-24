@@ -6,6 +6,8 @@
 pub mod ext4;
 pub mod store;
 
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CacheConfig;
@@ -22,6 +24,8 @@ pub const LOGIN_HOME: &str = "/home/crabbox";
 pub const LOGIN_UID: u32 = 1000;
 /// Gid of the login user.
 pub const LOGIN_GID: u32 = 1000;
+/// File the guest leaves in each path of a sealed volume once it sealed it.
+pub const SEAL_MARKER: &str = ".crabbox-sealed";
 /// Bytes per GiB.
 pub const GIB: u64 = 1024 * 1024 * 1024;
 /// Group size when no volume of the group declares one.
@@ -133,6 +137,45 @@ pub struct Volume {
     pub sealed: bool,
 }
 
+impl Volume {
+    /// Directory of each path inside the group filesystem: `/<name>/<escaped target>`.
+    #[must_use]
+    pub fn image_dirs(&self) -> Vec<String> {
+        self.paths
+            .iter()
+            .map(|p| {
+                format!(
+                    "/{}/{}",
+                    self.name.as_str(),
+                    escape_path(&p.resolve(LOGIN_HOME))
+                )
+            })
+            .collect()
+    }
+}
+
+/// `systemd-escape --path`: `/` becomes `-`, other bytes outside `[A-Za-z0-9:_.]`
+/// (and a leading `.`) become `\xNN`.
+#[must_use]
+pub fn escape_path(path: &str) -> String {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        return "-".to_owned();
+    }
+    let mut out = String::new();
+    for (i, b) in trimmed.bytes().enumerate() {
+        match b {
+            b'/' => out.push('-'),
+            b'.' if i > 0 => out.push('.'),
+            b if b.is_ascii_alphanumeric() || b == b':' || b == b'_' => out.push(char::from(b)),
+            b => {
+                let _ = write!(out, "\\x{b:02x}");
+            }
+        }
+    }
+    out
+}
+
 /// One store image and the volumes inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Group {
@@ -142,6 +185,22 @@ pub struct Group {
     pub volumes: Vec<Volume>,
     /// Filesystem size in bytes.
     pub capacity: u64,
+}
+
+impl Group {
+    /// `(volume name, marker path in the image)` for each path of each sealed volume.
+    #[must_use]
+    pub fn seal_markers(&self) -> Vec<(&str, String)> {
+        self.volumes
+            .iter()
+            .filter(|v| v.sealed)
+            .flat_map(|v| {
+                v.image_dirs()
+                    .into_iter()
+                    .map(|d| (v.name.as_str(), format!("{d}/{SEAL_MARKER}")))
+            })
+            .collect()
+    }
 }
 
 /// What acquire did for a group; every name of the group shares it.

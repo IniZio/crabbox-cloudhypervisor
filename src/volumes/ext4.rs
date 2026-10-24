@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use super::{LOGIN_GID, LOGIN_UID};
 
 /// Programs this module runs, for `doctor`.
-pub const TOOLS: [&str; 3] = ["mke2fs", "e2fsck", "resize2fs"];
+pub const TOOLS: [&str; 4] = ["mke2fs", "e2fsck", "resize2fs", "debugfs"];
 /// Journal size in MiB: below the publish threshold, so journal churn alone never publishes.
 const JOURNAL_MIB: u64 = 16;
 /// Superblock offset in the image.
@@ -124,6 +124,56 @@ pub fn needs_recovery(path: &Path) -> Result<bool, String> {
         })
         .map_err(|e| format!("read superblock: {}", e.kind()))?;
     Ok(u32::from_le_bytes(word) & INCOMPAT_RECOVER != 0)
+}
+
+/// Runs one debugfs `request` on `path`; (stdout, stderr). debugfs exits 0
+/// on most failures, so callers read the output.
+fn debugfs(write: bool, request: &str, path: &Path) -> Result<(String, String), String> {
+    let mut cmd = Command::new("debugfs");
+    if write {
+        cmd.arg("-w");
+    }
+    let output = cmd
+        .arg("-R")
+        .arg(request)
+        .arg(path)
+        .env("DEBUGFS_PAGER", "__none__")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run debugfs: {}", e.kind()))?;
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
+/// Whether the image holds a regular file at `file`, read without mounting it.
+/// `file` is absolute and has no `"`.
+pub fn has_file(path: &Path, file: &str) -> Result<bool, String> {
+    let (out, err) = debugfs(false, &format!("stat \"{file}\""), path)?;
+    if out
+        .lines()
+        .any(|l| l.starts_with("Inode:") && l.contains("Type: regular"))
+    {
+        return Ok(true);
+    }
+    if err.contains("File not found by ext2_lookup") {
+        return Ok(false);
+    }
+    let last = err.lines().rev().find(|l| !l.trim().is_empty());
+    Err(format!(
+        "debugfs stat {file}: {}",
+        last.unwrap_or("no inode").trim()
+    ))
+}
+
+/// Removes `file` from the image if present, without mounting it.
+pub fn remove_file(path: &Path, file: &str) -> Result<(), String> {
+    debugfs(true, &format!("rm \"{file}\""), path)?;
+    if has_file(path, file)? {
+        return Err(format!("debugfs could not remove {file}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
