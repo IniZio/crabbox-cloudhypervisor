@@ -139,6 +139,18 @@ fn generations(dir: &Path) -> Vec<Generation> {
     gens
 }
 
+/// Every sealed volume of `group` has the marker in each of its path dirs.
+fn check_sealed(group: &Group, image: &Path) -> Result<(), String> {
+    for (name, marker) in group.seal_markers() {
+        match ext4::has_file(image, &marker) {
+            Ok(true) => {}
+            Ok(false) => return Err(format!("unsealed: {name}")),
+            Err(e) => return Err(format!("unsealed: {name} ({e})")),
+        }
+    }
+    Ok(())
+}
+
 /// Removes a file or a directory tree; a missing one is fine.
 fn remove(path: &Path) -> Result<(), String> {
     let result = if path.is_dir() {
@@ -269,6 +281,9 @@ impl Store {
         let outcome = if let Some(newest) = generations(&dir).pop() {
             host::clone_disk(&newest.path, image, 0)?;
             ext4::grow(image, group.capacity)?;
+            for (_, marker) in group.seal_markers() {
+                ext4::remove_file(image, &marker)?;
+            }
             Outcome::Restored {
                 generation: newest.ns,
             }
@@ -280,13 +295,13 @@ impl Store {
     }
 
     /// Renames `image` in as the next generation of `group` when it grew by at
-    /// least [`MIN_GROWTH`] over `baseline`, unmounted cleanly, passes a
-    /// read-only fsck and is under [`FULL_PERCENT`] full. Never touches the
-    /// store otherwise.
+    /// least [`MIN_GROWTH`] over `baseline`, unmounted cleanly, every sealed
+    /// volume left its marker, it passes a read-only fsck and is under
+    /// [`FULL_PERCENT`] full. Never touches the store otherwise.
     #[must_use]
     pub fn publish(
         &self,
-        group: &Token,
+        group: &Group,
         image: &Path,
         baseline: u64,
         lease_id: &str,
@@ -303,6 +318,9 @@ impl Store {
             Ok(true) => return rejected("not cleanly unmounted".to_owned()),
             Err(e) => return rejected(e),
         }
+        if let Err(e) = check_sealed(group, image) {
+            return rejected(e);
+        }
         match ext4::check(image) {
             Ok(usage) if usage.at_least(FULL_PERCENT) => {
                 return rejected(format!("full ({}/{} blocks)", usage.used, usage.total));
@@ -310,7 +328,7 @@ impl Store {
             Ok(_) => {}
             Err(e) => return rejected(format!("fsck: {e}")),
         }
-        let dir = self.group_dir(group);
+        let dir = self.group_dir(&group.id);
         let generation = unix_ns(now);
         let tag: String = lease_id.chars().take(LEASE_TAG).collect();
         let dest = dir.join(format!("gen-{generation:019}-{tag}.img"));

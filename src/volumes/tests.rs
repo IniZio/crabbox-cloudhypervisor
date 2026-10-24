@@ -255,3 +255,19 @@ fn echo_names_each_outcome() {
         ("gradle".into(), "skipped".into(), "mke2fs exited 1".into())
     );
 }
+
+#[test]
+fn image_dirs_are_the_escaped_bind_targets_under_the_name() {
+    let v = Volume {
+        name: Token::parse("docker").unwrap(),
+        paths: vec![
+            GuestPath::parse("~/.npm").unwrap(),
+            GuestPath::parse("/opt/android-sdk").unwrap(),
+        ],
+        sealed: true,
+    };
+    assert_eq!(
+        v.image_dirs(),
+        ["/docker/home-crabbox-.npm", r"/docker/opt-android\x2dsdk"]
+    );
+}
