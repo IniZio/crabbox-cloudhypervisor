@@ -15,7 +15,7 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
 - `cloud-hypervisor` (tested with v52.0).
 - `passt` with `--vhost-user` support (tested with 2026_06_11).
 - `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`.
-- For cache volumes: `mke2fs`, `e2fsck` and `resize2fs` (e2fsprogs). Without
+- For cache volumes: `mke2fs`, `e2fsck`, `resize2fs` and `debugfs` (e2fsprogs). Without
   them every cache volume is skipped and the Box starts cold.
 - crabbox itself, with `rsync` and `git` for syncing.
 
@@ -123,25 +123,31 @@ lease has none running, and never a second one.
 
 With `capabilities.cacheVolumes: true` in the trusted crabbox user config,
 `acquire` reads `desired.cacheVolumes`. Each entry names a `group`, a volume
-`name`, a `key`, one or more guest `paths` (`~/...` is the login home
-`/home/crabbox`, or an absolute path) and an optional `sizeGB`.
+`name`, a `key`, one or more guest `paths`, an optional `sizeGB` and an
+optional `sealed`. A path is `~/<rel>` (the login home `/home/crabbox`, never
+`~/.ssh`), `/opt/<rel>`, `/var/cache/<rel>`, or `/var/lib/containerd` or
+`/var/lib/containers` and below. Any other path is `skipped`.
 
 - **One image per group.** A group is one sparse raw ext4 image, attached as an
   extra virtio disk and mounted at `/var/lib/crabbox-cache/<group>`. Each volume
   is a directory inside it, and each of its paths is bind-mounted from its own
   subdirectory. The units live on the root disk, so pause, resume and reboots
-  keep the mounts. Missing path parents are created for the login user.
+  keep the mounts. Missing path parents are created for the login user. Every
+  cache mount is ordered before `docker.service` and `containerd.service`.
 - **Size.** A group's filesystem is the sum of its declared `sizeGB`, at least
   20 GiB, at most `cacheMaxVolumeGB`. The image is sparse, so only used blocks
   take host space.
 - **Restore.** A new lease gets a private copy of the group's newest
   generation (a reflink where the filesystem allows it, else a sparse copy of
   the used blocks), grown host-side to the current size. With no generation it
-  gets a fresh empty filesystem. Two leases never share an image.
+  gets a fresh empty filesystem. Two leases never share an image. Restore
+  deletes `.crabbox-sealed` from each path directory of every `sealed` volume.
 - **Publish.** `release` presses the ACPI power button and waits up to 30
   seconds for the guest to power off. Then a group publishes as the newest
   generation only if it grew by at least 32 MiB of allocated blocks, its
-  journal is clean, `e2fsck -fn` passes and it is less than 95% full. Anything
+  journal is clean, every `sealed` volume has `.crabbox-sealed` in each of its
+  path directories (else `unsealed: <name>`), `e2fsck -fn` passes and it is
+  less than 95% full. Anything
   else is discarded and the previous generation stays. A VM that is stopped,
   paused or killed publishes nothing. A cache never fails a release.
 - **Echo.** The acquire response lists each name with its outcome:
@@ -159,8 +165,9 @@ With `capabilities.cacheVolumes: true` in the trusted crabbox user config,
   (merged into an existing `/etc/docker/daemon.json`), so a cache volume on
   `~/docker` carries image layers.
 
-`doctor` checks the three e2fsprogs tools and warns when `cacheVolumeDir`
-cannot reflink, because then each restore copies the cache's used bytes.
+`doctor` checks the four e2fsprogs tools, creates `cacheVolumeDir` mode 0700,
+and warns when it cannot reflink, because then each restore copies the cache's
+used bytes.
 
 ## What is pinned
 

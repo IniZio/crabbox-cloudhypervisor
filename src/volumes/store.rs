@@ -107,7 +107,7 @@ pub fn unix_ns(t: SystemTime) -> u64 {
 }
 
 /// Creates `path` and its parents with mode 0700.
-fn mkdir_private(path: &Path) -> Result<(), String> {
+pub(crate) fn mkdir_private(path: &Path) -> Result<(), String> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
