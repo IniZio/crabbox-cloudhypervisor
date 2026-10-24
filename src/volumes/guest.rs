@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use super::{Group, LOGIN_GID, LOGIN_HOME, LOGIN_UID, MOUNT_ROOT};
+use super::{escape_path, Group, LOGIN_GID, LOGIN_HOME, LOGIN_UID, MOUNT_ROOT};
 /// Docker's daemon config in the guest.
 pub const DAEMON_JSON: &str = "/etc/docker/daemon.json";
 /// Script that points Docker's data root into the login home.
@@ -15,6 +15,8 @@ const DIRS_SCRIPT: &str = "/usr/local/sbin/crabbox-cache-dirs";
 const DIRS_UNIT: &str = "crabbox-cache-dirs.service";
 /// Directory for unit files.
 const UNIT_DIR: &str = "/etc/systemd/system";
+/// Services that read cache paths; every cache mount is up before them.
+const CONSUMERS: &str = "docker.service containerd.service";
 
 /// One file cloud-init writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,28 +47,6 @@ pub struct Attached<'a> {
     pub serial: &'a str,
 }
 
-/// `systemd-escape --path`: `/` becomes `-`, other bytes outside `[A-Za-z0-9:_.]`
-/// (and a leading `.`) become `\xNN`.
-#[must_use]
-pub fn escape_path(path: &str) -> String {
-    let trimmed = path.trim_matches('/');
-    if trimmed.is_empty() {
-        return "-".to_owned();
-    }
-    let mut out = String::new();
-    for (i, b) in trimmed.bytes().enumerate() {
-        match b {
-            b'/' => out.push('-'),
-            b'.' if i > 0 => out.push('.'),
-            b if b.is_ascii_alphanumeric() || b == b':' || b == b'_' => out.push(char::from(b)),
-            b => {
-                let _ = write!(out, "\\x{b:02x}");
-            }
-        }
-    }
-    out
-}
-
 /// Mount unit name for a mount point.
 #[must_use]
 pub fn mount_unit_name(where_: &str) -> String {
@@ -94,7 +74,7 @@ fn prefixes(path: &str) -> Vec<String> {
 /// Body of the group disk's mount unit.
 fn group_unit(mount_point: &str, serial: &str) -> String {
     format!(
-        "[Unit]\nDescription=crabbox cache disk {serial}\nBefore={DIRS_UNIT} docker.service\n\
+        "[Unit]\nDescription=crabbox cache disk {serial}\nBefore={DIRS_UNIT} {CONSUMERS}\n\
          [Mount]\nWhat=/dev/disk/by-id/virtio-{serial}\nWhere={mount_point}\nType=ext4\n\
          Options=noatime,discard,nofail,noinit_itable\n[Install]\nWantedBy=local-fs.target\n"
     )
@@ -104,7 +84,7 @@ fn group_unit(mount_point: &str, serial: &str) -> String {
 fn bind_unit(source: &str, target: &str) -> String {
     format!(
         "[Unit]\nDescription=crabbox cache {target}\nRequires={DIRS_UNIT}\nAfter={DIRS_UNIT}\n\
-         Before=docker.service\n[Mount]\nWhat={source}\nWhere={target}\nType=none\n\
+         Before={CONSUMERS}\n[Mount]\nWhat={source}\nWhere={target}\nType=none\n\
          Options=bind,nofail\n[Install]\nWantedBy=local-fs.target\n"
     )
 }
@@ -149,9 +129,9 @@ pub fn setup(attached: &[Attached<'_>]) -> GuestSetup {
         for volume in &a.group.volumes {
             let volume_dir = format!("{mount_point}/{}", volume.name.as_str());
             dirs.push(volume_dir.clone());
-            for path in &volume.paths {
+            for (path, dir) in volume.paths.iter().zip(volume.image_dirs()) {
                 let target = path.resolve(LOGIN_HOME);
-                let source = format!("{volume_dir}/{}", escape_path(&target));
+                let source = format!("{mount_point}{dir}");
                 dirs.push(source.clone());
                 dirs.extend(prefixes(&target));
                 let unit = mount_unit_name(&target);
