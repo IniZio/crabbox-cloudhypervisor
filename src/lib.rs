@@ -20,6 +20,7 @@ pub mod ready;
 pub mod seed;
 pub mod state;
 pub mod vm;
+pub mod volumes;
 pub mod watch;
 
 #[cfg(test)]

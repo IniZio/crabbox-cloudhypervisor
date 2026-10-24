@@ -3,3 +3,4 @@ extend-exclude = ["target/", "Cargo.lock"]
 
 [default.extend-words]
 passt = "passt"
+mke = "mke"

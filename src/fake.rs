@@ -145,6 +145,7 @@ pub(crate) fn desired(id: &str) -> Desired {
         slug: format!("slug-{id}"),
         name: format!("name-{id}"),
         class: None,
+        cache_volumes: Vec::new(),
     }
 }
 

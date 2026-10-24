@@ -50,6 +50,19 @@ pub struct Growth {
     pub disk_free_gib: u64,
 }
 
+/// Where cache volume generations live and how much they may use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheConfig {
+    /// Store root (`cacheVolumeDir`).
+    pub volume_dir: PathBuf,
+    /// Whole store budget in GiB; least recently used groups go first above it.
+    pub store_max_gib: u64,
+    /// Largest group filesystem in GiB.
+    pub max_volume_gib: u64,
+    /// Groups unused for this many days are removed.
+    pub key_ttl_days: u64,
+}
+
 /// Validated provider configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -87,6 +100,8 @@ pub struct Config {
     pub ready_timeout: Duration,
     /// Cleanup deletes stopped leases older than this many hours; `None` = never.
     pub reap_stopped_after_hours: Option<u64>,
+    /// Cache volume store.
+    pub cache: CacheConfig,
 }
 
 /// Environment lookup used for default directories.
@@ -113,7 +128,6 @@ impl Config {
         let memory_mib = int_key(config, "memoryMiB", 4096, 512, u64::MAX)?;
         let disk_gib = int_key(config, "diskGiB", 20, 8, u64::MAX)?;
         Ok(Self {
-            state_dir,
             runtime_dir,
             cache_dir,
             cpus,
@@ -136,6 +150,14 @@ impl Config {
                 3600,
             )?),
             reap_stopped_after_hours: reap_stopped_after_hours(config)?,
+            cache: CacheConfig {
+                volume_dir: path_key(config, "cacheVolumeDir")?
+                    .unwrap_or_else(|| state_dir.join("volumes")),
+                store_max_gib: int_key(config, "cacheStoreMaxGB", 200, 1, u64::MAX)?,
+                max_volume_gib: int_key(config, "cacheMaxVolumeGB", 40, 1, u64::MAX)?,
+                key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
+            },
+            state_dir,
         })
     }
 }

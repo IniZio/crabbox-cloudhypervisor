@@ -3,8 +3,11 @@
 use serde::Serialize;
 use serde_json::Value;
 
+mod cache;
 mod wire;
-pub use wire::{Lease, LeaseRow, Ssh};
+use cache::parse_cache_volumes;
+pub use cache::CacheVolumeRequest;
+pub use wire::{CacheVolumeEcho, Lease, LeaseRow, Ssh};
 
 /// The only protocol version this adapter speaks.
 const VERSION: u64 = 1;
@@ -78,6 +81,8 @@ pub struct Desired {
     pub name: String,
     /// Optional machine class.
     pub class: Option<String>,
+    /// Cache volumes to attach, as sent.
+    pub cache_volumes: Vec<CacheVolumeRequest>,
 }
 
 /// Identifiers crabbox expects an existing lease to carry.
@@ -202,6 +207,7 @@ fn parse_desired(object: &serde_json::Map<String, Value>) -> Result<Option<Desir
             slug: required("slug")?,
             name: required("name")?,
             class: opt_str(o, "class"),
+            cache_volumes: parse_cache_volumes(o)?,
         })
     })
 }

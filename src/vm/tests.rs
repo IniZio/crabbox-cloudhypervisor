@@ -48,6 +48,12 @@ pub(super) fn config(root: &Path) -> Config {
         curl: tool,
         ready_timeout: Duration::from_secs(1),
         reap_stopped_after_hours: None,
+        cache: crate::config::CacheConfig {
+            volume_dir: root.join("volumes"),
+            store_max_gib: 200,
+            max_volume_gib: 40,
+            key_ttl_days: 30,
+        },
     }
 }
 
@@ -215,6 +221,7 @@ fn create_rejects_overlong_runtime_dir_before_creating_anything() {
         slug: "s".to_owned(),
         name: "n".to_owned(),
         class: None,
+        cache_volumes: Vec::new(),
     };
     let err = backend.create(&desired, &mut Vec::new()).unwrap_err();
     assert!(err.contains("too long"), "{err}");

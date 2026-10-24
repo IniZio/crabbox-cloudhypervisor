@@ -41,6 +41,12 @@ fn config(root: &Path) -> Config {
         curl: tool,
         ready_timeout: Duration::from_secs(5),
         reap_stopped_after_hours: None,
+        cache: crate::config::CacheConfig {
+            volume_dir: root.join("volumes"),
+            store_max_gib: 200,
+            max_volume_gib: 40,
+            key_ttl_days: 30,
+        },
     }
 }
 
