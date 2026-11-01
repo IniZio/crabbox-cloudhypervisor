@@ -190,6 +190,10 @@ fn removed_hint(key: &str) -> &'static str {
 /// Fails on a removed key, so a stale config does not silently lose its cap.
 fn reject_removed_keys(config: &Value) -> Result<(), String> {
     for key in REMOVED_KEYS {
+        // crabbox replays a lease's config from when it was acquired, and `disk` is what pause does now.
+        if key == "pause" && config.get(key).and_then(Value::as_str) == Some("disk") {
+            continue;
+        }
         if config.get(key).is_some() {
             return Err(format!("config.{key} was removed: {}", removed_hint(key)));
         }
