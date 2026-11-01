@@ -57,6 +57,7 @@ fn create_refuses_an_unknown_class_before_creating_anything() {
         name: "n".to_owned(),
         class: Some("huge".to_owned()),
         cache_volumes: Vec::new(),
+        cache_scope: None,
     };
     let err = backend.create(&desired, &mut Vec::new()).unwrap_err();
     assert!(
