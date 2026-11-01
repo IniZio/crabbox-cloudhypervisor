@@ -111,17 +111,6 @@ pub struct Config {
     pub balloon: BalloonConfig,
     /// MiB a VM scope may use above its class memory, for the VMM itself.
     pub vmm_overhead_mib: u64,
-    /// What `pause` does with guest memory.
-    pub pause: PauseMode,
-}
-
-/// Where a paused guest's memory lives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PauseMode {
-    /// Frozen in host RAM.
-    Memory,
-    /// Snapshotted to the lease dir; the VM processes exit.
-    Disk,
 }
 
 /// Environment lookup used for default directories.
@@ -182,34 +171,30 @@ impl Config {
             cgroup: cgroup(config)?,
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
-            pause: pause_mode(config)?,
             state_dir,
         })
     }
 }
 
 /// Keys that no longer do anything; a config that still sets one fails to load.
-const REMOVED_KEYS: [&str; 2] = ["cpusMax", "memoryMiBMax"];
+const REMOVED_KEYS: [&str; 3] = ["cpusMax", "memoryMiBMax", "pause"];
+
+/// What to do instead of a removed key.
+fn removed_hint(key: &str) -> &'static str {
+    match key {
+        "pause" => "pause always suspends to disk and frees guest RAM; delete it",
+        _ => "VMs now boot at their class size; delete it",
+    }
+}
 
 /// Fails on a removed key, so a stale config does not silently lose its cap.
 fn reject_removed_keys(config: &Value) -> Result<(), String> {
     for key in REMOVED_KEYS {
         if config.get(key).is_some() {
-            return Err(format!(
-                "config.{key} was removed: VMs now boot at their class size; delete it"
-            ));
+            return Err(format!("config.{key} was removed: {}", removed_hint(key)));
         }
     }
     Ok(())
-}
-
-/// Reads `pause`: `memory` (default) or `disk`.
-fn pause_mode(config: &Value) -> Result<PauseMode, String> {
-    match get(config, "pause").map(Value::as_str) {
-        None | Some(Some("memory")) => Ok(PauseMode::Memory),
-        Some(Some("disk")) => Ok(PauseMode::Disk),
-        Some(_) => Err("config.pause must be \"memory\" or \"disk\"".to_owned()),
-    }
 }
 
 /// Reads `cgroup`: `systemd` (default) or `off`.

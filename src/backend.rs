@@ -111,15 +111,10 @@ pub trait Backend {
     /// Live power state. Stopped when the CH pid is gone.
     fn power(&self, record: &LeaseRecord) -> Power;
 
-    /// Pauses a Running VM and returns once vm.info reports Paused
-    /// (within readyTimeout); when pause frees memory it then suspends the
-    /// VM to disk. Called when Running, or Paused if pause frees memory.
+    /// Suspends the VM to disk, freeing its host RAM. Called when Running,
+    /// or Paused in memory by an older adapter. On failure the VM is not
+    /// left paused by this call.
     fn pause(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String>;
-
-    /// True when `pause` suspends to disk and frees the guest's host RAM.
-    fn pause_frees_memory(&self) -> bool {
-        false
-    }
 
     /// Paused: vm.resume. Suspended: restore the snapshot, then vm.resume.
     /// Stopped: cold boot from the existing disk and seed
