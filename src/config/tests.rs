@@ -27,8 +27,6 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
-            cpus_max: 4,
-            memory_mib_max: 8192,
             disk_max_gib: 100,
             disk_step_gib: 10,
             disk_free_percent: 15,
@@ -151,11 +149,6 @@ fn overrides_apply() {
         memory_mib: 1024,
         classes: crate::size::default_classes(),
         disk_gib: 40,
-        growth: Growth {
-            cpus_max: 16,
-            memory_mib_max: 2048,
-            ..expected("/s", "/r", "/c").growth
-        },
         image: asset("https://i/x"),
         firmware: asset("https://f/x"),
         cloud_hypervisor: PathBuf::from("/b/ch"),
@@ -171,32 +164,28 @@ fn overrides_apply() {
 }
 
 #[test]
-fn growth_caps_default_to_double_the_boot_size_and_a_100_gib_disk() {
+fn the_disk_cap_defaults_to_100_gib_or_the_disk_size() {
     let c = parse(&json!({"cpus": 3, "memoryMiB": 1024, "diskGiB": 10}), HOME).unwrap();
     assert_eq!(
         c.growth,
         Growth {
-            cpus_max: 6,
-            memory_mib_max: 2048,
             disk_max_gib: 100,
             disk_step_gib: 10,
             disk_free_percent: 15,
             disk_free_gib: 4,
         }
     );
-    let big = parse(&json!({"cpus": 40, "diskGiB": 200}), HOME).unwrap();
-    assert_eq!((big.growth.cpus_max, big.growth.disk_max_gib), (64, 200));
+    let big = parse(&json!({"diskGiB": 200}), HOME).unwrap();
+    assert_eq!(big.growth.disk_max_gib, 200);
 }
 
 #[test]
 fn growth_keys_override_the_defaults() {
     let cfg = json!({
-        "cpusMax": 12, "memoryMiBMax": 65536, "diskMaxGiB": 500,
+        "diskMaxGiB": 500,
         "diskGrowStepGiB": 25, "diskGrowFreePercent": 5, "diskGrowFreeGiB": 0
     });
     let want = Growth {
-        cpus_max: 12,
-        memory_mib_max: 65536,
         disk_max_gib: 500,
         disk_step_gib: 25,
         disk_free_percent: 5,
@@ -206,13 +195,8 @@ fn growth_keys_override_the_defaults() {
 }
 
 #[test]
-fn a_growth_cap_below_the_boot_size_is_rejected() {
+fn a_bad_disk_growth_value_is_rejected() {
     for (cfg, key) in [
-        (json!({"cpus": 4, "cpusMax": 3}), "cpusMax"),
-        (
-            json!({"memoryMiB": 4096, "memoryMiBMax": 2048}),
-            "memoryMiBMax",
-        ),
         (json!({"diskGiB": 40, "diskMaxGiB": 30}), "diskMaxGiB"),
         (json!({"diskGrowStepGiB": 0}), "diskGrowStepGiB"),
         (json!({"diskGrowFreePercent": 91}), "diskGrowFreePercent"),
@@ -393,5 +377,16 @@ fn cache_keys_are_read_and_checked() {
     ] {
         let err = parse(&json!({ key: bad }), HOME).unwrap_err();
         assert!(err.contains(key), "{err}");
+    }
+}
+
+#[test]
+fn removed_growth_keys_fail_to_load_and_say_why() {
+    for key in ["cpusMax", "memoryMiBMax"] {
+        let e = err_for(&json!({ key: 8 }));
+        assert_eq!(
+            e,
+            format!("config.{key} was removed: VMs now boot at their class size; delete it")
+        );
     }
 }

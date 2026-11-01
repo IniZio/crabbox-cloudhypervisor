@@ -5,10 +5,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::Value;
-
+use super::SAMPLE_SCRIPT;
 use super::{parse_sample, watch_loop, Log, Machine, WatchSpec, GROW_FS_SCRIPT, INTERVAL};
-use super::{SAMPLE_SCRIPT, SETTLE};
 use crate::ch::ChClient;
 use crate::grow::{Current, Planner, Sample};
 use crate::ready::ReadyProbe;
@@ -45,19 +43,10 @@ impl Machine for RealMachine {
     }
 
     fn current(&self) -> Result<Current, String> {
-        let info = self.client.info()?;
-        let field = |path: &str| {
-            info.pointer(path)
-                .and_then(Value::as_u64)
-                .ok_or_else(|| format!("cloud-hypervisor vm.info: missing {path}"))
-        };
         Ok(Current {
             disk_bytes: fs::metadata(&self.disk)
                 .map_err(|e| format!("stat root disk: {e}"))?
                 .len(),
-            vcpus: u32::try_from(field("/config/cpus/boot_vcpus")?)
-                .map_err(|_| "cloud-hypervisor vm.info: vcpus out of range".to_owned())?,
-            memory_bytes: field("/config/memory/size")?,
         })
     }
 
@@ -87,10 +76,6 @@ impl Machine for RealMachine {
             .parse()
             .map_err(|_| "grow fs: cannot read the new size".to_owned())
     }
-
-    fn resize(&self, vcpus: Option<u32>, ram_bytes: Option<u64>) -> Result<(), String> {
-        self.client.resize(vcpus, ram_bytes)
-    }
 }
 
 /// Runs the watcher for `lease_id` until its cloud-hypervisor exits.
@@ -115,9 +100,9 @@ pub fn run(lease_id: &str, state_dir: &Path, out: &mut dyn Write) -> Result<(), 
     let g = watch.growth;
     let mut log = Log::new(out);
     log.note(&format!(
-        "watching {lease_id}: disk up to {} GiB, vCPUs up to {}, memory up to {} MiB",
-        g.disk_max_gib, g.cpus_max, g.memory_mib_max
+        "watching {lease_id}: disk up to {} GiB",
+        g.disk_max_gib
     ));
-    watch_loop(&machine, &mut Planner::new(g), INTERVAL, SETTLE, &mut log);
+    watch_loop(&machine, &mut Planner::new(g), INTERVAL, &mut log);
     Ok(())
 }

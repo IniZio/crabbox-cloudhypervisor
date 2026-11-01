@@ -234,20 +234,6 @@ fn body_of(req: &str) -> Value {
 }
 
 #[test]
-fn resize_sends_only_the_resources_it_changes() {
-    let (_d, c, h) = serve(vec![http("204 No Content", ""), http("204 No Content", "")]);
-    c.resize(Some(4), None).unwrap();
-    c.resize(None, Some(4_294_967_296)).unwrap();
-    let reqs = h.join().unwrap();
-    assert!(reqs[0].starts_with("PUT /api/v1/vm.resize HTTP/1.1\r\n"));
-    assert_eq!(body_of(&reqs[0]), serde_json::json!({"desired_vcpus": 4}));
-    assert_eq!(
-        body_of(&reqs[1]),
-        serde_json::json!({"desired_ram": 4_294_967_296_u64})
-    );
-}
-
-#[test]
 fn resize_disk_names_the_disk_and_its_new_size() {
     let (_d, c, h) = serve(vec![http("204 No Content", "")]);
     c.resize_disk("root", 21_474_836_480).unwrap();

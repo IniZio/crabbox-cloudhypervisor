@@ -1,33 +1,11 @@
-//! Decides when a running guest gets more disk, vCPUs or memory.
+//! Decides when a running guest gets more disk.
 //!
-//! Pure: it reads samples and the VMM's current sizes and returns actions.
+//! Pure: it reads samples and the VMM's current disk size and returns actions.
 
 use crate::config::Growth;
-use crate::vm::spec::MEMORY_BLOCK;
 
 /// Bytes per GiB.
 pub const GIB: u64 = 1024 * 1024 * 1024;
-/// Bytes per MiB.
-pub const MIB: u64 = 1024 * 1024;
-/// CPU busy above this percent counts as pressure.
-pub const HOT_PERCENT: u64 = 90;
-/// Consecutive samples under CPU pressure before a raise.
-pub const SUSTAINED_SAMPLES: u32 = 3;
-/// Memory in use above this percent counts as pressure. Lower than CPU's,
-/// because the OOM killer acts before memory is full.
-pub const MEM_HOT_PERCENT: u64 = 80;
-/// Consecutive samples under memory pressure before a raise.
-pub const MEM_SUSTAINED_SAMPLES: u32 = 2;
-
-/// Cumulative CPU time from the `cpu` line of `/proc/stat`, in ticks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CpuTimes {
-    /// Ticks spent neither idle nor waiting on I/O.
-    pub busy: u64,
-    /// All ticks.
-    pub total: u64,
-}
-
 /// One reading of the guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample {
@@ -35,14 +13,6 @@ pub struct Sample {
     pub fs_size: u64,
     /// Space on the root filesystem available to users, bytes.
     pub fs_avail: u64,
-    /// CPU time counters.
-    pub cpu: CpuTimes,
-    /// `MemTotal`, bytes.
-    pub mem_total: u64,
-    /// `MemAvailable`, bytes.
-    pub mem_avail: u64,
-    /// Online CPUs.
-    pub online_cpus: u32,
 }
 
 /// What the VMM currently gives the guest.
@@ -50,10 +20,6 @@ pub struct Sample {
 pub struct Current {
     /// Root disk image size, bytes.
     pub disk_bytes: u64,
-    /// vCPUs.
-    pub vcpus: u32,
-    /// Memory, bytes.
-    pub memory_bytes: u64,
 }
 
 /// One change to make, in the order returned.
@@ -73,20 +39,6 @@ pub enum Action {
         /// The cap, bytes.
         max: u64,
     },
-    /// Raise the vCPU count.
-    RaiseCpus {
-        /// Count before.
-        from: u32,
-        /// Count after.
-        to: u32,
-    },
-    /// Raise guest memory.
-    RaiseMemory {
-        /// Bytes before.
-        from: u64,
-        /// Bytes after.
-        to: u64,
-    },
 }
 
 /// Remembers what decisions need across samples.
@@ -94,12 +46,6 @@ pub enum Action {
 pub struct Planner {
     /// Limits and triggers.
     growth: Growth,
-    /// CPU counters of the previous sample.
-    prev_cpu: Option<CpuTimes>,
-    /// Consecutive samples with CPU pressure.
-    hot_cpu: u32,
-    /// Consecutive samples with memory pressure.
-    hot_mem: u32,
     /// The filesystem may not fill the disk yet; grow it before the disk again.
     fs_pending: bool,
     /// `DiskAtMax` was already reported for the current low-space spell.
@@ -112,20 +58,14 @@ impl Planner {
     pub const fn new(growth: Growth) -> Self {
         Self {
             growth,
-            prev_cpu: None,
-            hot_cpu: 0,
-            hot_mem: 0,
             fs_pending: true,
             max_noted: false,
         }
     }
 
     /// Actions for one sample.
-    pub fn plan(&mut self, sample: &Sample, current: &Current) -> Vec<Action> {
-        let mut actions = self.disk(sample, current);
-        actions.extend(self.cpus(sample, current));
-        actions.extend(self.memory(sample, current));
-        actions
+    pub fn plan(&mut self, sample: &Sample, current: Current) -> Vec<Action> {
+        self.disk(sample, current)
     }
 
     /// Records whether the last `GrowFs` succeeded.
@@ -134,7 +74,7 @@ impl Planner {
     }
 
     /// Grows the filesystem while it lags the disk, else the disk when space is low.
-    fn disk(&mut self, sample: &Sample, current: &Current) -> Vec<Action> {
+    fn disk(&mut self, sample: &Sample, current: Current) -> Vec<Action> {
         if self.fs_pending {
             return vec![Action::GrowFs];
         }
@@ -162,55 +102,6 @@ impl Planner {
             },
             Action::GrowFs,
         ]
-    }
-
-    /// Doubles vCPUs (up to the cap) after sustained CPU pressure.
-    fn cpus(&mut self, sample: &Sample, current: &Current) -> Option<Action> {
-        let hot = self.prev_cpu.replace(sample.cpu).is_some_and(|prev| {
-            let total = sample.cpu.total.saturating_sub(prev.total);
-            let busy = sample.cpu.busy.saturating_sub(prev.busy);
-            total > 0 && busy.saturating_mul(100) > total.saturating_mul(HOT_PERCENT)
-        });
-        self.hot_cpu = if hot {
-            self.hot_cpu.saturating_add(1)
-        } else {
-            0
-        };
-        let cap = self.growth.cpus_max;
-        if self.hot_cpu < SUSTAINED_SAMPLES || current.vcpus >= cap {
-            return None;
-        }
-        self.hot_cpu = 0;
-        Some(Action::RaiseCpus {
-            from: current.vcpus,
-            to: current.vcpus.saturating_mul(2).min(cap),
-        })
-    }
-
-    /// Doubles memory (up to the cap, in whole hotplug blocks) after sustained pressure.
-    fn memory(&mut self, sample: &Sample, current: &Current) -> Option<Action> {
-        let used = sample.mem_total.saturating_sub(sample.mem_avail);
-        let hot = sample.mem_total > 0
-            && used.saturating_mul(100) > sample.mem_total.saturating_mul(MEM_HOT_PERCENT);
-        self.hot_mem = if hot {
-            self.hot_mem.saturating_add(1)
-        } else {
-            0
-        };
-        let room = self
-            .growth
-            .memory_mib_max
-            .saturating_mul(MIB)
-            .saturating_sub(current.memory_bytes);
-        let add = current.memory_bytes.min(room) / MEMORY_BLOCK * MEMORY_BLOCK;
-        if self.hot_mem < MEM_SUSTAINED_SAMPLES || add == 0 {
-            return None;
-        }
-        self.hot_mem = 0;
-        Some(Action::RaiseMemory {
-            from: current.memory_bytes,
-            to: current.memory_bytes + add,
-        })
     }
 }
 

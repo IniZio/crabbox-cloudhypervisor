@@ -20,8 +20,6 @@ fn config(root: &Path) -> Config {
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
-            cpus_max: 4,
-            memory_mib_max: 8192,
             disk_max_gib: 100,
             disk_step_gib: 10,
             disk_free_percent: 15,

@@ -17,8 +17,6 @@ const GUEST_CID: u32 = 3;
 pub const ROOT_DISK_ID: &str = "root";
 /// Bytes per MiB.
 const MIB: u64 = 1024 * 1024;
-/// Memory hotplug granularity the guest kernel needs (128 MiB).
-pub const MEMORY_BLOCK: u64 = 128 * MIB;
 /// Hex characters of an asset hash used in cache file names.
 const HASH_PREFIX: usize = 12;
 
@@ -37,26 +35,18 @@ pub struct VmPaths<'a> {
 
 /// Builds the `vm.create` request body for one lease booting at `size`.
 ///
-/// The growth caps never sit below the boot size, which a class can exceed.
+/// The guest boots at its full size: no CPU or memory is hot-added later.
 #[must_use]
-pub fn vm_config(config: &Config, size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value {
+pub fn vm_config(size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value {
     let VmPaths {
         firmware,
         disk,
         seed,
         serial,
     } = paths;
-    let boot = size.memory_mib * MIB;
-    let memory_max = config.growth.memory_mib_max.max(size.memory_mib);
-    let headroom = (memory_max * MIB).saturating_sub(boot);
-    let memory = if headroom > 0 {
-        let hotplug = headroom.div_ceil(MEMORY_BLOCK) * MEMORY_BLOCK;
-        json!({"size": boot, "shared": true, "hotplug_size": hotplug})
-    } else {
-        json!({"size": boot, "shared": true})
-    };
+    let memory = json!({"size": size.memory_mib * MIB, "shared": true});
     json!({
-        "cpus": {"boot_vcpus": size.cpus, "max_vcpus": config.growth.cpus_max.max(size.cpus)},
+        "cpus": {"boot_vcpus": size.cpus, "max_vcpus": size.cpus},
         "memory": memory,
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": firmware},
