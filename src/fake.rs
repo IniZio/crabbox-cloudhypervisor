@@ -36,6 +36,10 @@ pub(crate) struct Fake {
     pub(crate) busy: RefCell<BTreeSet<String>>,
     /// `resume` fails.
     pub(crate) resume_fails: Cell<bool>,
+    /// `pause` suspends to disk.
+    pub(crate) frees_memory: Cell<bool>,
+    /// Dead lease ids that left a snapshot.
+    pub(crate) suspended: RefCell<BTreeSet<String>>,
     /// Lease id to why its disk cannot grow.
     pub(crate) blocked: RefCell<BTreeMap<String, String>>,
     /// What `cache_gc` reports.
@@ -227,7 +231,9 @@ impl Backend for Fake {
     }
 
     fn power(&self, record: &LeaseRecord) -> Power {
-        if !self.alive(record) {
+        if !self.alive(record) && self.suspended.borrow().contains(&record.lease_id) {
+            Power::Suspended
+        } else if !self.alive(record) {
             Power::Stopped
         } else if self.unresponsive.borrow().contains(&record.lease_id) {
             Power::Unresponsive
@@ -242,8 +248,17 @@ impl Backend for Fake {
         self.calls
             .borrow_mut()
             .push(format!("pause {}", record.lease_id));
-        self.pause_set(&record.lease_id);
+        if self.frees_memory.get() {
+            self.alive_set.borrow_mut().remove(&record.lease_id);
+            self.suspended.borrow_mut().insert(record.lease_id.clone());
+        } else {
+            self.pause_set(&record.lease_id);
+        }
         Ok(())
+    }
+
+    fn pause_frees_memory(&self) -> bool {
+        self.frees_memory.get()
     }
 
     fn resume(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {
@@ -254,6 +269,7 @@ impl Backend for Fake {
             return Err("resume failed".to_owned());
         }
         self.paused.borrow_mut().remove(&record.lease_id);
+        self.suspended.borrow_mut().remove(&record.lease_id);
         self.alive_set.borrow_mut().insert(record.lease_id.clone());
         Ok(())
     }

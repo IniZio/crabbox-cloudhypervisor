@@ -57,6 +57,7 @@ pub(super) fn config(root: &Path) -> Config {
         cgroup: crate::scope::Cgroup::Off,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
+        pause: crate::config::PauseMode::Memory,
     }
 }
 
@@ -266,15 +267,15 @@ fn alive_is_false_without_a_live_cloud_hypervisor() {
 }
 
 /// A stand-in process whose comm reads as cloud-hypervisor; killed on drop.
-struct FakeCh {
+pub(super) struct FakeCh {
     /// Keeps the renamed binary.
     _dir: tempfile::TempDir,
     /// The running child.
-    child: std::process::Child,
+    pub(super) child: std::process::Child,
 }
 
 impl FakeCh {
-    fn spawn() -> Self {
+    pub(super) fn spawn() -> Self {
         Self::spawn_as("cloud-hypervisor", super::CH_COMM)
     }
 
@@ -304,7 +305,7 @@ impl Drop for FakeCh {
 }
 
 /// Serves one canned reply per connection on `sock`; yields request lines.
-fn serve(sock: &Path, replies: Vec<String>) -> std::thread::JoinHandle<Vec<String>> {
+pub(super) fn serve(sock: &Path, replies: Vec<String>) -> std::thread::JoinHandle<Vec<String>> {
     use std::io::{Read, Write};
     let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
     std::thread::spawn(move || {
@@ -323,7 +324,7 @@ fn serve(sock: &Path, replies: Vec<String>) -> std::thread::JoinHandle<Vec<Strin
 }
 
 /// A canned 200 vm.info reply.
-fn info(state: &str) -> String {
+pub(super) fn info(state: &str) -> String {
     let body = format!(r#"{{"state":"{state}"}}"#);
     format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
@@ -332,7 +333,7 @@ fn info(state: &str) -> String {
 }
 
 /// A backend plus a record whose run dir holds a marker file.
-fn live_fixture(dir: &Path, ch: Option<&FakeCh>) -> (RealBackend, LeaseRecord) {
+pub(super) fn live_fixture(dir: &Path, ch: Option<&FakeCh>) -> (RealBackend, LeaseRecord) {
     let backend = RealBackend::new(config(dir), PathBuf::from("/bin/cb"));
     let mut rec = record("a");
     rec.run_dir = dir.join("r");

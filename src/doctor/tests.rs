@@ -51,6 +51,7 @@ fn config(root: &Path) -> Config {
         cgroup: Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
+        pause: crate::config::PauseMode::Memory,
     }
 }
 
@@ -323,4 +324,14 @@ fn balloon_off_warns_instead_of_probing() {
     let (ok, r) = report(&c, &p);
     assert!(ok, "{r}");
     assert!(r.contains("warn memory_pressure: balloon off"), "{r}");
+}
+
+#[test]
+fn reports_whether_pause_frees_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = config(dir.path());
+    let p = probes(dir.path());
+    assert!(report(&c, &p).1.contains("ok pause: pause-keeps-memory"));
+    c.pause = crate::config::PauseMode::Disk;
+    assert!(report(&c, &p).1.contains("ok pause: pause-frees-memory"));
 }

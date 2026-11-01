@@ -111,6 +111,17 @@ pub struct Config {
     pub balloon: BalloonConfig,
     /// MiB a VM scope may use above its class memory, for the VMM itself.
     pub vmm_overhead_mib: u64,
+    /// What `pause` does with guest memory.
+    pub pause: PauseMode,
+}
+
+/// Where a paused guest's memory lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseMode {
+    /// Frozen in host RAM.
+    Memory,
+    /// Snapshotted to the lease dir; the VM processes exit.
+    Disk,
 }
 
 /// Environment lookup used for default directories.
@@ -171,6 +182,7 @@ impl Config {
             cgroup: cgroup(config)?,
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
+            pause: pause_mode(config)?,
             state_dir,
         })
     }
@@ -189,6 +201,15 @@ fn reject_removed_keys(config: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Reads `pause`: `memory` (default) or `disk`.
+fn pause_mode(config: &Value) -> Result<PauseMode, String> {
+    match get(config, "pause").map(Value::as_str) {
+        None | Some(Some("memory")) => Ok(PauseMode::Memory),
+        Some(Some("disk")) => Ok(PauseMode::Disk),
+        Some(_) => Err("config.pause must be \"memory\" or \"disk\"".to_owned()),
+    }
 }
 
 /// Reads `cgroup`: `systemd` (default) or `off`.

@@ -148,7 +148,7 @@ impl RealBackend {
     }
 
     /// Polls vm.info until it reports `want`, or errors naming the last state.
-    fn wait_state(&self, client: &ChClient, want: &str) -> Result<(), String> {
+    pub(super) fn wait_state(&self, client: &ChClient, want: &str) -> Result<(), String> {
         let deadline = Instant::now() + self.config.ready_timeout;
         loop {
             let last = client.state();
@@ -211,7 +211,8 @@ impl RealBackend {
         })
     }
 
-    /// Resumes a paused VM, or cold boots a dead one, then waits for ssh.
+    /// Resumes a paused VM, restores a suspended one or cold boots a dead
+    /// one, then waits for ssh.
     pub(super) fn resume_vm(
         &self,
         record: &LeaseRecord,
@@ -238,7 +239,11 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<bool, String> {
         if !Self::ch_alive(record) {
-            self.cold_boot(record, diag)?;
+            if self.snapshot_dir(&record.lease_id).is_dir() {
+                self.restore(record, diag)?;
+            } else {
+                self.cold_boot(record, diag)?;
+            }
             return Ok(true);
         }
         let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
@@ -257,12 +262,13 @@ impl RealBackend {
         }
     }
 
-    /// Boots a dead VM again from its existing disk, seed and host key.
-    pub(super) fn cold_boot(
+    /// Clears a dead VM's processes, scopes and run dir so it can start again;
+    /// returns the record with no pids.
+    pub(super) fn relaunch_prep(
         &self,
         record: &LeaseRecord,
         diag: &mut dyn Write,
-    ) -> Result<(), String> {
+    ) -> Result<LeaseRecord, String> {
         if Self::ch_alive(record) {
             return Err(format!(
                 "lease {}: refusing to cold boot while cloud-hypervisor is alive",
@@ -276,10 +282,20 @@ impl RealBackend {
         mkdir_private(&record.run_dir)?;
         record.clear_pids();
         self.store.write(&record)?;
+        Ok(record)
+    }
+
+    /// Boots a dead VM again from its existing disk, seed and host key.
+    pub(super) fn cold_boot(
+        &self,
+        record: &LeaseRecord,
+        diag: &mut dyn Write,
+    ) -> Result<(), String> {
+        let mut record = self.relaunch_prep(record, diag)?;
         let firmware = spec::firmware_cache_path(&self.config);
         let size = record.size.unwrap_or_else(|| self.default_size());
         let started = self
-            .start_processes(&mut record, size, diag)
+            .start_processes(&mut record, size, None, diag)
             .and_then(|()| self.boot_vm(&record, size, &firmware, diag))
             .and_then(|()| self.start_watcher(&mut record, diag));
         if started.is_err() {

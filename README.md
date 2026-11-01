@@ -90,6 +90,7 @@ All keys go under `external.config`. All are optional.
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 | `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
 | `vmmOverheadMiB` | `512` | MiB a VM scope may use above the class memory, for cloud-hypervisor itself (at least 64) |
+| `pause` | `memory` | `memory` keeps a paused guest's RAM on the host; `disk` snapshots it to the lease dir and stops the VM, so a paused lease frees its RAM (see Pause and resume) |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -290,21 +291,38 @@ earlier pin when a response omits it; upstream crabbox ignores it.
 
 ## Pause and resume
 
-- `pause` runs cloud-hypervisor `vm.pause`. RAM stays allocated.
-- `resume` resumes a paused VM in place. If the VM is dead (host reboot, killed
-  process) it cold-boots from the lease's existing disk and seed.
-- Snapshot to disk is future work.
+- With `pause: memory` (default), `pause` runs cloud-hypervisor `vm.pause`.
+  RAM stays allocated.
+- With `pause: disk`, `pause` runs `vm.pause`, then `vm.snapshot` into
+  `<stateDir>/leases/<leaseId>/snap`, then stops cloud-hypervisor and passt, so
+  the guest's RAM goes back to the host. The lease status becomes `suspended`.
+  The snapshot is written to `snap.tmp` and renamed only once complete, so a
+  crash mid-snapshot never leaves one that `resume` would use. `pause` refuses
+  when the state filesystem has less free space than guest RAM plus 1 GiB, and
+  any failure before the processes stop leaves the VM paused in memory.
+  `pause` on a memory-paused lease suspends it too.
+- `resume` resumes a paused VM in place. A suspended lease is restored: a new
+  passt on the same socket, cloud-hypervisor `--restore` from `snap`, then
+  `vm.resume`; guest processes continue where they were, but open TCP
+  connections drop. The snapshot is deleted once the restored VM is paused and
+  before it runs, because the guest's disk moves past it. A failed restore keeps
+  the snapshot and returns the error; it never falls back to a cold boot. If the
+  VM is dead with no snapshot (host reboot, killed process) it cold-boots from
+  the lease's existing disk and seed.
+- `doctor` reports `ok pause: pause-frees-memory` with `pause: disk` and
+  `ok pause: pause-keeps-memory` otherwise.
 
 Needs the crabbox fork (branch `moor/external-pause-resume`) and
 `capabilities.pauseResume: true` in the trusted crabbox user config.
 
-Lease status is `ready` (running), `paused`, `stopped` (VM dead) or
+Lease status is `ready` (running), `paused`, `suspended` (VM processes gone,
+memory in the lease's snapshot), `stopped` (VM dead) or
 `unresponsive` (VM process alive but its API does not answer, for example
 frozen with SIGSTOP). `resume` and non-`releaseOnly` `resolve` on an
 `unresponsive` lease fail with
 `lease <id>: cloud-hypervisor is alive but not responding` and never cold
 boot; `release` kills the process and cleans up, and `cleanup` leaves it alone.
-`resolve` on a paused or stopped lease returns the lease with its status, which
+`resolve` on a paused, suspended or stopped lease returns the lease with its status, which
 is what crabbox `status`, `extend` and heartbeat need; crabbox itself refuses to
 open a session on it. `acquire` of such a lease fails with
 `lease <id> is stopped; run crabbox resume`. crabbox does not know the
@@ -327,7 +345,9 @@ holds, so a create or resume in flight keeps its passt.
 growth watcher run detached per lease and are stopped on release. Only `release` destroys a
 lease.
 
-`cleanup` never deletes stopped or paused leases. It reaps orphan `passt`
+`cleanup` never deletes paused or suspended leases, nor stopped ones unless
+`reapStoppedAfterHours` says so; `release` deletes a lease's snapshot with the
+rest of its lease dir. It reaps orphan `passt`
 processes (VM dead, passt alive) and removes broken lease directories (no
 readable `lease.json`, for example from a crashed acquire). `dryRun` reports
 what it would remove without deleting.
@@ -355,8 +375,8 @@ shows them, not just `doctor finished`.
   in the pinned Ubuntu image. Disks only grow; they never shrink.
 - Leases are not stopped on a timer by the provider. Release them with
   `crabbox stop`.
-- Pause keeps the guest RAM allocated on the host (cloud-hypervisor
-  `vm.pause`); snapshot-to-disk is future work.
+- With the default `pause: memory`, pause keeps the guest RAM allocated on the
+  host; `pause: disk` frees it at the cost of a snapshot as large as guest RAM.
 - Pause/resume needs the crabbox fork (`moor/external-pause-resume`) with
   `capabilities.pauseResume: true` in trusted user config.
 - Upstream crabbox ignores `ssh.hostKey` (see above).
