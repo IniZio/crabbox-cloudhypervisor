@@ -217,7 +217,7 @@ impl RealBackend {
             seed: &self.store.seed_path(id),
             serial: &self.store.serial_log(id),
         };
-        let mut config = spec::vm_config(&self.config, size, paths, record);
+        let mut config = spec::vm_config(size, paths, record);
         self.read_cache(id).attach(&mut config);
         let client = ChClient::new(&record.api_socket());
         client.create(&config)?;

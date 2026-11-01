@@ -10,8 +10,6 @@ use crate::grow::GIB;
 
 /// Growth limits for a 10 GiB, 2 vCPU, 2 GiB guest.
 const GROWTH: Growth = Growth {
-    cpus_max: 4,
-    memory_mib_max: 4096,
     disk_max_gib: 30,
     disk_step_gib: 10,
     disk_free_percent: 15,
@@ -20,10 +18,6 @@ const GROWTH: Growth = Growth {
 
 /// Output of `SAMPLE_SCRIPT` captured from a live noble guest.
 const LIVE_SAMPLE: &str = "11362635776 9346433024
-cpu  1802 0 1306 87043 336 0 49 0 0 0
-MemTotal:        2010632 kB
-MemAvailable:    1678940 kB
-2
 ";
 
 /// A scripted VMM and guest that records every call.
@@ -36,10 +30,6 @@ struct Fake {
     disk_error: Option<String>,
     /// Results for `grow_fs`, in order; the last one repeats.
     fs_results: RefCell<Vec<Result<u64, String>>>,
-    /// Error for `resize`, if any.
-    resize_error: Option<String>,
-    /// Online CPUs a sample reports after a vCPU raise.
-    onlined: Option<u32>,
     /// Free bytes on the host filesystem.
     host_free: u64,
     /// Last blocked reason recorded.
@@ -57,14 +47,10 @@ impl Fake {
         Self {
             current: RefCell::new(Current {
                 disk_bytes: 10 * GIB,
-                vcpus: 2,
-                memory_bytes: 2048 * MIB,
             }),
             samples: RefCell::new(vec![sample]),
             disk_error: None,
             fs_results: RefCell::new(vec![Ok(9 * GIB)]),
-            resize_error: None,
-            onlined: None,
             host_free: 500 * GIB,
             blocked: RefCell::new(None),
             lives: Cell::new(0),
@@ -104,15 +90,11 @@ impl Machine for Fake {
     fn sample(&self) -> Result<Sample, String> {
         self.calls.borrow_mut().push("sample".to_owned());
         let mut samples = self.samples.borrow_mut();
-        let mut s = if samples.len() > 1 {
+        Ok(if samples.len() > 1 {
             samples.remove(0)
         } else {
             samples[0]
-        };
-        if let Some(n) = self.onlined {
-            s.online_cpus = n.min(self.current.borrow().vcpus);
-        }
-        Ok(s)
+        })
     }
 
     fn grow_disk(&self, bytes: u64) -> Result<(), String> {
@@ -135,23 +117,6 @@ impl Machine for Fake {
             results[0].clone()
         }
     }
-
-    fn resize(&self, vcpus: Option<u32>, ram_bytes: Option<u64>) -> Result<(), String> {
-        self.calls
-            .borrow_mut()
-            .push(format!("resize {vcpus:?} {:?}", ram_bytes.map(|b| b / MIB)));
-        if let Some(e) = &self.resize_error {
-            return Err(e.clone());
-        }
-        let mut c = self.current.borrow_mut();
-        if let Some(n) = vcpus {
-            c.vcpus = n;
-        }
-        if let Some(n) = ram_bytes {
-            c.memory_bytes = n;
-        }
-        Ok(())
-    }
 }
 
 fn calm() -> Sample {
@@ -170,7 +135,7 @@ fn ticks(planner: &mut Planner, fake: &Fake, n: usize) -> String {
     let mut out = Vec::new();
     let mut log = Log::new(&mut out);
     for _ in 0..n {
-        tick(planner, fake, Duration::ZERO, &mut log).unwrap();
+        tick(planner, fake, &mut log).unwrap();
         log.end_tick();
     }
     drop(log);
@@ -187,19 +152,12 @@ fn parses_a_live_guest_sample() {
     let s = parse_sample(LIVE_SAMPLE).unwrap();
     assert_eq!(s.fs_size, 11_362_635_776);
     assert_eq!(s.fs_avail, 9_346_433_024);
-    assert_eq!(s.cpu.total, 1802 + 1306 + 87043 + 336 + 49);
-    assert_eq!(s.cpu.busy, 1802 + 1306 + 49);
-    assert_eq!(s.mem_total, 2_010_632 * 1024);
-    assert_eq!(s.mem_avail, 1_678_940 * 1024);
-    assert_eq!(s.online_cpus, 2);
 }
 
 #[test]
 fn a_garbled_sample_names_what_is_missing() {
     let err = parse_sample("guest not ready\n").unwrap_err();
     assert!(err.contains("root filesystem size"), "{err}");
-    let no_mem = LIVE_SAMPLE.replace("MemAvailable", "MemFree");
-    assert!(parse_sample(&no_mem).unwrap_err().contains("MemAvailable"));
 }
 
 #[test]
@@ -255,62 +213,6 @@ fn a_full_disk_at_its_cap_is_logged_once() {
         "{log}"
     );
     assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
-}
-
-/// Samples with the CPU fully busy between each.
-fn busy_samples(n: u64) -> Vec<Sample> {
-    (1..=n)
-        .map(|t| Sample {
-            cpu: CpuTimes {
-                busy: t * 100,
-                total: t * 100,
-            },
-            ..calm()
-        })
-        .collect()
-}
-
-#[test]
-fn a_vcpu_raise_is_logged_with_what_the_guest_sees() {
-    let fake = Fake {
-        onlined: Some(u32::MAX),
-        ..Fake::new(calm())
-    };
-    *fake.samples.borrow_mut() = busy_samples(10);
-    let log = ticks(&mut Planner::new(GROWTH), &fake, 4);
-    assert!(fake.calls().contains(&"resize Some(4) None".to_owned()));
-    assert!(log.contains("raised vCPUs 2 -> 4; guest sees 4"), "{log}");
-}
-
-#[test]
-fn vcpus_the_guest_leaves_offline_are_a_logged_failure() {
-    let fake = Fake {
-        onlined: Some(2),
-        ..Fake::new(calm())
-    };
-    *fake.samples.borrow_mut() = busy_samples(10);
-    let log = ticks(&mut Planner::new(GROWTH), &fake, 4);
-    assert!(
-        log.contains("grow failed: raised vCPUs 2 -> 4 but the guest has 2 online"),
-        "{log}"
-    );
-}
-
-#[test]
-fn a_rejected_memory_raise_is_logged() {
-    let fake = Fake {
-        resize_error: Some("HTTP 500: no hotplug".to_owned()),
-        ..Fake::new(Sample {
-            mem_avail: 0,
-            ..calm()
-        })
-    };
-    let log = ticks(&mut Planner::new(GROWTH), &fake, 3);
-    assert!(fake.calls().contains(&"resize None Some(4096)".to_owned()));
-    assert!(
-        log.contains("grow failed: memory 2048 -> 4096 MiB: HTTP 500: no hotplug"),
-        "{log}"
-    );
 }
 
 /// Writes an executable shell script `name` into `dir`.
@@ -388,25 +290,13 @@ fn the_watcher_does_not_tick_while_the_vm_is_paused() {
     };
     let mut out = Vec::new();
     let mut p = Planner::new(GROWTH);
-    watch_loop(
-        &paused,
-        &mut p,
-        Duration::ZERO,
-        Duration::ZERO,
-        &mut Log::new(&mut out),
-    );
+    watch_loop(&paused, &mut p, Duration::ZERO, &mut Log::new(&mut out));
     assert!(paused.calls().is_empty(), "{:?}", paused.calls());
     let running = Fake {
         lives: Cell::new(3),
         ..Fake::new(low_space())
     };
-    watch_loop(
-        &running,
-        &mut p,
-        Duration::ZERO,
-        Duration::ZERO,
-        &mut Log::new(&mut out),
-    );
+    watch_loop(&running, &mut p, Duration::ZERO, &mut Log::new(&mut out));
     assert!(running.calls().contains(&"grow_disk 20".to_owned()));
 }
 

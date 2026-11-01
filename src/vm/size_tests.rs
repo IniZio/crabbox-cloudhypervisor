@@ -23,16 +23,13 @@ pub(super) fn size_of(cfg: &Config) -> Size {
 }
 
 #[test]
-fn class_size_replaces_config_size_and_lifts_growth_caps() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path());
+fn class_size_replaces_config_size() {
     let p = Path::new("/x");
     let big = Size {
         cpus: 16,
         memory_mib: 32768,
     };
     let got = spec::vm_config(
-        &cfg,
         big,
         spec::VmPaths {
             firmware: p,

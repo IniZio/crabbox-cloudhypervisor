@@ -1,4 +1,7 @@
 //! Lease sizing: maps a crabbox class to guest vCPUs and memory.
+//!
+//! A class is admitted against the host's totals: a guest is backed lazily, so
+//! only the memory it touches is claimed on the host.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,13 +23,13 @@ pub struct Size {
     pub memory_mib: u64,
 }
 
-/// What this host can give a new guest right now.
+/// What this host has in total, which a class must fit within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Host {
     /// Logical CPUs.
-    pub cpus: u32,
-    /// Memory available without swapping, in MiB.
-    pub free_memory_mib: u64,
+    pub total_cpus: u32,
+    /// `MemTotal`, in MiB.
+    pub total_memory_mib: u64,
 }
 
 /// The built-in ladder, small to large.
@@ -101,22 +104,22 @@ pub fn resolve(
             known.join(", ")
         ));
     };
-    if size.cpus > host.cpus {
+    if size.cpus > host.total_cpus {
         return Err(format!(
             "class {name} needs {} vCPUs; this host has {}",
-            size.cpus, host.cpus
+            size.cpus, host.total_cpus
         ));
     }
-    if size.memory_mib > host.free_memory_mib {
+    if size.memory_mib > host.total_memory_mib {
         return Err(format!(
-            "class {name} needs {} MiB of memory; this host has {} MiB free",
-            size.memory_mib, host.free_memory_mib
+            "class {name} needs {} MiB of memory; this host has {} MiB",
+            size.memory_mib, host.total_memory_mib
         ));
     }
     Ok(size)
 }
 
-/// Reads this host's CPU count and available memory.
+/// Reads this host's CPU count and total memory.
 pub fn host() -> Result<Host, String> {
     let cpus = std::thread::available_parallelism()
         .map_err(|e| format!("read host cpu count: {e}"))?
@@ -124,20 +127,20 @@ pub fn host() -> Result<Host, String> {
     let meminfo =
         fs::read_to_string("/proc/meminfo").map_err(|e| format!("read /proc/meminfo: {e}"))?;
     Ok(Host {
-        cpus: u32::try_from(cpus).unwrap_or(u32::MAX),
-        free_memory_mib: available_mib(&meminfo)?,
+        total_cpus: u32::try_from(cpus).unwrap_or(u32::MAX),
+        total_memory_mib: total_mib(&meminfo)?,
     })
 }
 
-/// `MemAvailable` from `/proc/meminfo` text, in MiB.
-fn available_mib(meminfo: &str) -> Result<u64, String> {
+/// `MemTotal` from `/proc/meminfo` text, in MiB.
+fn total_mib(meminfo: &str) -> Result<u64, String> {
     meminfo
         .lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .find_map(|l| l.strip_prefix("MemTotal:"))
         .and_then(|rest| rest.trim().strip_suffix("kB"))
         .and_then(|kib| kib.trim().parse::<u64>().ok())
         .map(|kib| kib / 1024)
-        .ok_or_else(|| "read MemAvailable from /proc/meminfo".to_owned())
+        .ok_or_else(|| "read MemTotal from /proc/meminfo".to_owned())
 }
 
 #[cfg(test)]

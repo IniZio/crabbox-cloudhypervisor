@@ -27,8 +27,6 @@ pub(super) fn config(root: &Path) -> Config {
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
-            cpus_max: 4,
-            memory_mib_max: 8192,
             disk_max_gib: 100,
             disk_step_gib: 10,
             disk_free_percent: 15,
@@ -85,7 +83,6 @@ fn vm_config_has_the_spike_shape() {
     let cfg = config(dir.path());
     let rec = record("abc");
     let got = spec::vm_config(
-        &cfg,
         size_of(&cfg),
         spec::VmPaths {
             firmware: Path::new("/fw.fd"),
@@ -96,8 +93,8 @@ fn vm_config_has_the_spike_shape() {
         &rec,
     );
     let want = json!({
-        "cpus": {"boot_vcpus": 2, "max_vcpus": 4},
-        "memory": {"size": 4_294_967_296_u64, "shared": true, "hotplug_size": 4_294_967_296_u64},
+        "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+        "memory": {"size": 4_294_967_296_u64, "shared": true},
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": "/fw.fd"},
         "disks": [
@@ -117,39 +114,22 @@ fn vm_config_has_the_spike_shape() {
     assert_eq!(got, want);
 }
 
-/// `vm_config` for a config changed by `edit`.
-fn vm_config_with(edit: impl FnOnce(&mut Config)) -> serde_json::Value {
+#[test]
+fn vm_config_boots_at_full_size_with_nothing_to_hot_add() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = config(dir.path());
-    edit(&mut cfg);
+    let cfg = config(dir.path());
     let p = Path::new("/x");
-    let size = size_of(&cfg);
     let paths = spec::VmPaths {
         firmware: p,
         disk: p,
         seed: p,
         serial: p,
     };
-    spec::vm_config(&cfg, size, paths, &record("abc"))
-}
-
-#[test]
-fn vm_config_reserves_hotplug_memory_in_whole_blocks() {
-    let got = vm_config_with(|c| c.growth.memory_mib_max = 4096 + 200);
-    assert_eq!(
-        got.pointer("/memory/hotplug_size"),
-        Some(&json!(256_u64 * 1024 * 1024))
-    );
-}
-
-#[test]
-fn vm_config_without_headroom_boots_fixed_size() {
-    let got = vm_config_with(|c| {
-        c.growth.memory_mib_max = 4096;
-        c.growth.cpus_max = 2;
-    });
-    assert_eq!(got.pointer("/memory/hotplug_size"), None);
+    let got = spec::vm_config(size_of(&cfg), paths, &record("abc"));
+    assert_eq!(got.pointer("/cpus/boot_vcpus"), Some(&json!(2)));
     assert_eq!(got.pointer("/cpus/max_vcpus"), Some(&json!(2)));
+    assert_eq!(got.pointer("/memory/hotplug_size"), None);
+    assert_eq!(got.pointer("/memory/shared"), Some(&json!(true)));
 }
 
 #[test]
@@ -158,7 +138,6 @@ fn vm_config_returns_freed_guest_memory_to_the_host() {
     let cfg = config(dir.path());
     let rec = record("abc");
     let got = spec::vm_config(
-        &cfg,
         size_of(&cfg),
         spec::VmPaths {
             firmware: Path::new("/fw.fd"),

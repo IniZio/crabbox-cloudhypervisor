@@ -123,19 +123,6 @@ impl ChClient {
         self.call("PUT", "vm.resume", None).map(drop)
     }
 
-    /// `PUT vm.resize`; `None` leaves that resource unchanged.
-    pub fn resize(&self, vcpus: Option<u32>, ram_bytes: Option<u64>) -> Result<(), String> {
-        let mut body = serde_json::Map::new();
-        if let Some(n) = vcpus {
-            body.insert("desired_vcpus".to_owned(), n.into());
-        }
-        if let Some(n) = ram_bytes {
-            body.insert("desired_ram".to_owned(), n.into());
-        }
-        let body = Value::Object(body).to_string();
-        self.call("PUT", "vm.resize", Some(&body)).map(drop)
-    }
-
     /// `PUT vm.resize-disk`: grows disk `id` to `bytes` while the VM runs.
     pub fn resize_disk(&self, id: &str, bytes: u64) -> Result<(), String> {
         let body = serde_json::json!({"id": id, "desired_size": bytes}).to_string();

@@ -20,8 +20,8 @@ impl RealBackend {
             size::host()?
         } else {
             size::Host {
-                cpus: c.cpus,
-                free_memory_mib: c.memory_mib,
+                total_cpus: c.cpus,
+                total_memory_mib: c.memory_mib,
             }
         };
         size::resolve(&c.classes, default, class, &host)

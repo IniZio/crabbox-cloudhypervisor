@@ -4,15 +4,15 @@
 
 use serde_json::json;
 
-use super::{available_mib, classes, default_classes, resolve, Host, Size};
+use super::{classes, default_classes, resolve, total_mib, Host, Size};
 
 const DEFAULT: Size = Size {
     cpus: 2,
     memory_mib: 4096,
 };
 const BIG_HOST: Host = Host {
-    cpus: 64,
-    free_memory_mib: 1 << 20,
+    total_cpus: 64,
+    total_memory_mib: 1 << 20,
 };
 
 fn size(cpus: u32, memory_mib: u64) -> Size {
@@ -35,8 +35,8 @@ fn ladder_maps_each_class() {
 #[test]
 fn no_class_uses_the_default_even_on_a_tiny_host() {
     let tiny = Host {
-        cpus: 1,
-        free_memory_mib: 100,
+        total_cpus: 1,
+        total_memory_mib: 100,
     };
     assert_eq!(
         resolve(&default_classes(), DEFAULT, None, &tiny),
@@ -98,8 +98,8 @@ fn bad_class_entries_are_named() {
 #[test]
 fn too_many_vcpus_is_refused_not_shrunk() {
     let host = Host {
-        cpus: 8,
-        free_memory_mib: 1 << 20,
+        total_cpus: 8,
+        total_memory_mib: 1 << 20,
     };
     assert_eq!(
         resolve(&default_classes(), DEFAULT, Some("beast"), &host),
@@ -110,12 +110,12 @@ fn too_many_vcpus_is_refused_not_shrunk() {
 #[test]
 fn too_much_memory_is_refused_not_shrunk() {
     let host = Host {
-        cpus: 64,
-        free_memory_mib: 10_000,
+        total_cpus: 64,
+        total_memory_mib: 10_000,
     };
     assert_eq!(
         resolve(&default_classes(), DEFAULT, Some("large"), &host),
-        Err("class large needs 16384 MiB of memory; this host has 10000 MiB free".to_owned())
+        Err("class large needs 16384 MiB of memory; this host has 10000 MiB".to_owned())
     );
 }
 
@@ -129,8 +129,20 @@ fn unknown_class_lists_the_known_ones() {
 }
 
 #[test]
-fn reads_mem_available_in_mib() {
-    let text = "MemTotal:       32000000 kB\nMemAvailable:    2097152 kB\n";
-    assert_eq!(available_mib(text), Ok(2048));
-    assert!(available_mib("MemTotal: 1 kB\n").is_err());
+fn reads_mem_total_in_mib_not_what_is_currently_available() {
+    let text = "MemTotal:       16179200 kB\nMemAvailable:    2097152 kB\n";
+    assert_eq!(total_mib(text), Ok(15800));
+    assert!(total_mib("MemAvailable: 1 kB\n").is_err());
+}
+
+#[test]
+fn admission_uses_host_totals_so_a_busy_host_still_admits() {
+    let host = Host {
+        total_cpus: 8,
+        total_memory_mib: 16384,
+    };
+    assert_eq!(
+        resolve(&default_classes(), DEFAULT, Some("large"), &host),
+        Ok(size(8, 16384))
+    );
 }

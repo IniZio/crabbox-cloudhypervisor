@@ -35,14 +35,10 @@ pub struct Asset {
     pub sha256: String,
 }
 
-/// Limits and triggers for growing a running guest.
+/// Limits and triggers for growing a running guest's disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Growth {
-    /// Highest vCPU count the guest may be raised to.
-    pub cpus_max: u32,
-    /// Highest memory, in MiB, the guest may be raised to.
-    pub memory_mib_max: u64,
     /// Largest root disk, in GiB.
     pub disk_max_gib: u64,
     /// GiB added to the disk per grow.
@@ -118,6 +114,7 @@ impl Config {
         if !config.is_object() && !config.is_null() {
             return Err("config must be an object".to_owned());
         }
+        reject_removed_keys(config)?;
         let state_dir = match path_key(config, "stateDir")? {
             Some(p) => p,
             None => default_state_dir(env)?,
@@ -139,7 +136,7 @@ impl Config {
             memory_mib,
             classes: size::classes(config)?,
             disk_gib,
-            growth: growth(config, cpus, memory_mib, disk_gib)?,
+            growth: growth(config, disk_gib)?,
             image: asset_key(config, "image", IMAGE_URL, IMAGE_SHA256)?,
             firmware: asset_key(config, "firmware", FIRMWARE_URL, FIRMWARE_SHA256)?,
             cloud_hypervisor: bin_key(config, "cloudHypervisor", "cloud-hypervisor")?,
@@ -168,25 +165,24 @@ impl Config {
     }
 }
 
-/// Reads the growth keys; each cap defaults to headroom above the boot size.
-fn growth(config: &Value, cpus: u32, memory_mib: u64, disk_gib: u64) -> Result<Growth, String> {
-    let cpus_max = int_key(
-        config,
-        "cpusMax",
-        (u64::from(cpus) * 2).min(64),
-        u64::from(cpus),
-        64,
-    )?;
+/// Keys that no longer do anything; a config that still sets one fails to load.
+const REMOVED_KEYS: [&str; 2] = ["cpusMax", "memoryMiBMax"];
+
+/// Fails on a removed key, so a stale config does not silently lose its cap.
+fn reject_removed_keys(config: &Value) -> Result<(), String> {
+    for key in REMOVED_KEYS {
+        if config.get(key).is_some() {
+            return Err(format!(
+                "config.{key} was removed: VMs now boot at their class size; delete it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads the disk growth keys.
+fn growth(config: &Value, disk_gib: u64) -> Result<Growth, String> {
     Ok(Growth {
-        cpus_max: u32::try_from(cpus_max)
-            .map_err(|_| "config.cpusMax must be an integer between cpus and 64".to_owned())?,
-        memory_mib_max: int_key(
-            config,
-            "memoryMiBMax",
-            memory_mib.saturating_mul(2),
-            memory_mib,
-            u64::MAX,
-        )?,
         disk_max_gib: int_key(config, "diskMaxGiB", disk_gib.max(100), disk_gib, u64::MAX)?,
         disk_step_gib: int_key(config, "diskGrowStepGiB", 10, 1, u64::MAX)?,
         disk_free_percent: int_key(config, "diskGrowFreePercent", 15, 1, 90)?,
