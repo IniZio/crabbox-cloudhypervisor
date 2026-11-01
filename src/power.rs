@@ -1,4 +1,4 @@
-//! Pause and resume: freeze a running VM in RAM or on disk, or bring a paused,
+//! Pause and resume: suspend a running VM to disk, or bring a paused,
 //! suspended or dead VM back.
 
 use std::io::Write;
@@ -26,8 +26,8 @@ fn load(
     Ok((id, record))
 }
 
-/// Pauses a running VM; paused (unless pause frees memory), suspended and
-/// stopped leases are reported, not changed.
+/// Suspends a running VM to disk (a VM paused in memory by an older adapter
+/// too); suspended and stopped leases are reported, not changed.
 pub(crate) fn pause(
     request: &Request,
     backend: &dyn Backend,
@@ -37,15 +37,10 @@ pub(crate) fn pause(
     let _lock = backend.lock(&id)?;
     let (id, record) = load(request, backend, diag)?;
     match backend.power(&record) {
-        Power::Running | Power::Paused if backend.pause_frees_memory() => {
+        Power::Running | Power::Paused => {
             backend.pause(&record, diag)?;
             Ok(format!("suspended {id}"))
         }
-        Power::Running => {
-            backend.pause(&record, diag)?;
-            Ok(format!("paused {id}"))
-        }
-        Power::Paused => Ok(format!("{id} already paused")),
         Power::Suspended => Ok(format!("{id} already suspended")),
         Power::Stopped => Ok(format!("{id} already stopped")),
         Power::Unresponsive => Err(backend::unresponsive_error(&id)),

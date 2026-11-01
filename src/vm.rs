@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use crate::assets;
 use crate::backend::{self, Backend, Power};
 use crate::ch::ChClient;
-use crate::config::{Config, PauseMode};
+use crate::config::Config;
 use crate::host;
 use crate::protocol::{CacheVolumeEcho, Desired};
 use crate::scope::{self, Limits, Role};
@@ -283,11 +283,7 @@ impl Backend for RealBackend {
     }
 
     fn pause(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
-        self.pause_per_mode(record, diag)
-    }
-
-    fn pause_frees_memory(&self) -> bool {
-        self.config.pause == PauseMode::Disk
+        self.suspend(record, diag)
     }
 
     fn resume(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {

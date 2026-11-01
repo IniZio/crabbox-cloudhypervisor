@@ -57,7 +57,6 @@ pub(super) fn config(root: &Path) -> Config {
         cgroup: crate::scope::Cgroup::Off,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
-        pause: crate::config::PauseMode::Memory,
     }
 }
 
@@ -536,7 +535,10 @@ fn pause_fails_when_the_vm_never_reports_paused() {
     let ch = FakeCh::spawn();
     let (backend, rec) = live_fixture(dir.path(), Some(&ch));
     let ok = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_owned();
-    let _seen = serve(&rec.api_socket(), vec![ok, info("Running")]);
+    let _seen = serve(
+        &rec.api_socket(),
+        vec![info("Running"), ok, info("Running")],
+    );
     let err = backend.pause(&rec, &mut Vec::new()).unwrap_err();
     assert!(err.contains("did not reach Paused"), "{err}");
 }

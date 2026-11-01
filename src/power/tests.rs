@@ -11,23 +11,6 @@ fn run_resume(fake: &Fake, id: &str) -> Result<Lease, String> {
 }
 
 #[test]
-fn pause_running_pauses_backend() {
-    let fake = Fake::default();
-    fake.add("p1", true);
-    assert_eq!(run_pause(&fake, "p1").unwrap(), "paused p1");
-    assert!(fake.called("pause p1"));
-}
-
-#[test]
-fn pause_paused_is_idempotent() {
-    let fake = Fake::default();
-    fake.add("p1", true);
-    fake.pause_set("p1");
-    assert_eq!(run_pause(&fake, "p1").unwrap(), "p1 already paused");
-    assert!(!fake.called("pause p1"));
-}
-
-#[test]
 fn pause_stopped_is_idempotent() {
     let fake = Fake::default();
     fake.add("p1", false);
@@ -88,10 +71,9 @@ fn unresponsive_pause_and_resume_error_without_acting() {
     assert!(!fake.called("resume u1"));
 }
 
-/// A fake whose pause suspends to disk, with running lease `s1`.
+/// A fake with running lease `s1`.
 fn disk_fake() -> Fake {
     let fake = Fake::default();
-    fake.frees_memory.set(true);
     fake.add("s1", true);
     fake
 }

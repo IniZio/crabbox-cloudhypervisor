@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use super::{mkdir_private, remove_tree, RealBackend};
 use crate::backend::Power;
 use crate::ch::ChClient;
-use crate::config::PauseMode;
 use crate::state::LeaseRecord;
 
 /// Snapshot of a suspended VM, inside the lease dir.
@@ -32,7 +31,7 @@ pub(super) fn check_room(free: u64, memory_mib: u64) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "not enough free disk for a snapshot: need {} MiB, have {} MiB; vm left paused in memory",
+        "not enough free disk for a snapshot: need {} MiB, have {} MiB; pause aborted",
         need / MIB,
         free / MIB
     ))
@@ -58,25 +57,28 @@ impl RealBackend {
         }
     }
 
-    /// Pauses in RAM, or suspends to disk, per the configured pause mode.
-    pub(super) fn pause_per_mode(
-        &self,
-        record: &LeaseRecord,
-        diag: &mut dyn Write,
-    ) -> Result<(), String> {
-        match self.config.pause {
-            PauseMode::Memory => self.pause_vm(record, diag),
-            PauseMode::Disk => self.suspend(record, diag),
-        }
-    }
-
-    /// Pauses a running VM, snapshots it, then stops cloud-hypervisor and passt.
-    /// Any failure before the processes stop leaves the VM paused in memory.
+    /// Snapshots the VM to disk, then stops cloud-hypervisor and passt.
+    /// A VM that was running keeps running if the snapshot cannot be taken;
+    /// one found paused (by an older adapter) is left as it was found.
     pub(super) fn suspend(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
-        let id = &record.lease_id;
-        if Self::power_of(record) == Power::Running {
+        let was_running = Self::power_of(record) == Power::Running;
+        if was_running {
             self.pause_vm(record, diag)?;
         }
+        let result = self.snapshot_and_stop(record, diag);
+        if result.is_err() && was_running && Self::ch_alive(record) {
+            let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
+            if let Err(e) = client.resume() {
+                let _ = writeln!(diag, "warn: resume after failed pause: {e}");
+            }
+        }
+        result
+    }
+
+    /// Writes the snapshot of a paused VM and stops its processes.
+    /// On failure the snapshot is removed and the VM is still alive.
+    fn snapshot_and_stop(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        let id = &record.lease_id;
         let size = record.size.unwrap_or_else(|| self.default_size());
         let lease_dir = self.store.lease_dir(id);
         check_room(free_bytes(&lease_dir)?, size.memory_mib)?;
@@ -92,9 +94,7 @@ impl RealBackend {
         });
         if let Err(e) = written {
             let _ = remove_tree(&tmp);
-            return Err(format!(
-                "lease {id}: snapshot failed, vm left paused in memory: {e}"
-            ));
+            return Err(format!("lease {id}: snapshot failed, pause aborted: {e}"));
         }
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "snapshot written in {secs:.1}s");
@@ -102,7 +102,7 @@ impl RealBackend {
             if Self::ch_alive(record) {
                 let _ = remove_tree(&snap);
                 return Err(format!(
-                    "lease {id}: cloud-hypervisor outlived the snapshot, vm left paused in memory: {e}"
+                    "lease {id}: cloud-hypervisor outlived the snapshot, pause aborted: {e}"
                 ));
             }
             let _ = writeln!(diag, "warn: {e}");

@@ -4,7 +4,6 @@ use std::path::Path;
 
 use super::check_room;
 use crate::backend::{Backend, Power};
-use crate::config::PauseMode;
 use crate::size::Size;
 use crate::state::LeaseRecord;
 use crate::vm::tests::{info, live_fixture, serve, FakeCh};
@@ -12,10 +11,9 @@ use crate::vm::RealBackend;
 
 const NO_CONTENT: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
 
-/// A disk-pause backend and a persisted 1 MiB record, so the free-space check passes.
+/// A backend and a persisted 1 MiB record, so the free-space check passes.
 fn disk_fixture(dir: &Path, ch: Option<&FakeCh>) -> (RealBackend, LeaseRecord) {
-    let (mut backend, mut rec) = live_fixture(dir, ch);
-    backend.config.pause = PauseMode::Disk;
+    let (backend, mut rec) = live_fixture(dir, ch);
     rec.size = Some(Size {
         cpus: 1,
         memory_mib: 1,
@@ -52,15 +50,27 @@ fn suspend_snapshots_then_stops_the_vm() {
 }
 
 #[test]
-fn failed_snapshot_leaves_the_vm_paused_and_no_snapshot() {
+fn failed_snapshot_errors_and_leaves_the_vm_running() {
     let dir = tempfile::tempdir().unwrap();
     let ch = FakeCh::spawn();
     let (backend, rec) = disk_fixture(dir.path(), Some(&ch));
     let fail = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\n\r\n[\"no\"]";
-    let seen = serve(&rec.api_socket(), vec![info("Paused"), fail.to_owned()]);
+    let ok = NO_CONTENT.to_owned();
+    let replies = vec![
+        info("Running"),
+        ok.clone(),
+        info("Paused"),
+        fail.to_owned(),
+        ok,
+    ];
+    let seen = serve(&rec.api_socket(), replies);
     let err = backend.pause(&rec, &mut Vec::new()).unwrap_err();
-    seen.join().unwrap();
-    assert!(err.contains("vm left paused in memory"), "{err}");
+    let lines = seen.join().unwrap();
+    assert!(err.contains("snapshot failed, pause aborted"), "{err}");
+    assert!(
+        lines.last().unwrap().contains("vm.resume"),
+        "vm resumed after the failed snapshot: {lines:?}"
+    );
     assert!(!snap(&backend).exists());
     assert!(!backend.store.lease_dir("a").join("snap.tmp").exists());
     assert!(crate::host::pid_alive(ch.child.id(), super::super::CH_COMM));
@@ -72,7 +82,43 @@ fn snapshot_needs_guest_ram_plus_a_spare_gib_free() {
     assert!(check_room(3 * 1024 * mib, 2048).is_ok());
     let err = check_room(3 * 1024 * mib - 1, 2048).unwrap_err();
     assert!(err.contains("need 3072 MiB"), "{err}");
-    assert!(err.contains("vm left paused in memory"), "{err}");
+    assert!(err.contains("pause aborted"), "{err}");
+}
+
+#[test]
+fn not_enough_disk_resumes_the_running_vm() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, mut rec) = disk_fixture(dir.path(), Some(&ch));
+    rec.size = Some(Size {
+        cpus: 1,
+        memory_mib: u64::MAX / (1024 * 1024),
+    });
+    let ok = NO_CONTENT.to_owned();
+    let replies = vec![info("Running"), ok.clone(), info("Paused"), ok];
+    let seen = serve(&rec.api_socket(), replies);
+    let err = backend.pause(&rec, &mut Vec::new()).unwrap_err();
+    let lines = seen.join().unwrap();
+    assert!(err.contains("not enough free disk"), "{err}");
+    assert!(lines.last().unwrap().contains("vm.resume"), "{lines:?}");
+    assert!(!snap(&backend).exists());
+}
+
+#[test]
+fn memory_paused_lease_from_an_older_adapter_suspends_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = disk_fixture(dir.path(), Some(&ch));
+    let ok = NO_CONTENT.to_owned();
+    let seen = serve(
+        &rec.api_socket(),
+        vec![info("Paused"), ok.clone(), ok.clone(), ok.clone(), ok],
+    );
+    backend.pause(&rec, &mut Vec::new()).unwrap();
+    let lines = seen.join().unwrap();
+    assert!(!lines.iter().any(|l| l.contains("vm.pause")), "{lines:?}");
+    assert!(snap(&backend).is_dir());
+    assert_eq!(backend.power(&rec), Power::Suspended);
 }
 
 #[test]

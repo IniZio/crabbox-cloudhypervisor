@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::assets::{cache_state, CacheState};
-use crate::config::{Asset, Config, PauseMode};
+use crate::config::{Asset, Config};
 use crate::scope::{Cgroup, Scopes};
 use crate::state::{LONGEST_SOCKET_NAME, RUN_DIR_NAME_LEN};
 use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
@@ -108,7 +108,6 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     checks.push(cache("image", &image_cache_path(config), &config.image));
     checks.push(raw_base(config));
     checks.extend(cache_checks(&config.cache.volume_dir));
-    checks.push(pause_capability(config.pause));
     for check in checks.iter().filter(|c| c.level != Level::Ok) {
         let _ = writeln!(diag, "{}", line(check));
     }
@@ -119,15 +118,6 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     } else {
         Ok(report)
     }
-}
-
-/// Reports whether `pause` frees the guest's host RAM, so callers can rely on it.
-fn pause_capability(mode: PauseMode) -> Check {
-    let detail = match mode {
-        PauseMode::Disk => "pause-frees-memory",
-        PauseMode::Memory => "pause-keeps-memory",
-    };
-    Check::new(Level::Ok, "pause", detail)
 }
 
 /// One report line: `<tag> <name>: <detail>`.
