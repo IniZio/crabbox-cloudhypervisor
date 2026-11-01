@@ -123,6 +123,13 @@ impl ChClient {
         self.call("PUT", "vm.resume", None).map(drop)
     }
 
+    /// `PUT vm.snapshot`: writes a paused VM's config, device state and memory to `dir`.
+    pub fn snapshot(&self, dir: &Path) -> Result<(), String> {
+        let url = format!("file://{}", dir.display());
+        let body = serde_json::json!({"destination_url": url}).to_string();
+        self.call("PUT", "vm.snapshot", Some(&body)).map(drop)
+    }
+
     /// `PUT vm.resize-disk`: grows disk `id` to `bytes` while the VM runs.
     pub fn resize_disk(&self, id: &str, bytes: u64) -> Result<(), String> {
         let body = serde_json::json!({"id": id, "desired_size": bytes}).to_string();

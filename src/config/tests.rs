@@ -57,6 +57,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         cgroup: crate::scope::Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
+        pause: crate::config::PauseMode::Memory,
     }
 }
 
@@ -142,7 +143,7 @@ fn overrides_apply() {
         "cloudHypervisor": "/b/ch", "passt": "/b/passt", "qemuImg": "/b/qi",
         "ssh": "/b/ssh", "sshKeygen": "/b/sk", "curl": "/b/curl",
         "readyTimeoutSeconds": 10, "cgroup": "off", "vmmOverheadMiB": 1024,
-        "unknown": [1]
+        "pause": "disk", "unknown": [1]
     });
     let asset = |url: &str| Asset {
         url: url.to_owned(),
@@ -165,6 +166,7 @@ fn overrides_apply() {
         cgroup: crate::scope::Cgroup::Off,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 1024,
+        pause: crate::config::PauseMode::Disk,
         ..expected("/s", "/r", "/c")
     };
     assert_eq!(parse(&cfg, &[]).unwrap(), want);
@@ -459,4 +461,10 @@ fn balloon_keys_reject_bad_values_naming_the_key() {
         let e = parse(&config, HOME).unwrap_err();
         assert!(e.contains(key), "{config}: {e}");
     }
+}
+
+#[test]
+fn pause_rejects_unknown_modes() {
+    let err = parse(&json!({"pause": "swap"}), HOME).unwrap_err();
+    assert_eq!(err, "config.pause must be \"memory\" or \"disk\"");
 }

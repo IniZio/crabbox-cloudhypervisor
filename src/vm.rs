@@ -6,6 +6,7 @@ mod power;
 mod size_tests;
 mod sizing;
 pub mod spec;
+mod suspend;
 mod watcher;
 
 use std::ffi::OsString;
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 use crate::assets;
 use crate::backend::{self, Backend, Power};
 use crate::ch::ChClient;
-use crate::config::Config;
+use crate::config::{Config, PauseMode};
 use crate::host;
 use crate::protocol::{CacheVolumeEcho, Desired};
 use crate::scope::{self, Limits, Role};
@@ -161,6 +162,7 @@ impl RealBackend {
         &self,
         record: &mut LeaseRecord,
         size: Size,
+        restore: Option<&Path>,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.clone();
@@ -177,10 +179,7 @@ impl RealBackend {
             return Err("passt did not create its socket".to_owned());
         }
         let _ = writeln!(diag, "passt ready");
-        let args = [
-            OsString::from("--api-socket"),
-            record.api_socket().into_os_string(),
-        ];
+        let args = spec::ch_args(&record.api_socket(), restore);
         let limits = Limits::for_vm(size, self.config.vmm_overhead_mib);
         let ch = scopes.command(
             &id,
@@ -255,7 +254,7 @@ impl RealBackend {
         mkdir_private(run_dir)?;
         self.prepare_guest(&record, desired, &assets.base_raw)?;
         let _ = writeln!(diag, "guest files ready");
-        self.start_processes(&mut record, size, diag)?;
+        self.start_processes(&mut record, size, None, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;
         self.start_watcher(&mut record, diag)?;
         Ok(record)
@@ -280,11 +279,15 @@ impl Backend for RealBackend {
     }
 
     fn power(&self, record: &LeaseRecord) -> Power {
-        Self::power_of(record)
+        self.power_or_suspended(record)
     }
 
     fn pause(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
-        self.pause_vm(record, diag)
+        self.pause_per_mode(record, diag)
+    }
+
+    fn pause_frees_memory(&self) -> bool {
+        self.config.pause == PauseMode::Disk
     }
 
     fn resume(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
@@ -358,11 +361,8 @@ impl Backend for RealBackend {
             if self.scopes().vm_oom_killed(id) {
                 let _ = writeln!(diag, "{}", scope::oom_note(id));
             }
-            let _ = writeln!(
-                diag,
-                "serial log tail:\n{}",
-                serial_tail(&self.store.serial_log(id))
-            );
+            let tail = serial_tail(&self.store.serial_log(id));
+            let _ = writeln!(diag, "serial log tail:\n{tail}");
         }
         result
     }

@@ -1,5 +1,6 @@
 //! Pure builders: VM config JSON, MAC address, shell quoting, cache paths.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -78,6 +79,18 @@ pub fn vm_config(size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value 
         "serial": {"mode": "File", "file": serial},
         "console": {"mode": "Off"},
     })
+}
+
+/// cloud-hypervisor arguments: its API socket, plus `--restore` from a
+/// snapshot dir when resuming a suspended VM.
+#[must_use]
+pub fn ch_args(api_socket: &Path, restore: Option<&Path>) -> Vec<OsString> {
+    let mut args = vec![OsString::from("--api-socket"), api_socket.into()];
+    if let Some(snap) = restore {
+        args.push("--restore".into());
+        args.push(format!("source_url=file://{}", snap.display()).into());
+    }
+    args
 }
 
 /// Deterministic locally administered MAC (`52:54:00:xx:xx:xx`) for a lease.

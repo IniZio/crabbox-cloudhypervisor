@@ -29,10 +29,12 @@ pub enum Power {
     Stopped,
     /// VM process alive but its API does not answer (frozen or hung).
     Unresponsive,
+    /// VM processes gone; a snapshot in the lease dir holds its memory.
+    Suspended,
 }
 
 impl Power {
-    /// Wire status string: "ready" | "paused" | "stopped" | "unresponsive".
+    /// Wire status string: "ready" | "paused" | "stopped" | "unresponsive" | "suspended".
     #[must_use]
     pub const fn status(self) -> &'static str {
         match self {
@@ -40,6 +42,7 @@ impl Power {
             Self::Paused => "paused",
             Self::Stopped => "stopped",
             Self::Unresponsive => "unresponsive",
+            Self::Suspended => "suspended",
         }
     }
 }
@@ -54,6 +57,12 @@ pub fn stopped_error(id: &str) -> String {
 #[must_use]
 pub fn paused_error(id: &str) -> String {
     format!("lease {id} is paused; run crabbox resume")
+}
+
+/// Error text for a non-releaseOnly resolve of a suspended lease.
+#[must_use]
+pub fn suspended_error(id: &str) -> String {
+    format!("lease {id} is suspended; run crabbox resume")
 }
 
 /// Error text for any operation that needs a live API on a hung cloud-hypervisor.
@@ -103,10 +112,17 @@ pub trait Backend {
     fn power(&self, record: &LeaseRecord) -> Power;
 
     /// Pauses a Running VM and returns once vm.info reports Paused
-    /// (within readyTimeout). Only called when Running.
+    /// (within readyTimeout); when pause frees memory it then suspends the
+    /// VM to disk. Called when Running, or Paused if pause frees memory.
     fn pause(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String>;
 
-    /// Paused: vm.resume. Stopped: cold boot from the existing disk and seed
+    /// True when `pause` suspends to disk and frees the guest's host RAM.
+    fn pause_frees_memory(&self) -> bool {
+        false
+    }
+
+    /// Paused: vm.resume. Suspended: restore the snapshot, then vm.resume.
+    /// Stopped: cold boot from the existing disk and seed
     /// (new passt and CH, same lease dir). Then waits for crabbox-ready.
     /// Only called when not Running.
     fn resume(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String>;

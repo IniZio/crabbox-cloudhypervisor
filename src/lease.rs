@@ -175,6 +175,7 @@ fn require_running(power: Power, id: &str) -> Result<(), String> {
     match power {
         Power::Running => Ok(()),
         Power::Paused => Err(backend::paused_error(id)),
+        Power::Suspended => Err(backend::suspended_error(id)),
         Power::Stopped => Err(backend::stopped_error(id)),
         Power::Unresponsive => Err(backend::unresponsive_error(id)),
     }
@@ -192,7 +193,7 @@ pub fn reap_if_idle(backend: &dyn Backend, record: &LeaseRecord, diag: &mut dyn 
 
 /// Describes the lease the request names; never creates or destroys.
 ///
-/// A paused or stopped lease is returned with its status, because crabbox
+/// A paused, suspended or stopped lease is returned with its status, because crabbox
 /// status, extend and heartbeat resolve it and decide for themselves. An
 /// unresponsive lease is an error unless the request is `releaseOnly`: crabbox
 /// does not know that status and would wait on SSH that never answers.

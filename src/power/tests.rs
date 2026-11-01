@@ -87,3 +87,81 @@ fn unresponsive_pause_and_resume_error_without_acting() {
     assert!(!fake.called("pause u1"));
     assert!(!fake.called("resume u1"));
 }
+
+/// A fake whose pause suspends to disk, with running lease `s1`.
+fn disk_fake() -> Fake {
+    let fake = Fake::default();
+    fake.frees_memory.set(true);
+    fake.add("s1", true);
+    fake
+}
+
+#[test]
+fn disk_pause_suspends_running_and_memory_paused_vms() {
+    for paused in [false, true] {
+        let fake = disk_fake();
+        if paused {
+            fake.pause_set("s1");
+        }
+        assert_eq!(run_pause(&fake, "s1").unwrap(), "suspended s1");
+        assert!(fake.called("pause s1"));
+        assert_eq!(
+            fake.power(&fake.find("s1").unwrap().unwrap()),
+            Power::Suspended
+        );
+    }
+}
+
+#[test]
+fn pause_suspended_is_idempotent() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    fake.calls.borrow_mut().clear();
+    assert_eq!(run_pause(&fake, "s1").unwrap(), "s1 already suspended");
+    assert!(!fake.called("pause s1"));
+}
+
+#[test]
+fn resume_suspended_returns_ready_lease() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    let lease = run_resume(&fake, "s1").unwrap();
+    assert!(fake.called("resume s1"));
+    assert_eq!(lease.status, "ready");
+}
+
+#[test]
+fn failed_restore_surfaces_and_stays_suspended() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    fake.resume_fails.set(true);
+    assert_eq!(run_resume(&fake, "s1").unwrap_err(), "resume failed");
+    assert_eq!(
+        fake.power(&fake.find("s1").unwrap().unwrap()),
+        Power::Suspended
+    );
+}
+
+#[test]
+fn suspended_lease_resolves_with_status_and_refuses_acquire() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    let req = lease_request(Operation::Resolve, "s1");
+    let lease = crate::lease::resolve(&req, &fake, &mut Vec::new()).unwrap();
+    assert_eq!(lease.status, "suspended");
+    let mut acquire = crate::fake::request(Operation::Acquire);
+    acquire.desired = Some(crate::fake::desired("s1"));
+    let err = crate::lease::acquire(&acquire, &fake, &mut Vec::new()).unwrap_err();
+    assert_eq!(err, "lease s1 is suspended; run crabbox resume");
+}
+
+#[test]
+fn cleanup_never_deletes_a_suspended_lease() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    let mut req = crate::fake::request(Operation::Cleanup);
+    req.config = serde_json::json!({"reapStoppedAfterHours": 1});
+    crate::inventory::cleanup(&req, &fake, &mut Vec::new()).unwrap();
+    assert!(!fake.destroyed_any());
+    assert!(fake.find("s1").unwrap().is_some());
+}
