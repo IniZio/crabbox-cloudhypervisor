@@ -45,6 +45,7 @@ impl FakeBackend {
             passt_start: None,
             watch_pid: None,
             watch_start: None,
+            size: None,
         };
         self.records
             .borrow_mut()

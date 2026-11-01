@@ -101,6 +101,7 @@ pub(crate) fn record(id: &str) -> LeaseRecord {
         passt_start: None,
         watch_pid: None,
         watch_start: None,
+        size: None,
     }
 }
 

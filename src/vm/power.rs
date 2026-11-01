@@ -276,9 +276,10 @@ impl RealBackend {
         record.clear_pids();
         self.store.write(&record)?;
         let firmware = spec::firmware_cache_path(&self.config);
+        let size = record.size.unwrap_or_else(|| self.default_size());
         let started = self
             .start_processes(&mut record, diag)
-            .and_then(|()| self.boot_vm(&record, &firmware, diag))
+            .and_then(|()| self.boot_vm(&record, size, &firmware, diag))
             .and_then(|()| self.start_watcher(&mut record, diag));
         if started.is_err() {
             if let Err(e) = Self::stop_processes(&record, diag) {

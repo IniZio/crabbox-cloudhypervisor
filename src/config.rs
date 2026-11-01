@@ -2,11 +2,14 @@
 //!
 //! Error text names the offending key and never echoes the provided value.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::size::{self, Size};
 
 /// Pinned guest image URL (Ubuntu noble cloud image).
 pub const IMAGE_URL: &str =
@@ -76,6 +79,8 @@ pub struct Config {
     pub cpus: u32,
     /// Guest memory in MiB.
     pub memory_mib: u64,
+    /// Size per class name; a lease with a class boots at its size, not `cpus`/`memory_mib`.
+    pub classes: BTreeMap<String, Size>,
     /// Guest disk size in GiB.
     pub disk_gib: u64,
     /// Runtime growth limits.
@@ -132,6 +137,7 @@ impl Config {
             cache_dir,
             cpus,
             memory_mib,
+            classes: size::classes(config)?,
             disk_gib,
             growth: growth(config, cpus, memory_mib, disk_gib)?,
             image: asset_key(config, "image", IMAGE_URL, IMAGE_SHA256)?,
