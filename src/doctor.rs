@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::assets::{cache_state, CacheState};
 use crate::config::{Asset, Config};
+use crate::scope::{Cgroup, Scopes};
 use crate::state::{LONGEST_SOCKET_NAME, RUN_DIR_NAME_LEN};
 use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
 
@@ -25,14 +26,23 @@ struct Probes {
     kvm: PathBuf,
     /// vhost-vsock device node.
     vhost_vsock: PathBuf,
+    /// This user's systemd manager, as scopes reach it.
+    scopes: Scopes,
+    /// `cgroup.controllers` of this user's `user@<uid>.service`.
+    controllers: PathBuf,
 }
 
 impl Probes {
     /// The real host device nodes.
-    fn host() -> Self {
+    fn host(cgroup: Cgroup) -> Self {
+        let uid = rustix::process::getuid().as_raw();
         Self {
             kvm: PathBuf::from("/dev/kvm"),
             vhost_vsock: PathBuf::from("/dev/vhost-vsock"),
+            scopes: Scopes::current(cgroup),
+            controllers: PathBuf::from(format!(
+                "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/cgroup.controllers"
+            )),
         }
     }
 }
@@ -72,7 +82,7 @@ impl Check {
 
 /// Runs every host check and returns the report; `Err` when any check failed.
 pub fn run(config: &Config, diag: &mut dyn Write) -> Result<String, String> {
-    run_with(config, &Probes::host(), diag)
+    run_with(config, &Probes::host(config.cgroup), diag)
 }
 
 /// Like [`run`] with injectable device paths.
@@ -82,6 +92,7 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
         device("vhost-vsock", &probes.vhost_vsock, Level::Warn),
     ];
     checks.extend(tool_checks(config));
+    checks.extend(cgroup_checks(probes));
     checks.push(writable("runtime_dir", &config.runtime_dir));
     checks.push(writable("state_dir", &config.state_dir));
     checks.push(socket_room(&config.runtime_dir));
@@ -126,6 +137,40 @@ fn render(checks: &[Check]) -> String {
         count(Level::Fail)
     ));
     lines.join("\n")
+}
+
+/// Checks that VM scopes can be created and can carry CPU and memory limits.
+fn cgroup_checks(probes: &Probes) -> Vec<Check> {
+    if probes.scopes.mode == Cgroup::Off {
+        return vec![Check::new(
+            Level::Warn,
+            "cgroup",
+            "off: VMs run without CPU or memory limits",
+        )];
+    }
+    let bus = match probes.scopes.check_bus() {
+        Ok(()) => Check::new(Level::Ok, "user_bus", "systemd user manager reachable"),
+        Err(e) => Check::new(Level::Fail, "user_bus", e),
+    };
+    let text = fs::read_to_string(&probes.controllers).unwrap_or_default();
+    let missing: Vec<&str> = ["cpu", "memory"]
+        .into_iter()
+        .filter(|c| !text.split_whitespace().any(|have| have == *c))
+        .collect();
+    let delegated = if missing.is_empty() {
+        Check::new(Level::Ok, "cgroup_delegation", "cpu and memory delegated")
+    } else {
+        Check::new(
+            Level::Fail,
+            "cgroup_delegation",
+            format!(
+                "{} not delegated to the user manager; add Delegate=cpu memory pids to a \
+                 user@.service drop-in, or set cgroup: off",
+                missing.join(" and ")
+            ),
+        )
+    };
+    vec![bus, delegated]
 }
 
 /// Checks that a device node opens read+write; `missing` is the level when it does not.

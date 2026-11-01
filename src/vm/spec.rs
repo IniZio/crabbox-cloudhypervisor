@@ -19,6 +19,20 @@ pub const ROOT_DISK_ID: &str = "root";
 const MIB: u64 = 1024 * 1024;
 /// Hex characters of an asset hash used in cache file names.
 const HASH_PREFIX: usize = 12;
+/// Longest allowed socket path (`sun_path` is 108 bytes including the NUL).
+const SOCKET_PATH_LIMIT: usize = 108;
+
+/// Fails when the longest socket path in `run_dir` would not fit `sun_path`.
+pub fn check_socket_len(run_dir: &Path) -> Result<(), String> {
+    let longest = run_dir.join(crate::state::LONGEST_SOCKET_NAME);
+    if longest.as_os_str().len() >= SOCKET_PATH_LIMIT {
+        return Err(format!(
+            "runtime dir path is too long for unix sockets (limit {} bytes with lease id)",
+            SOCKET_PATH_LIMIT - 1
+        ));
+    }
+    Ok(())
+}
 
 /// Files a VM config points at.
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +65,7 @@ pub fn vm_config(size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value 
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": firmware},
         "disks": [
-            {"id": ROOT_DISK_ID, "path": disk, "image_type": "Raw", "readonly": false},
+            {"id": ROOT_DISK_ID, "path": disk, "image_type": "Raw", "readonly": false, "direct": true},
             {"path": seed, "image_type": "Raw", "readonly": true},
         ],
         "net": [{

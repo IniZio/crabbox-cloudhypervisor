@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -93,14 +93,39 @@ pub fn ssh_keygen(program: &Path, key: &Path, comment: &str) -> Result<String, S
     Ok(text.trim().to_owned())
 }
 
-/// Starts `program` in its own session, output appended to `log`; returns its pid.
+/// A program to start detached: its path, arguments and extra environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    /// Program path or name.
+    pub program: PathBuf,
+    /// Arguments after the program.
+    pub args: Vec<OsString>,
+    /// Variables added to the inherited environment.
+    pub env: Vec<(OsString, OsString)>,
+}
+
+impl Launch {
+    /// `program args` with the inherited environment.
+    #[must_use]
+    pub fn plain(program: &Path, args: &[OsString]) -> Self {
+        Self {
+            program: program.to_path_buf(),
+            args: args.to_vec(),
+            env: Vec::new(),
+        }
+    }
+}
+
+/// Starts a program in its own session, output appended to `log`; returns its pid.
 ///
 /// Runs `setsid <program> <args>`. As a plain (non group-leader) child, setsid(1)
 /// calls `setsid()` and execs in place, so the returned pid is the program's own
 /// and it survives our exit and our process-group kill. The `Child` is dropped
 /// without waiting: dropping does not kill it, and the brief zombie is reaped
-/// when our short-lived op process exits.
-pub fn spawn_detached(program: &Path, args: &[OsString], log: &Path) -> Result<u32, String> {
+/// when our short-lived op process exits. A `systemd-run --scope` launch also
+/// execs in place, so its comm reads `setsid`, then `systemd-run`, before the
+/// program's; callers wait for a socket or API before checking comm.
+pub fn spawn_detached(launch: &Launch, log: &Path) -> Result<u32, String> {
     let out = OpenOptions::new()
         .create(true)
         .append(true)
@@ -111,8 +136,9 @@ pub fn spawn_detached(program: &Path, args: &[OsString], log: &Path) -> Result<u
         .try_clone()
         .map_err(|e| format!("spawn: cannot duplicate log handle: {e}"))?;
     let child = Command::new("setsid")
-        .arg(program)
-        .args(args)
+        .arg(&launch.program)
+        .args(&launch.args)
+        .envs(launch.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))

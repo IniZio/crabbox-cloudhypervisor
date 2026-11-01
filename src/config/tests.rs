@@ -54,6 +54,8 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             max_volume_gib: 40,
             key_ttl_days: 30,
         },
+        cgroup: crate::scope::Cgroup::Systemd,
+        vmm_overhead_mib: 512,
     }
 }
 
@@ -138,7 +140,8 @@ fn overrides_apply() {
         "firmware": {"url": "https://f/x", "sha256": sha},
         "cloudHypervisor": "/b/ch", "passt": "/b/passt", "qemuImg": "/b/qi",
         "ssh": "/b/ssh", "sshKeygen": "/b/sk", "curl": "/b/curl",
-        "readyTimeoutSeconds": 10, "unknown": [1]
+        "readyTimeoutSeconds": 10, "cgroup": "off", "vmmOverheadMiB": 1024,
+        "unknown": [1]
     });
     let asset = |url: &str| Asset {
         url: url.to_owned(),
@@ -158,6 +161,8 @@ fn overrides_apply() {
         ssh_keygen: PathBuf::from("/b/sk"),
         curl: PathBuf::from("/b/curl"),
         ready_timeout: Duration::from_secs(10),
+        cgroup: crate::scope::Cgroup::Off,
+        vmm_overhead_mib: 1024,
         ..expected("/s", "/r", "/c")
     };
     assert_eq!(parse(&cfg, &[]).unwrap(), want);
@@ -389,4 +394,12 @@ fn removed_growth_keys_fail_to_load_and_say_why() {
             format!("config.{key} was removed: VMs now boot at their class size; delete it")
         );
     }
+}
+
+#[test]
+fn cgroup_rejects_unknown_modes() {
+    let err = parse(&json!({"cgroup": "cgroupfs"}), HOME).unwrap_err();
+    assert_eq!(err, "config.cgroup must be \"systemd\" or \"off\"");
+    let err = parse(&json!({"vmmOverheadMiB": 10}), HOME).unwrap_err();
+    assert!(err.starts_with("config.vmmOverheadMiB"), "{err}");
 }

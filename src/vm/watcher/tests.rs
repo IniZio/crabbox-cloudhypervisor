@@ -67,7 +67,7 @@ fn destroy_stops_the_watcher() {
     std::fs::create_dir_all(backend.store.lease_dir("w4")).unwrap();
     let log = dir.path().join("sleep.log");
     let args = [std::ffi::OsString::from("30")];
-    let pid = host::spawn_detached(Path::new("sleep"), &args, &log).unwrap();
+    let pid = host::spawn_detached(&host::Launch::plain(Path::new("sleep"), &args), &log).unwrap();
     assert!(
         host::wait_until_dead(|| !host::pid_alive(pid, "sleep"), Duration::from_secs(2)),
         "sleep did not start"

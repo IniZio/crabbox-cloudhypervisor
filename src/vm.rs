@@ -21,6 +21,7 @@ use crate::ch::ChClient;
 use crate::config::Config;
 use crate::host;
 use crate::protocol::{CacheVolumeEcho, Desired};
+use crate::scope::{self, Limits, Role};
 use crate::seed::{self, SeedParams};
 use crate::size::Size;
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
@@ -29,8 +30,6 @@ use crate::state::{self, LeaseLock, LeaseRecord, Store};
 const CH_COMM: &str = "cloud-hyperviso";
 /// Process name of passt.
 const PASST_COMM: &str = "passt";
-/// Longest allowed socket path (`sun_path` is 108 bytes including the NUL).
-const SOCKET_PATH_LIMIT: usize = 108;
 /// Longest wait for passt to create its socket.
 const PASST_WAIT: Duration = Duration::from_secs(5);
 /// Longest wait for the cloud-hypervisor API to answer.
@@ -102,18 +101,6 @@ fn serial_tail(path: &Path) -> String {
         .join("\n")
 }
 
-/// Fails when the longest socket path in `run_dir` would not fit `sun_path`.
-fn check_socket_len(run_dir: &Path) -> Result<(), String> {
-    let longest = run_dir.join(state::LONGEST_SOCKET_NAME);
-    if longest.as_os_str().len() >= SOCKET_PATH_LIMIT {
-        return Err(format!(
-            "runtime dir path is too long for unix sockets (limit {} bytes with lease id)",
-            SOCKET_PATH_LIMIT - 1
-        ));
-    }
-    Ok(())
-}
-
 /// Where a create gets its downloaded inputs.
 struct Assets {
     /// Firmware file.
@@ -173,14 +160,17 @@ impl RealBackend {
     fn start_processes(
         &self,
         record: &mut LeaseRecord,
+        size: Size,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.clone();
+        let scopes = self.scopes();
         let log = self.store.process_log(&id);
         let passt_sock = record.passt_socket();
         let args = ["--vhost-user", "-f", "-s"].map(OsString::from);
         let args = [&args[..], &[passt_sock.clone().into_os_string()]].concat();
-        let passt_pid = host::spawn_detached(&self.config.passt, &args, &log)?;
+        let passt = scopes.command(&id, Role::Passt, None, &self.config.passt, &args)?;
+        let passt_pid = host::spawn_detached(&passt, &log)?;
         record.set_passt_pid(passt_pid);
         self.store.write(record)?;
         if !wait_until(PASST_WAIT, || passt_sock.exists()) {
@@ -191,7 +181,15 @@ impl RealBackend {
             OsString::from("--api-socket"),
             record.api_socket().into_os_string(),
         ];
-        let pid = host::spawn_detached(&self.config.cloud_hypervisor, &args, &log)?;
+        let limits = Limits::for_vm(size, self.config.vmm_overhead_mib);
+        let ch = scopes.command(
+            &id,
+            Role::Vm,
+            Some(limits),
+            &self.config.cloud_hypervisor,
+            &args,
+        )?;
+        let pid = host::spawn_detached(&ch, &log)?;
         record.set_ch_pid(pid);
         self.store.write(record)?;
         let client = ChClient::new(&record.api_socket());
@@ -257,7 +255,7 @@ impl RealBackend {
         mkdir_private(run_dir)?;
         self.prepare_guest(&record, desired, &assets.base_raw)?;
         let _ = writeln!(diag, "guest files ready");
-        self.start_processes(&mut record, diag)?;
+        self.start_processes(&mut record, size, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;
         self.start_watcher(&mut record, diag)?;
         Ok(record)
@@ -327,7 +325,8 @@ impl Backend for RealBackend {
         let id = desired.lease_id.as_str();
         state::validate_lease_id(id)?;
         let run_dir = self.config.runtime_dir.join(state::run_dir_name(id));
-        check_socket_len(&run_dir)?;
+        spec::check_socket_len(&run_dir)?;
+        self.scopes().check_bus()?;
         let size = self.lease_size(desired.class.as_deref())?;
         let assets = self.ensure_assets(diag)?;
         match self.provision(desired, &run_dir, &assets, size, diag) {
@@ -352,6 +351,9 @@ impl Backend for RealBackend {
             diag,
         );
         if result.is_err() {
+            if self.scopes().vm_oom_killed(id) {
+                let _ = writeln!(diag, "{}", scope::oom_note(id));
+            }
             let _ = writeln!(
                 diag,
                 "serial log tail:\n{}",
@@ -374,6 +376,7 @@ impl Backend for RealBackend {
         if let Some(record) = &record {
             Self::stop_processes(record, diag)?;
         }
+        self.scopes().stop(lease_id, diag)?;
         self.settle_cache(lease_id, quiesced, diag);
         remove_tree(&run_dir)?;
         self.store.remove(lease_id)

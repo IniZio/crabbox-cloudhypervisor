@@ -17,6 +17,7 @@ mod power;
 pub mod protocol;
 pub mod proxy;
 pub mod ready;
+pub mod scope;
 pub mod seed;
 pub mod size;
 pub mod state;
