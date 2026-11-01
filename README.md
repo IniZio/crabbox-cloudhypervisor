@@ -18,6 +18,11 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
 - For cache volumes: `mke2fs`, `e2fsck`, `resize2fs` and `debugfs` (e2fsprogs). Without
   them every cache volume is skipped and the Box starts cold.
 - crabbox itself, with `rsync` and `git` for syncing.
+- With `cgroup: systemd` (the default): a systemd user manager for the user that
+  runs crabbox, with the `cpu` and `memory` controllers delegated to it. Stock
+  systemd delegates them. A user without a login session has no user manager
+  until `loginctl enable-linger <user>` is run once. See
+  [Per-lease limits](#per-lease-limits).
 
 ## Install
 
@@ -83,6 +88,8 @@ All keys go under `external.config`. All are optional.
 | `cacheStoreMaxGB` | `200` | store budget in GiB; least recently used groups go first above it |
 | `cacheMaxVolumeGB` | `40` | largest group filesystem in GiB |
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
+| `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
+| `vmmOverheadMiB` | `512` | MiB a VM scope may use above the class memory, for cloud-hypervisor itself (at least 64) |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -118,6 +125,37 @@ A VM gets its class size at boot, and the host admits a class against its totals
 backed lazily and freed pages are reported back, so only memory the guest has
 touched is claimed on the host. Setting the removed keys `cpusMax` or
 `memoryMiBMax` fails the config with a message saying so; delete them.
+
+## Per-lease limits
+
+With `cgroup: systemd`, each lease runs in three systemd user scopes:
+
+| Scope | Holds | Limits |
+| --- | --- | --- |
+| `crabbox-<leaseId>.scope` | cloud-hypervisor | `CPUQuota=<cpus*100>%`, `MemoryMax=<class memory + vmmOverheadMiB>`, `MemorySwapMax=0` |
+| `crabbox-<leaseId>-passt.scope` | passt | none |
+| `crabbox-<leaseId>-watch.scope` | the growth watcher | none |
+
+The VM's quota matches its class, so one busy guest cannot take CPU from the
+others. The memory limit is a safety net above what the guest can use, not a
+squeeze. A VMM that goes past it is killed by the kernel, and only that VM goes:
+`crabbox resume` and `crabbox stop` print that the lease was OOM-killed, and so
+does a failed readiness wait. The root disk is opened with `O_DIRECT`, so the
+host page cache for the disk image is not charged to the scope.
+
+passt and the watcher get their own scopes rather than the VM's, so the VM's
+quota covers only the guest, and so all three outlive the process that started
+them. A service manager that restarts crabbox's caller does not take the
+lease's processes down with it. `crabbox stop` stops all three scopes; a scope
+that is already gone is not an error.
+
+With no user manager, the lease fails before anything is built, naming the fix:
+`run loginctl enable-linger <user>`. It never falls back to running without
+limits. Set `cgroup: off` to run that way on purpose.
+
+If systemd-oomd watches `user@.service` with `ManagedOOMMemoryPressure=kill`
+(the default on some distributions), it may kill a whole VM scope when the host
+is under memory pressure, independently of these limits.
 
 ## Growth while a Box runs
 
@@ -280,7 +318,9 @@ lease that stops is eligible at once.
 
 `crabbox doctor` calls the provider's `doctor` op. It checks `/dev/kvm`,
 `/dev/vhost-vsock`, the host tools and their versions, that the state and
-runtime directories are writable, that socket paths fit the 108-byte limit
+runtime directories are writable, that the systemd user manager is reachable
+and has the `cpu` and `memory` controllers (with `cgroup: systemd`, with the fix
+when it is not), that socket paths fit the 108-byte limit
 (`runtimeDir` at most 85 bytes), and whether the firmware and image are cached
 and verified. Warnings and failures are also written to stderr, so crabbox
 shows them, not just `doctor finished`.

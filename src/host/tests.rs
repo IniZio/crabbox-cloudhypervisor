@@ -60,7 +60,11 @@ fn wait_alive(pid: u32) -> bool {
 fn spawn_detached_lifecycle() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let pid = spawn_detached(Path::new("sleep"), &[OsString::from("30")], &log).unwrap();
+    let pid = spawn_detached(
+        &Launch::plain(Path::new("sleep"), &[OsString::from("30")]),
+        &log,
+    )
+    .unwrap();
     assert!(wait_alive(pid));
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
     let rest = stat.rsplit_once(')').unwrap().1;

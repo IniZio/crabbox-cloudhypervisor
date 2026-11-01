@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::scope::Cgroup;
 use crate::size::{self, Size};
 
 /// Pinned guest image URL (Ubuntu noble cloud image).
@@ -103,6 +104,10 @@ pub struct Config {
     pub reap_stopped_after_hours: Option<u64>,
     /// Cache volume store.
     pub cache: CacheConfig,
+    /// How lease processes are confined.
+    pub cgroup: Cgroup,
+    /// MiB a VM scope may use above its class memory, for the VMM itself.
+    pub vmm_overhead_mib: u64,
 }
 
 /// Environment lookup used for default directories.
@@ -160,6 +165,8 @@ impl Config {
                 max_volume_gib: int_key(config, "cacheMaxVolumeGB", 40, 1, u64::MAX)?,
                 key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
             },
+            cgroup: cgroup(config)?,
+            vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             state_dir,
         })
     }
@@ -178,6 +185,15 @@ fn reject_removed_keys(config: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Reads `cgroup`: `systemd` (default) or `off`.
+fn cgroup(config: &Value) -> Result<Cgroup, String> {
+    match get(config, "cgroup").map(Value::as_str) {
+        None | Some(Some("systemd")) => Ok(Cgroup::Systemd),
+        Some(Some("off")) => Ok(Cgroup::Off),
+        Some(_) => Err("config.cgroup must be \"systemd\" or \"off\"".to_owned()),
+    }
 }
 
 /// Reads the disk growth keys.

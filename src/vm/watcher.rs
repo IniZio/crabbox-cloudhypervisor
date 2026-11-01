@@ -9,10 +9,16 @@ use std::time::Duration;
 use super::power::terminate;
 use super::RealBackend;
 use crate::host;
+use crate::scope::{Role, Scopes};
 use crate::state::LeaseRecord;
 use crate::watch::WatchSpec;
 
 impl RealBackend {
+    /// This user's scopes in the configured cgroup mode.
+    pub(super) fn scopes(&self) -> Scopes {
+        Scopes::current(self.config.cgroup)
+    }
+
     /// Writes the watch spec and spawns `<exe> watch <id> --state-dir <dir>`.
     pub(super) fn start_watcher(
         &self,
@@ -39,7 +45,10 @@ impl RealBackend {
             OsString::from("--state-dir"),
             self.config.state_dir.clone().into_os_string(),
         ];
-        let pid = host::spawn_detached(&self.exe, &args, &self.store.grow_log(&id))?;
+        let launch = self
+            .scopes()
+            .command(&id, Role::Watch, None, &self.exe, &args)?;
+        let pid = host::spawn_detached(&launch, &self.store.grow_log(&id))?;
         record.set_watch_pid(pid);
         self.store.write(record)?;
         let _ = writeln!(diag, "growth watcher started");

@@ -54,6 +54,8 @@ pub(super) fn config(root: &Path) -> Config {
             max_volume_gib: 40,
             key_ttl_days: 30,
         },
+        cgroup: crate::scope::Cgroup::Off,
+        vmm_overhead_mib: 512,
     }
 }
 
@@ -98,7 +100,7 @@ fn vm_config_has_the_spike_shape() {
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": "/fw.fd"},
         "disks": [
-            {"id": "root", "path": "/d.raw", "image_type": "Raw", "readonly": false},
+            {"id": "root", "path": "/d.raw", "image_type": "Raw", "readonly": false, "direct": true},
             {"path": "/s.img", "image_type": "Raw", "readonly": true},
         ],
         "net": [{

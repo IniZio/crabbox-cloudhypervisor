@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::{reflink, run, run_with, Level, Probes};
 use crate::config::{Asset, Config};
+use crate::scope::{Cgroup, Scopes};
 use crate::vm::spec::{firmware_cache_path, image_cache_path};
 
 /// A config rooted in `root` whose tools all succeed.
@@ -47,18 +48,32 @@ fn config(root: &Path) -> Config {
             max_volume_gib: 40,
             key_ttl_days: 30,
         },
+        cgroup: Cgroup::Systemd,
+        vmm_overhead_mib: 512,
     }
 }
 
-/// Probes where both devices are plain writable files.
+/// Probes where both devices are plain writable files and the user manager
+/// listens on a socket with cpu and memory delegated.
 fn probes(root: &Path) -> Probes {
     let kvm = root.join("kvm");
     let vsock = root.join("vsock");
     std::fs::write(&kvm, b"").unwrap();
     std::fs::write(&vsock, b"").unwrap();
+    let bus = root.join("bus");
+    let _ = std::fs::remove_file(&bus);
+    std::mem::forget(std::os::unix::net::UnixListener::bind(&bus).unwrap());
+    let controllers = root.join("cgroup.controllers");
+    std::fs::write(&controllers, "cpu memory pids\n").unwrap();
     Probes {
         kvm,
         vhost_vsock: vsock,
+        scopes: Scopes {
+            mode: Cgroup::Systemd,
+            bus,
+            user: "alice".to_owned(),
+        },
+        controllers,
     }
 }
 
@@ -224,4 +239,47 @@ fn reflink_probe_creates_the_store_dir_private() {
         let mode = fs::metadata(d).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "{}", d.display());
     }
+}
+
+#[test]
+fn cgroup_scopes_pass_with_a_user_bus_and_delegated_controllers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, text) = report(&config(dir.path()), &probes(dir.path()));
+    assert!(text.contains("ok user_bus"), "{text}");
+    assert!(text.contains("ok cgroup_delegation"), "{text}");
+}
+
+#[test]
+fn a_missing_user_bus_fails_with_the_linger_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = probes(dir.path());
+    p.scopes.bus = dir.path().join("no-bus");
+    let (passed, text) = report(&config(dir.path()), &p);
+    assert!(!passed);
+    assert!(text.contains("FAIL user_bus"), "{text}");
+    assert!(text.contains("loginctl enable-linger alice"), "{text}");
+}
+
+#[test]
+fn undelegated_memory_fails_with_the_drop_in_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = probes(dir.path());
+    fs::write(&p.controllers, "cpu pids\n").unwrap();
+    let (passed, text) = report(&config(dir.path()), &p);
+    assert!(!passed);
+    assert!(
+        text.contains("FAIL cgroup_delegation: memory not delegated"),
+        "{text}"
+    );
+    assert!(text.contains("Delegate="), "{text}");
+}
+
+#[test]
+fn cgroup_off_warns_that_vms_are_unlimited() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = probes(dir.path());
+    p.scopes.mode = Cgroup::Off;
+    let (_, text) = report(&config(dir.path()), &p);
+    assert!(text.contains("warn cgroup: off"), "{text}");
+    assert!(!text.contains("user_bus"), "{text}");
 }
