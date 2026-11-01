@@ -172,6 +172,29 @@ short, without a reboot:
   disk stays as it is, and `list` and `resolve` report why in the lease's
   `growthBlocked` field.
 
+## Memory while a Box runs
+
+The VM boots at its full class size with a balloon at 0. The watcher registers a
+pressure trigger on the host's `/proc/pressure/memory` and waits on it, so
+there is no polling for memory. Each time it fires the watcher inflates the
+balloon by `balloonStepPercent` of the class memory (`vm.resize`), never past
+class memory minus `balloonFloorMiB`; the guest frees page cache to fit. After
+`balloonCooldownSecs` with no event it deflates by the same step, down to 0.
+The guest can also take memory back from the balloon on its own when it runs out.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `balloon` | `on` | `off` keeps guests at their full memory |
+| `memoryPressureTrigger` | `some 500000 2000000` | `some\|full <stall µs> <window µs>`; the window must be a multiple of 2 s (2000000), at least 2 s, or the kernel refuses it for an unprivileged user |
+| `balloonStepPercent` | `25` | percent of class memory per event (1 to 100) |
+| `balloonFloorMiB` | `1024` | class memory the balloon never takes |
+| `balloonCooldownSecs` | `60` | quiet seconds before each step down |
+
+If the trigger cannot be registered (no PSI, EINVAL) the watcher says so once
+in `grow.log`, keeps growing the disk, and the lease runs without a balloon;
+`list` and `resolve` report why in the `balloonOff` field and `doctor` fails its
+`memory_pressure` check. Every inflate and deflate goes to `grow.log`.
+
 vCPUs and memory never change while a VM runs. A cold boot (`resume` of a
 stopped lease) starts at the same size with the disk at its grown size. Every grow and
 every failure goes to `<stateDir>/leases/<leaseId>/grow.log`, one timestamped

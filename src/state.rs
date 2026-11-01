@@ -260,6 +260,12 @@ impl Store {
         self.lease_dir(id).join("grow-blocked")
     }
 
+    /// Why this lease cannot balloon; absent when it can (or `balloon` is off).
+    #[must_use]
+    pub fn balloon_off_path(&self, id: &str) -> PathBuf {
+        self.lease_dir(id).join("balloon-off")
+    }
+
     /// Log of every grow and every growth failure.
     #[must_use]
     pub fn grow_log(&self, id: &str) -> PathBuf {

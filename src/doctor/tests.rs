@@ -49,6 +49,7 @@ fn config(root: &Path) -> Config {
             key_ttl_days: 30,
         },
         cgroup: Cgroup::Systemd,
+        balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
     }
 }
@@ -65,6 +66,8 @@ fn probes(root: &Path) -> Probes {
     std::mem::forget(std::os::unix::net::UnixListener::bind(&bus).unwrap());
     let controllers = root.join("cgroup.controllers");
     std::fs::write(&controllers, "cpu memory pids\n").unwrap();
+    let pressure = root.join("pressure");
+    std::fs::write(&pressure, b"").unwrap();
     Probes {
         kvm,
         vhost_vsock: vsock,
@@ -74,6 +77,7 @@ fn probes(root: &Path) -> Probes {
             user: "alice".to_owned(),
         },
         controllers,
+        pressure,
     }
 }
 
@@ -282,4 +286,41 @@ fn cgroup_off_warns_that_vms_are_unlimited() {
     let (_, text) = report(&config(dir.path()), &p);
     assert!(text.contains("warn cgroup: off"), "{text}");
     assert!(!text.contains("user_bus"), "{text}");
+}
+
+#[test]
+fn a_registrable_pressure_trigger_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
+    assert!(ok, "{r}");
+    assert!(
+        r.contains("ok memory_pressure: pressure trigger registers"),
+        "{r}"
+    );
+}
+
+#[test]
+fn a_pressure_trigger_that_cannot_register_fails_plainly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = probes(dir.path());
+    p.pressure = dir.path().join("absent");
+    let (ok, r) = report(&config(dir.path()), &p);
+    assert!(!ok);
+    assert!(
+        r.contains("FAIL memory_pressure: open pressure file"),
+        "{r}"
+    );
+    assert!(r.contains("leases will not balloon"), "{r}");
+}
+
+#[test]
+fn balloon_off_warns_instead_of_probing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = config(dir.path());
+    c.balloon.enabled = false;
+    let mut p = probes(dir.path());
+    p.pressure = dir.path().join("absent");
+    let (ok, r) = report(&c, &p);
+    assert!(ok, "{r}");
+    assert!(r.contains("warn memory_pressure: balloon off"), "{r}");
 }

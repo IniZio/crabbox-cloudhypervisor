@@ -266,6 +266,10 @@ impl Backend for Fake {
         }
     }
 
+    fn balloon_off(&self, _lease_id: &str) -> String {
+        String::new()
+    }
+
     fn growth_blocked(&self, lease_id: &str) -> String {
         self.blocked
             .borrow()

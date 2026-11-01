@@ -30,6 +30,8 @@ struct Probes {
     scopes: Scopes,
     /// `cgroup.controllers` of this user's `user@<uid>.service`.
     controllers: PathBuf,
+    /// Host memory pressure file the balloon trigger registers on.
+    pressure: PathBuf,
 }
 
 impl Probes {
@@ -43,6 +45,7 @@ impl Probes {
             controllers: PathBuf::from(format!(
                 "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/cgroup.controllers"
             )),
+            pressure: PathBuf::from(crate::psi::MEMORY_PRESSURE),
         }
     }
 }
@@ -93,6 +96,7 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     ];
     checks.extend(tool_checks(config));
     checks.extend(cgroup_checks(probes));
+    checks.push(memory_pressure(config, probes));
     checks.push(writable("runtime_dir", &config.runtime_dir));
     checks.push(writable("state_dir", &config.state_dir));
     checks.push(socket_room(&config.runtime_dir));
@@ -171,6 +175,26 @@ fn cgroup_checks(probes: &Probes) -> Vec<Check> {
         )
     };
     vec![bus, delegated]
+}
+
+/// Checks that the configured memory pressure trigger registers, since the
+/// balloon runs on it.
+fn memory_pressure(config: &Config, probes: &Probes) -> Check {
+    if !config.balloon.enabled {
+        return Check::new(
+            Level::Warn,
+            "memory_pressure",
+            "balloon off: guests keep their memory when the host runs short",
+        );
+    }
+    match crate::psi::probe(&config.balloon.trigger, &probes.pressure) {
+        Ok(()) => Check::new(Level::Ok, "memory_pressure", "pressure trigger registers"),
+        Err(e) => Check::new(
+            Level::Fail,
+            "memory_pressure",
+            format!("{e}; leases will not balloon and guests keep their memory"),
+        ),
+    }
 }
 
 /// Checks that a device node opens read+write; `missing` is the level when it does not.

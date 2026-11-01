@@ -5,6 +5,7 @@
 
 pub mod assets;
 pub mod backend;
+pub mod balloon;
 pub mod ch;
 pub mod config;
 pub mod doctor;
@@ -16,6 +17,7 @@ pub mod lease;
 mod power;
 pub mod protocol;
 pub mod proxy;
+pub mod psi;
 pub mod ready;
 pub mod scope;
 pub mod seed;

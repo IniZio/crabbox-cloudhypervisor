@@ -29,6 +29,11 @@ impl RealBackend {
         let watch = WatchSpec {
             growth: self.config.growth,
             ssh: self.config.ssh.clone(),
+            balloon: self.config.balloon.clone(),
+            memory_mib: record
+                .size
+                .unwrap_or_else(|| self.default_size())
+                .memory_mib,
         };
         let json = serde_json::to_vec(&watch).map_err(|e| format!("encode watch spec: {e}"))?;
         fs::OpenOptions::new()
