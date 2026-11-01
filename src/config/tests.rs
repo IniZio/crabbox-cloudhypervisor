@@ -463,8 +463,13 @@ fn balloon_keys_reject_bad_values_naming_the_key() {
 
 #[test]
 fn pause_key_is_removed_and_rejected() {
-    for value in ["memory", "disk", "swap"] {
+    for value in ["memory", "swap"] {
         let err = parse(&json!({"pause": value}), HOME).unwrap_err();
         assert!(err.starts_with("config.pause was removed:"), "{err}");
     }
+}
+
+#[test]
+fn pause_disk_from_an_older_config_still_loads() {
+    parse(&json!({"pause": "disk"}), HOME).unwrap();
 }
