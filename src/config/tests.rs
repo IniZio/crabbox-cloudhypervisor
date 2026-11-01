@@ -24,6 +24,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         cache_dir: PathBuf::from(cache),
         cpus: 2,
         memory_mib: 4096,
+        classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
             cpus_max: 4,
@@ -148,6 +149,7 @@ fn overrides_apply() {
     let want = Config {
         cpus: 8,
         memory_mib: 1024,
+        classes: crate::size::default_classes(),
         disk_gib: 40,
         growth: Growth {
             cpus_max: 16,

@@ -71,6 +71,9 @@ pub struct LeaseRecord {
     /// Start time (clock ticks) of the growth watcher.
     #[serde(default)]
     pub watch_start: Option<u64>,
+    /// Size the VM boots at, kept so a cold boot repeats the class; `None` = configured size.
+    #[serde(default)]
+    pub size: Option<crate::size::Size>,
 }
 
 impl LeaseRecord {

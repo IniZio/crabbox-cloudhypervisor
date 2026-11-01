@@ -68,11 +68,39 @@ All keys go under `external.config`. All are optional.
 | `cpusMax` | `2 × cpus`, at most 64 | most vCPUs the guest is raised to under sustained CPU pressure (`cpus`-64) |
 | `memoryMiB` | `4096` | memory the guest boots with, at least 512. Memory the guest frees is returned to the host |
 | `memoryMiBMax` | `2 × memoryMiB` | most memory the guest is raised to under sustained memory pressure (at least `memoryMiB`) |
+| `classes` | the ladder below | per-class `{cpus, memoryMiB}` that replaces a built-in class or adds one; a lease with a class boots at its size instead of `cpus`/`memoryMiB` |
 | `diskGiB` | `20` | guest disk size at create, at least 8 |
 | `diskMaxGiB` | `100`, or `diskGiB` if larger | largest the disk grows to (at least `diskGiB`) |
 | `diskGrowStepGiB` | `10` | GiB added per disk grow (at least 1) |
 | `diskGrowFreePercent` | `15` | grow when free space on `/` falls below this percent of its size (1-90)... |
 | `diskGrowFreeGiB` | `4` | ...or below this many GiB, whichever is larger |
+
+### Lease classes
+
+`crabbox warmup --class <name>` sizes the VM from the class. Without a class the VM
+boots at `cpus` and `memoryMiB`.
+
+| Class | vCPUs | Memory |
+| --- | --- | --- |
+| `standard` | 2 | 4 GiB |
+| `fast` | 4 | 8 GiB |
+| `large` | 8 | 16 GiB |
+| `beast` | 16 | 32 GiB |
+
+Override or add classes under `external.config`:
+
+```yaml
+classes:
+  fast: {cpus: 6, memoryMiB: 12288}
+  tiny: {cpus: 1, memoryMiB: 1024}
+```
+
+A class the host cannot hold fails the lease rather than booting a smaller VM, for
+example `class beast needs 16 vCPUs; this host has 8` or
+`class large needs 16384 MiB of memory; this host has 10000 MiB free`. An unknown
+class fails and lists the known ones. A cold boot of a stopped lease keeps its class
+size. The growth caps `cpusMax` and `memoryMiBMax` are raised to the class size when
+they are lower.
 | `readyTimeoutSeconds` | `300` | wait for the guest to become ready (1-3600) |
 | `stateDir` | `$XDG_STATE_HOME/crabbox-cloudhypervisor` | per-lease state (absolute path) |
 | `runtimeDir` | `$XDG_RUNTIME_DIR/crabbox-cloudhypervisor`, else `<stateDir>/run` | unix sockets (absolute path, at most 85 bytes) |

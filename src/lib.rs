@@ -18,6 +18,7 @@ pub mod protocol;
 pub mod proxy;
 pub mod ready;
 pub mod seed;
+pub mod size;
 pub mod state;
 pub mod vm;
 pub mod volumes;

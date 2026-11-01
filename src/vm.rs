@@ -2,6 +2,9 @@
 
 mod cache;
 mod power;
+#[cfg(test)]
+mod size_tests;
+mod sizing;
 pub mod spec;
 mod watcher;
 
@@ -19,6 +22,7 @@ use crate::config::Config;
 use crate::host;
 use crate::protocol::{CacheVolumeEcho, Desired};
 use crate::seed::{self, SeedParams};
+use crate::size::Size;
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
 
 /// Process name prefix of cloud-hypervisor (`comm` is cut to 15 characters).
@@ -202,18 +206,18 @@ impl RealBackend {
     fn boot_vm(
         &self,
         record: &LeaseRecord,
+        size: Size,
         firmware: &Path,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
-        let mut config = spec::vm_config(
-            &self.config,
+        let paths = spec::VmPaths {
             firmware,
-            &self.store.disk_path(id),
-            &self.store.seed_path(id),
-            &self.store.serial_log(id),
-            record,
-        );
+            disk: &self.store.disk_path(id),
+            seed: &self.store.seed_path(id),
+            serial: &self.store.serial_log(id),
+        };
+        let mut config = spec::vm_config(&self.config, size, paths, record);
         self.read_cache(id).attach(&mut config);
         let client = ChClient::new(&record.api_socket());
         client.create(&config)?;
@@ -228,6 +232,7 @@ impl RealBackend {
         desired: &Desired,
         run_dir: &Path,
         assets: &Assets,
+        size: Size,
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
         let id = desired.lease_id.as_str();
@@ -245,6 +250,7 @@ impl RealBackend {
             passt_start: None,
             watch_pid: None,
             watch_start: None,
+            size: Some(size),
         };
         remove_tree(run_dir)?;
         self.store.write(&record)?;
@@ -252,7 +258,7 @@ impl RealBackend {
         self.prepare_guest(&record, desired, &assets.base_raw)?;
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, diag)?;
-        self.boot_vm(&record, &assets.firmware, diag)?;
+        self.boot_vm(&record, size, &assets.firmware, diag)?;
         self.start_watcher(&mut record, diag)?;
         Ok(record)
     }
@@ -322,8 +328,9 @@ impl Backend for RealBackend {
         state::validate_lease_id(id)?;
         let run_dir = self.config.runtime_dir.join(state::run_dir_name(id));
         check_socket_len(&run_dir)?;
+        let size = self.lease_size(desired.class.as_deref())?;
         let assets = self.ensure_assets(diag)?;
-        match self.provision(desired, &run_dir, &assets, diag) {
+        match self.provision(desired, &run_dir, &assets, size, diag) {
             Ok(record) => Ok(record),
             Err(error) => {
                 if let Err(e) = self.destroy(id, diag) {

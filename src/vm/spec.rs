@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::backend::SSH_USER;
 use crate::config::Config;
 use crate::ready::ReadyProbe;
+use crate::size::Size;
 use crate::state::{LeaseRecord, Store};
 
 /// Guest vsock context id (any value >= 3 works; one VM per vsock socket).
@@ -21,18 +22,33 @@ pub const MEMORY_BLOCK: u64 = 128 * MIB;
 /// Hex characters of an asset hash used in cache file names.
 const HASH_PREFIX: usize = 12;
 
-/// Builds the `vm.create` request body for one lease.
+/// Files a VM config points at.
+#[derive(Debug, Clone, Copy)]
+pub struct VmPaths<'a> {
+    /// UEFI firmware.
+    pub firmware: &'a Path,
+    /// Root disk.
+    pub disk: &'a Path,
+    /// Cloud-init seed image.
+    pub seed: &'a Path,
+    /// Serial log.
+    pub serial: &'a Path,
+}
+
+/// Builds the `vm.create` request body for one lease booting at `size`.
+///
+/// The growth caps never sit below the boot size, which a class can exceed.
 #[must_use]
-pub fn vm_config(
-    config: &Config,
-    firmware: &Path,
-    disk: &Path,
-    seed: &Path,
-    serial: &Path,
-    record: &LeaseRecord,
-) -> Value {
-    let boot = config.memory_mib * MIB;
-    let headroom = (config.growth.memory_mib_max * MIB).saturating_sub(boot);
+pub fn vm_config(config: &Config, size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value {
+    let VmPaths {
+        firmware,
+        disk,
+        seed,
+        serial,
+    } = paths;
+    let boot = size.memory_mib * MIB;
+    let memory_max = config.growth.memory_mib_max.max(size.memory_mib);
+    let headroom = (memory_max * MIB).saturating_sub(boot);
     let memory = if headroom > 0 {
         let hotplug = headroom.div_ceil(MEMORY_BLOCK) * MEMORY_BLOCK;
         json!({"size": boot, "shared": true, "hotplug_size": hotplug})
@@ -40,7 +56,7 @@ pub fn vm_config(
         json!({"size": boot, "shared": true})
     };
     json!({
-        "cpus": {"boot_vcpus": config.cpus, "max_vcpus": config.growth.cpus_max},
+        "cpus": {"boot_vcpus": size.cpus, "max_vcpus": config.growth.cpus_max.max(size.cpus)},
         "memory": memory,
         "balloon": {"size": 0, "deflate_on_oom": true, "free_page_reporting": true},
         "payload": {"firmware": firmware},

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
+use super::size_tests::size_of;
 use super::spec::{self, mac_for, shell_quote};
 use super::RealBackend;
 use crate::backend::Backend;
@@ -23,6 +24,7 @@ pub(super) fn config(root: &Path) -> Config {
         cache_dir: root.join("cache"),
         cpus: 2,
         memory_mib: 4096,
+        classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
             cpus_max: 4,
@@ -73,6 +75,7 @@ pub(super) fn record(id: &str) -> LeaseRecord {
         passt_start: None,
         watch_pid: None,
         watch_start: None,
+        size: None,
     }
 }
 
@@ -83,10 +86,13 @@ fn vm_config_has_the_spike_shape() {
     let rec = record("abc");
     let got = spec::vm_config(
         &cfg,
-        Path::new("/fw.fd"),
-        Path::new("/d.raw"),
-        Path::new("/s.img"),
-        Path::new("/serial.log"),
+        size_of(&cfg),
+        spec::VmPaths {
+            firmware: Path::new("/fw.fd"),
+            disk: Path::new("/d.raw"),
+            seed: Path::new("/s.img"),
+            serial: Path::new("/serial.log"),
+        },
         &rec,
     );
     let want = json!({
@@ -117,7 +123,14 @@ fn vm_config_with(edit: impl FnOnce(&mut Config)) -> serde_json::Value {
     let mut cfg = config(dir.path());
     edit(&mut cfg);
     let p = Path::new("/x");
-    spec::vm_config(&cfg, p, p, p, p, &record("abc"))
+    let size = size_of(&cfg);
+    let paths = spec::VmPaths {
+        firmware: p,
+        disk: p,
+        seed: p,
+        serial: p,
+    };
+    spec::vm_config(&cfg, size, paths, &record("abc"))
 }
 
 #[test]
@@ -146,10 +159,13 @@ fn vm_config_returns_freed_guest_memory_to_the_host() {
     let rec = record("abc");
     let got = spec::vm_config(
         &cfg,
-        Path::new("/fw.fd"),
-        Path::new("/d.raw"),
-        Path::new("/s.img"),
-        Path::new("/serial.log"),
+        size_of(&cfg),
+        spec::VmPaths {
+            firmware: Path::new("/fw.fd"),
+            disk: Path::new("/d.raw"),
+            seed: Path::new("/s.img"),
+            serial: Path::new("/serial.log"),
+        },
         &rec,
     );
     assert_eq!(got.pointer("/balloon/size"), Some(&json!(0)));

@@ -17,6 +17,7 @@ fn config(root: &Path) -> Config {
         cache_dir: root.join("cache"),
         cpus: 2,
         memory_mib: 4096,
+        classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
             cpus_max: 4,
