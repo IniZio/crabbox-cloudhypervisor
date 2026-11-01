@@ -148,6 +148,7 @@ pub(crate) fn desired(id: &str) -> Desired {
         name: format!("name-{id}"),
         class: None,
         cache_volumes: Vec::new(),
+        cache_scope: None,
     }
 }
 

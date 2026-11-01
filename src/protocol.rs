@@ -5,8 +5,8 @@ use serde_json::Value;
 
 mod cache;
 mod wire;
-use cache::parse_cache_volumes;
 pub use cache::CacheVolumeRequest;
+use cache::{parse_cache_scope, parse_cache_volumes};
 pub use wire::{CacheVolumeEcho, Lease, LeaseRow, Ssh};
 
 /// The only protocol version this adapter speaks.
@@ -83,6 +83,8 @@ pub struct Desired {
     pub class: Option<String>,
     /// Cache volumes to attach, as sent.
     pub cache_volumes: Vec<CacheVolumeRequest>,
+    /// Tenant partition of the cache store: 16 lowercase hex digits.
+    pub cache_scope: Option<String>,
 }
 
 /// Identifiers crabbox expects an existing lease to carry.
@@ -208,6 +210,7 @@ fn parse_desired(object: &serde_json::Map<String, Value>) -> Result<Option<Desir
             name: required("name")?,
             class: opt_str(o, "class"),
             cache_volumes: parse_cache_volumes(o)?,
+            cache_scope: parse_cache_scope(o)?,
         })
     })
 }

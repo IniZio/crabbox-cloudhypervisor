@@ -9,9 +9,13 @@ use crate::volumes::{GuestPath, Volume, SEAL_MARKER};
 const MIB: u64 = 1024 * 1024;
 
 fn store(root: &Path) -> Store {
+    scoped(root, None)
+}
+
+fn scoped(root: &Path, scope: Option<&str>) -> Store {
     let mut cfg = limits(40);
     cfg.volume_dir = root.to_path_buf();
-    Store::new(&cfg, "abcdef0123456789")
+    Store::new(&cfg, "abcdef0123456789", scope)
 }
 
 fn group(id: &str, capacity: u64) -> Group {
@@ -445,4 +449,31 @@ fn only_sealed_volumes_need_the_marker() {
     );
     assert_eq!(gens(&s, "g").len(), 1);
     assert!(gens(&s, "gx").is_empty());
+}
+
+#[test]
+fn a_scope_gets_its_own_generations_and_gc_still_sees_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = store(dir.path());
+    let a = scoped(dir.path(), Some("00000000000000aa"));
+    let b = scoped(dir.path(), Some("00000000000000bb"));
+    let g = Token::parse("g1").unwrap();
+    let arch = std::env::consts::ARCH;
+    assert_eq!(
+        a.group_dir(&g),
+        dir.path()
+            .join(format!("abcdef012345-{arch}-00000000000000aa/g1"))
+    );
+    assert_eq!(plain.group_dir(&g), scoped(dir.path(), None).group_dir(&g));
+    assert_ne!(a.group_dir(&g), b.group_dir(&g));
+    assert_ne!(a.group_dir(&g), plain.group_dir(&g));
+    assert_eq!(a.work_dir("l1"), plain.work_dir("l1"));
+
+    fs::create_dir_all(a.group_dir(&g)).unwrap();
+    let report = plain.gc(
+        SystemTime::now() + Duration::from_hours(9600),
+        &|_| true,
+        true,
+    );
+    assert_eq!(report.removed, vec![a.group_dir(&g)]);
 }

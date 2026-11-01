@@ -336,3 +336,25 @@ fn lease_echoes_cache_volumes_only_when_present() {
         r#""cacheVolumes":[{"name":"gradle","outcome":"restored","detail":"gen 1729781203"}]"#
     ));
 }
+
+#[test]
+fn cache_scope_is_sixteen_lowercase_hex_or_absent() {
+    let base = r#""desired":{"leaseId":"l1","slug":"s","name":"n""#;
+    let scope =
+        |tail: &str| parse(&format!("{base}{tail}}}}}")).map(|r| r.desired.unwrap().cache_scope);
+    assert_eq!(scope("").unwrap(), None);
+    assert_eq!(scope(r#","cacheScope":null"#).unwrap(), None);
+    assert_eq!(
+        scope(r#","cacheScope":"0123456789abcdef""#).unwrap(),
+        Some("0123456789abcdef".to_owned())
+    );
+    for bad in [
+        r#","cacheScope":"0123456789ABCDEF""#,
+        r#","cacheScope":"0123456789abcde""#,
+        r#","cacheScope":"../../../../etc/x""#,
+        r#","cacheScope":"""#,
+        r#","cacheScope":7"#,
+    ] {
+        assert!(scope(bad).unwrap_err().contains("cacheScope"), "{bad}");
+    }
+}

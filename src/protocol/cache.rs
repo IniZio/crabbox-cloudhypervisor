@@ -68,3 +68,19 @@ pub(super) fn parse_cache_volumes(
         })
         .collect()
 }
+
+/// Parses `desired.cacheScope`; absent or null is none. It names a store
+/// directory, so anything but 16 lowercase hex digits is refused.
+pub(super) fn parse_cache_scope(
+    desired: &serde_json::Map<String, Value>,
+) -> Result<Option<String>, String> {
+    match desired.get("cacheScope") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s))
+            if s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            Ok(Some(s.clone()))
+        }
+        Some(_) => Err("desired.cacheScope must be 16 lowercase hex digits".to_owned()),
+    }
+}
