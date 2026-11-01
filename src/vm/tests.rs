@@ -217,6 +217,7 @@ fn create_rejects_overlong_runtime_dir_before_creating_anything() {
         name: "n".to_owned(),
         class: None,
         cache_volumes: Vec::new(),
+        cache_scope: None,
     };
     let err = backend.create(&desired, &mut Vec::new()).unwrap_err();
     assert!(err.contains("too long"), "{err}");

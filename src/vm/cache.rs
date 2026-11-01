@@ -48,6 +48,9 @@ pub(super) struct LeaseCache {
     groups: Vec<RecordedGroup>,
     /// Requested names refused before any restore: (name, reason).
     refused: Vec<(String, String)>,
+    /// Tenant scope the groups were restored under; publish goes back there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 impl LeaseCache {
@@ -115,9 +118,9 @@ impl LeaseCache {
 }
 
 impl RealBackend {
-    /// The generation store for this config.
-    fn volume_store(&self) -> Store {
-        Store::new(&self.config.cache, &self.config.image.sha256)
+    /// The generation store of tenant `scope` for this config.
+    fn volume_store(&self, scope: Option<&str>) -> Store {
+        Store::new(&self.config.cache, &self.config.image.sha256, scope)
     }
 
     /// Restores every requested group for lease `id` and records the result.
@@ -125,12 +128,13 @@ impl RealBackend {
         &self,
         id: &str,
         requests: &[CacheVolumeRequest],
+        scope: Option<&str>,
     ) -> Result<LeaseCache, String> {
         if requests.is_empty() {
             return Ok(LeaseCache::default());
         }
         let plan = volumes::plan(requests, &self.config.cache);
-        let store = self.volume_store();
+        let store = self.volume_store(scope);
         let groups = plan
             .groups
             .into_iter()
@@ -147,6 +151,7 @@ impl RealBackend {
         let cache = LeaseCache {
             groups,
             refused: plan.skipped,
+            scope: scope.map(str::to_owned),
         };
         let json = serde_json::to_vec_pretty(&cache).map_err(|e| format!("encode cache: {e}"))?;
         fs::OpenOptions::new()
@@ -203,7 +208,7 @@ impl RealBackend {
     /// the working copies. Notes go to `diag`; nothing here fails a release.
     pub(super) fn settle_cache(&self, id: &str, quiesced: bool, diag: &mut dyn Write) {
         let cache = self.read_cache(id);
-        let store = self.volume_store();
+        let store = self.volume_store(cache.scope.as_deref());
         for (_, g) in cache.attached() {
             let group = g.group.id.as_str();
             let note = if quiesced {
@@ -227,7 +232,9 @@ impl RealBackend {
     /// Store GC for `cleanup`; working copies of leases without a record go too.
     pub(super) fn gc_cache(&self, dry_run: bool, diag: &mut dyn Write) -> String {
         let live = |id: &str| matches!(self.store.read(id), Ok(Some(_)));
-        let report = self.volume_store().gc(SystemTime::now(), &live, dry_run);
+        let report = self
+            .volume_store(None)
+            .gc(SystemTime::now(), &live, dry_run);
         for path in &report.removed {
             let _ = writeln!(diag, "cache: remove {}", path.display());
         }

@@ -91,7 +91,7 @@ pub struct GcReport {
 pub struct Store {
     /// Store root.
     root: PathBuf,
-    /// Base image and arch tag; a different base never sees these generations.
+    /// Base image, arch and optional scope tag; a different tag never sees these generations.
     compat: String,
     /// Whole store budget in bytes.
     budget: u64,
@@ -217,13 +217,18 @@ pub fn plan_gc(groups: &[GroupSnapshot], now: u64, ttl: Duration, budget: u64) -
 }
 
 impl Store {
-    /// Store for `cfg`, tagged with the base image hash and this host's arch.
+    /// Store for `cfg`, tagged with the base image hash, this host's arch and
+    /// the tenant `scope`; `None` is the store leases without a scope share.
     #[must_use]
-    pub fn new(cfg: &CacheConfig, image_sha256: &str) -> Self {
+    pub fn new(cfg: &CacheConfig, image_sha256: &str, scope: Option<&str>) -> Self {
         let hash: String = image_sha256.chars().take(COMPAT_HASH).collect();
+        let arch = std::env::consts::ARCH;
         Self {
             root: cfg.volume_dir.clone(),
-            compat: format!("{hash}-{}", std::env::consts::ARCH),
+            compat: scope.map_or_else(
+                || format!("{hash}-{arch}"),
+                |s| format!("{hash}-{arch}-{s}"),
+            ),
             budget: cfg.store_max_gib.saturating_mul(GIB),
             ttl: Duration::from_secs(cfg.key_ttl_days.saturating_mul(86_400)),
         }

@@ -147,7 +147,9 @@ lease has none running, and never a second one.
 With `capabilities.cacheVolumes: true` in the trusted crabbox user config,
 `acquire` reads `desired.cacheVolumes`. Each entry names a `group`, a volume
 `name`, a `key`, one or more guest `paths`, an optional `sizeGB` and an
-optional `sealed`. A path is `~/<rel>` (the login home `/home/crabbox`, never
+optional `sealed`. With `CRABBOX_CACHE_SCOPE` set, crabbox also sends
+`desired.cacheScope` (16 lowercase hex digits); any other value fails the
+acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
 `~/.ssh`), `/opt/<rel>`, `/var/cache/<rel>`, or `/var/lib/containerd` or
 `/var/lib/containers` and below. Any other path is `skipped`.
 
@@ -176,8 +178,11 @@ optional `sealed`. A path is `~/<rel>` (the login home `/home/crabbox`, never
 - **Echo.** The acquire response lists each name with its outcome:
   `restored` (detail `gen <unix seconds>`), `empty` or `skipped` (detail says
   why; the path is then a plain directory of the root disk).
-- **Store.** `<cacheVolumeDir>/<image sha prefix>-<arch>/<group>/gen-<unix
-  ns>-<lease>.img`, directories mode 0700. Working copies sit in
+- **Store.** `<cacheVolumeDir>/<image sha prefix>-<arch>[-<scope>]/<group>/gen-<unix
+  ns>-<lease>.img`, directories mode 0700. Each scope has its own
+  generations, so one tenant never restores another's cache; leases without a
+  scope share the unscoped ones. Release publishes back into the scope the
+  lease was restored under. Working copies sit in
   `<cacheVolumeDir>/leases/<leaseId>/` on the same filesystem. The host runs
   only e2fsprogs on a guest-written image and never mounts it.
 - **GC.** `cleanup` removes superseded generations an hour after a newer one

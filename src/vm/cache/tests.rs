@@ -68,6 +68,7 @@ fn echo_lists_every_name_and_disks_carry_serials() {
     let cache = LeaseCache {
         groups: vec![rec(0, skipped), rec(1, Outcome::Empty)],
         refused: plan.skipped.clone(),
+        scope: None,
     };
     let echo: Vec<(String, String)> = cache
         .echo()
@@ -108,13 +109,13 @@ fn restore_records_the_echo_and_a_lease_without_volumes_has_none() {
     let b = backend(dir.path());
     lease_dir(dir.path(), "plain");
     assert_eq!(
-        b.restore_cache("plain", &[]).unwrap(),
+        b.restore_cache("plain", &[], None).unwrap(),
         LeaseCache::default()
     );
     assert!(b.cache_echo("plain").is_empty());
 
     lease_dir(dir.path(), "l1");
-    b.restore_cache("l1", &requests()).unwrap();
+    b.restore_cache("l1", &requests(), None).unwrap();
     let echo: Vec<(String, String)> = b
         .cache_echo("l1")
         .into_iter()
@@ -139,7 +140,7 @@ fn release_publishes_only_after_a_clean_shutdown() {
     let b = backend(dir.path());
     for (id, quiesced) in [("killed", false), ("clean", true)] {
         lease_dir(dir.path(), id);
-        let cache = b.restore_cache(id, &requests()[..1]).unwrap();
+        let cache = b.restore_cache(id, &requests()[..1], None).unwrap();
         grow_in_guest(&cache.groups[0].image);
         let mut diag = Vec::new();
         b.settle_cache(id, quiesced, &mut diag);
@@ -150,7 +151,7 @@ fn release_publishes_only_after_a_clean_shutdown() {
             "cache group g1: discarded"
         };
         assert!(note.starts_with(want), "{note}");
-        assert!(!b.volume_store().work_dir(id).exists());
+        assert!(!b.volume_store(None).work_dir(id).exists());
         assert_eq!(generations(dir.path()), usize::from(quiesced));
     }
 }
@@ -164,4 +165,29 @@ fn quiesce_is_skipped_for_a_lease_without_cache_disks() {
     let mut diag = Vec::new();
     assert!(!b.quiesce_for_cache(&record, &mut diag));
     assert!(diag.is_empty(), "no shutdown attempted");
+}
+
+#[test]
+fn a_generation_is_restored_only_under_the_scope_that_published_it() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let tenant_a = Some("00000000000000aa");
+    lease_dir(dir.path(), "first");
+    let cache = b
+        .restore_cache("first", &requests()[..1], tenant_a)
+        .unwrap();
+    grow_in_guest(&cache.groups[0].image);
+    b.settle_cache("first", true, &mut Vec::new());
+
+    let outcome = |id: &str, scope: Option<&str>| {
+        lease_dir(dir.path(), id);
+        b.restore_cache(id, &requests()[..1], scope).unwrap();
+        b.cache_echo(id)[0].outcome.clone()
+    };
+    assert_eq!(outcome("other-tenant", Some("00000000000000bb")), "empty");
+    assert_eq!(outcome("unscoped", None), "empty");
+    assert_eq!(outcome("same-tenant", tenant_a), "restored");
 }

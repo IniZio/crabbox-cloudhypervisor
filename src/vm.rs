@@ -154,7 +154,7 @@ impl RealBackend {
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
         let guest = self
-            .restore_cache(id, &desired.cache_volumes)?
+            .restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
             .guest_setup();
         let params = SeedParams {
             instance_id: &instance_id,
