@@ -5,10 +5,11 @@
 //! and each failure. It exits when the lease's cloud-hypervisor exits.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::balloon::{BalloonConfig, Inflator};
 use crate::config::Growth;
 use crate::grow::{Action, Current, Planner, Sample, GIB};
 
@@ -46,6 +47,10 @@ pub struct WatchSpec {
     pub growth: Growth,
     /// ssh client binary.
     pub ssh: PathBuf,
+    /// Balloon settings.
+    pub balloon: BalloonConfig,
+    /// The lease's class memory, MiB.
+    pub memory_mib: u64,
 }
 
 /// What the watcher needs from the VMM, the host and the guest; tests fake it.
@@ -66,7 +71,15 @@ pub trait Machine {
     fn grow_disk(&self, bytes: u64) -> Result<(), String>;
     /// Grows the root partition and filesystem; returns the new fs size, bytes.
     fn grow_fs(&self) -> Result<u64, String>;
+    /// Blocks up to `timeout`; true when host memory pressure fired. Without a
+    /// pressure feed it only sleeps and returns false.
+    fn wait(&self, timeout: Duration) -> Result<bool, String>;
+    /// Asks the VMM to hold `bytes` of guest memory in the balloon.
+    fn set_balloon(&self, bytes: u64) -> Result<(), String>;
 }
+
+/// Bytes per MiB.
+const MIB: u64 = 1024 * 1024;
 
 /// Bytes as GiB with one decimal.
 fn gib(bytes: u64) -> String {
@@ -149,18 +162,25 @@ pub fn parse_sample(text: &str) -> Result<Sample, String> {
     Ok(Sample { fs_size, fs_avail })
 }
 
-/// Ticks while the VM lives, skipping while it is paused. Failures are
-/// counted per distinct message; a read failure before the guest was first
-/// reached (boot) is not one.
+/// Runs the watcher's loop.
+///
+/// Waits for host memory pressure or `interval`, ticks the disk check once
+/// per `interval` and moves the balloon on each wake. Skips paused VMs.
+/// Disk failures are counted per distinct message; a read failure before the
+/// guest was first reached (boot) is not one.
 pub fn watch_loop(
     machine: &dyn Machine,
     planner: &mut Planner,
+    mut balloon: Option<Inflator>,
     interval: Duration,
     log: &mut Log<'_>,
 ) {
     let mut reached = false;
+    let mut last_disk: Option<Instant> = None;
+    let start = Instant::now();
     while machine.alive() {
-        if machine.running() {
+        if machine.running() && last_disk.is_none_or(|t| t.elapsed() >= interval) {
+            last_disk = Some(Instant::now());
             match tick(planner, machine, log) {
                 Ok(()) => {
                     reached = true;
@@ -170,10 +190,46 @@ pub fn watch_loop(
                 Err(_) => {}
             }
         }
-        std::thread::sleep(interval);
+        let woke = match machine.wait(interval) {
+            Ok(woke) => woke,
+            Err(e) => {
+                log.fail(format!("balloon off: {e}"));
+                balloon = None;
+                std::thread::sleep(interval);
+                false
+            }
+        };
+        if let Some(b) = balloon.as_mut() {
+            if machine.running() {
+                move_balloon(machine, b, woke, start.elapsed().as_secs(), log);
+            }
+        }
     }
     log.finish();
     log.note("cloud-hypervisor exited; watcher stops");
+}
+
+/// Applies one pressure event or quiet tick to the balloon and logs a change.
+fn move_balloon(machine: &dyn Machine, b: &mut Inflator, event: bool, now: u64, log: &mut Log<'_>) {
+    let before = b.target();
+    let next = if event { b.event(now) } else { b.quiet(now) };
+    let Some(bytes) = next else { return };
+    match machine.set_balloon(bytes) {
+        Ok(()) => log.note(&format!(
+            "balloon {} -> {} MiB ({})",
+            before / MIB,
+            bytes / MIB,
+            if event {
+                "host memory pressure"
+            } else {
+                "quiet"
+            }
+        )),
+        Err(e) => {
+            b.revert(before);
+            log.fail(format!("balloon resize failed: {e}"));
+        }
+    }
 }
 
 #[cfg(test)]

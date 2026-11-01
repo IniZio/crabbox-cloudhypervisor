@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::balloon::{BalloonConfig, Trigger};
 use crate::scope::Cgroup;
 use crate::size::{self, Size};
 
@@ -106,6 +107,8 @@ pub struct Config {
     pub cache: CacheConfig,
     /// How lease processes are confined.
     pub cgroup: Cgroup,
+    /// Shrinking guests when the host is short of memory.
+    pub balloon: BalloonConfig,
     /// MiB a VM scope may use above its class memory, for the VMM itself.
     pub vmm_overhead_mib: u64,
 }
@@ -166,6 +169,7 @@ impl Config {
                 key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
             },
             cgroup: cgroup(config)?,
+            balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             state_dir,
         })
@@ -194,6 +198,31 @@ fn cgroup(config: &Value) -> Result<Cgroup, String> {
         Some(Some("off")) => Ok(Cgroup::Off),
         Some(_) => Err("config.cgroup must be \"systemd\" or \"off\"".to_owned()),
     }
+}
+
+/// Reads `balloon` and the keys that tune it.
+fn balloon(config: &Value) -> Result<BalloonConfig, String> {
+    let enabled = match get(config, "balloon").map(Value::as_str) {
+        None | Some(Some("on")) => true,
+        Some(Some("off")) => false,
+        Some(_) => return Err("config.balloon must be \"on\" or \"off\"".to_owned()),
+    };
+    let d = BalloonConfig::default();
+    let trigger = match get(config, "memoryPressureTrigger") {
+        None => d.trigger,
+        Some(v) => Trigger::parse(
+            v.as_str()
+                .ok_or("config.memoryPressureTrigger must be a string")?,
+        )
+        .map_err(|e| format!("config.memoryPressureTrigger: {e}"))?,
+    };
+    Ok(BalloonConfig {
+        enabled,
+        trigger,
+        step_percent: int_key(config, "balloonStepPercent", d.step_percent, 1, 100)?,
+        floor_mib: int_key(config, "balloonFloorMiB", d.floor_mib, 0, u64::MAX)?,
+        cooldown_secs: int_key(config, "balloonCooldownSecs", d.cooldown_secs, 1, u64::MAX)?,
+    })
 }
 
 /// Reads the disk growth keys.

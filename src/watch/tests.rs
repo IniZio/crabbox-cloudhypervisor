@@ -40,6 +40,10 @@ struct Fake {
     running: bool,
     /// Calls made, as text.
     calls: RefCell<Vec<String>>,
+    /// What `wait` answers, in order; then `Ok(false)`.
+    wakes: RefCell<Vec<Result<bool, String>>>,
+    /// Error for `set_balloon`, if any.
+    balloon_error: Option<String>,
 }
 
 impl Fake {
@@ -56,6 +60,8 @@ impl Fake {
             lives: Cell::new(0),
             running: true,
             calls: RefCell::new(Vec::new()),
+            wakes: RefCell::new(Vec::new()),
+            balloon_error: None,
         }
     }
 
@@ -106,6 +112,22 @@ impl Machine for Fake {
         }
         self.current.borrow_mut().disk_bytes = bytes;
         Ok(())
+    }
+
+    fn wait(&self, _timeout: Duration) -> Result<bool, String> {
+        let mut wakes = self.wakes.borrow_mut();
+        if wakes.is_empty() {
+            Ok(false)
+        } else {
+            wakes.remove(0)
+        }
+    }
+
+    fn set_balloon(&self, bytes: u64) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("balloon {}", bytes / (1024 * 1024)));
+        self.balloon_error.clone().map_or(Ok(()), Err)
     }
 
     fn grow_fs(&self) -> Result<u64, String> {
@@ -290,13 +312,25 @@ fn the_watcher_does_not_tick_while_the_vm_is_paused() {
     };
     let mut out = Vec::new();
     let mut p = Planner::new(GROWTH);
-    watch_loop(&paused, &mut p, Duration::ZERO, &mut Log::new(&mut out));
+    watch_loop(
+        &paused,
+        &mut p,
+        None,
+        Duration::ZERO,
+        &mut Log::new(&mut out),
+    );
     assert!(paused.calls().is_empty(), "{:?}", paused.calls());
     let running = Fake {
         lives: Cell::new(3),
         ..Fake::new(low_space())
     };
-    watch_loop(&running, &mut p, Duration::ZERO, &mut Log::new(&mut out));
+    watch_loop(
+        &running,
+        &mut p,
+        None,
+        Duration::ZERO,
+        &mut Log::new(&mut out),
+    );
     assert!(running.calls().contains(&"grow_disk 20".to_owned()));
 }
 
@@ -337,4 +371,85 @@ fn a_repeated_failure_is_logged_once_then_with_its_count_when_it_clears() {
         log.contains("cleared after 4 times: grow failed: root filesystem: growpart: boom"),
         "{log}"
     );
+}
+
+/// The default balloon settings, for a 4 GiB guest.
+fn inflator() -> Inflator {
+    Inflator::new(&BalloonConfig::default(), 4096)
+}
+
+/// Runs the loop for `lives` iterations with the given wakes; returns the log text.
+fn balloon_run(fake: &Fake, lives: u32) -> String {
+    fake.lives.set(lives);
+    let mut out = Vec::new();
+    watch_loop(
+        fake,
+        &mut Planner::new(GROWTH),
+        Some(inflator()),
+        Duration::ZERO,
+        &mut Log::new(&mut out),
+    );
+    String::from_utf8(out).unwrap()
+}
+
+fn balloon_calls(fake: &Fake) -> Vec<String> {
+    fake.calls()
+        .into_iter()
+        .filter(|c| c.starts_with("balloon"))
+        .collect()
+}
+
+#[test]
+fn each_pressure_event_inflates_one_step_and_is_logged() {
+    let fake = Fake::new(calm());
+    *fake.wakes.borrow_mut() = vec![Ok(true), Ok(true)];
+    let log = balloon_run(&fake, 2);
+    assert_eq!(balloon_calls(&fake), ["balloon 1024", "balloon 2048"]);
+    assert!(
+        log.contains("balloon 0 -> 1024 MiB (host memory pressure)"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_wake_without_pressure_does_not_touch_the_balloon() {
+    let fake = Fake::new(calm());
+    balloon_run(&fake, 3);
+    assert!(balloon_calls(&fake).is_empty());
+}
+
+#[test]
+fn a_refused_resize_is_logged_once_and_retried_by_the_next_event() {
+    let fake = Fake {
+        balloon_error: Some("busy".to_owned()),
+        ..Fake::new(calm())
+    };
+    *fake.wakes.borrow_mut() = vec![Ok(true), Ok(true)];
+    let log = balloon_run(&fake, 2);
+    assert_eq!(balloon_calls(&fake), ["balloon 1024", "balloon 1024"]);
+    assert!(
+        log.contains("still failing after 2 times: balloon resize failed: busy"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_lost_pressure_feed_turns_the_balloon_off_and_disk_growth_continues() {
+    let fake = Fake::new(low_space());
+    *fake.wakes.borrow_mut() = vec![Err("gone".to_owned()), Ok(true)];
+    let log = balloon_run(&fake, 3);
+    assert!(balloon_calls(&fake).is_empty());
+    assert!(log.contains("balloon off: gone"), "{log}");
+    assert!(fake.calls().contains(&"grow_disk 20".to_owned()));
+}
+
+#[test]
+fn a_paused_vm_keeps_its_balloon() {
+    let fake = Fake {
+        running: false,
+        ..Fake::new(calm())
+    };
+    *fake.wakes.borrow_mut() = vec![Ok(true)];
+    balloon_run(&fake, 1);
+    assert!(balloon_calls(&fake).is_empty());
 }

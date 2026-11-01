@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use super::SAMPLE_SCRIPT;
 use super::{parse_sample, watch_loop, Log, Machine, WatchSpec, GROW_FS_SCRIPT, INTERVAL};
+use crate::balloon::Inflator;
 use crate::ch::ChClient;
 use crate::grow::{Current, Planner, Sample};
+use crate::psi::{self, Psi};
 use crate::ready::ReadyProbe;
 use crate::state::{self, LeaseRecord, Store};
 use crate::vm::spec;
@@ -30,6 +32,8 @@ struct RealMachine {
     disk: PathBuf,
     /// Where a blocked disk grow is recorded for the lease status.
     blocked: PathBuf,
+    /// Registered memory pressure trigger; `None` when ballooning is off.
+    psi: Option<Psi>,
 }
 
 impl Machine for RealMachine {
@@ -70,6 +74,20 @@ impl Machine for RealMachine {
         self.client.resize_disk(spec::ROOT_DISK_ID, bytes)
     }
 
+    fn wait(&self, timeout: Duration) -> Result<bool, String> {
+        self.psi.as_ref().map_or_else(
+            || {
+                std::thread::sleep(timeout);
+                Ok(false)
+            },
+            |psi| psi.wait(timeout),
+        )
+    }
+
+    fn set_balloon(&self, bytes: u64) -> Result<(), String> {
+        self.client.resize_balloon(bytes)
+    }
+
     fn grow_fs(&self) -> Result<u64, String> {
         let out = self.ssh.output(GROW_FS_SCRIPT, GROW_FS_LIMIT)?;
         out.trim()
@@ -90,19 +108,61 @@ pub fn run(lease_id: &str, state_dir: &Path, out: &mut dyn Write) -> Result<(), 
     let watch: WatchSpec =
         serde_json::from_slice(&text).map_err(|e| format!("parse watch spec: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate adapter binary: {e}"))?;
+    let mut log = Log::new(out);
+    let psi = register_pressure(&watch, &store, lease_id, &mut log);
+    let balloon = psi
+        .as_ref()
+        .map(|_| Inflator::new(&watch.balloon, watch.memory_mib));
     let machine = RealMachine {
         client: ChClient::new(&record.api_socket()),
         ssh: spec::guest_ssh(&watch.ssh, &store, &exe, state_dir, lease_id),
         disk: store.disk_path(lease_id),
         blocked: store.grow_blocked_path(lease_id),
         record,
+        psi,
     };
     let g = watch.growth;
-    let mut log = Log::new(out);
     log.note(&format!(
         "watching {lease_id}: disk up to {} GiB",
         g.disk_max_gib
     ));
-    watch_loop(&machine, &mut Planner::new(g), INTERVAL, &mut log);
+    watch_loop(&machine, &mut Planner::new(g), balloon, INTERVAL, &mut log);
     Ok(())
+}
+
+/// Registers the memory pressure trigger when ballooning is on. A failure is
+/// logged once and recorded for the lease status, and the lease keeps growing
+/// its disk without a balloon.
+fn register_pressure(
+    watch: &WatchSpec,
+    store: &Store,
+    lease_id: &str,
+    log: &mut Log<'_>,
+) -> Option<Psi> {
+    let off = store.balloon_off_path(lease_id);
+    let _ = fs::remove_file(&off);
+    if !watch.balloon.enabled {
+        log.note("balloon off by config");
+        return None;
+    }
+    match Psi::register(&watch.balloon.trigger, Path::new(psi::MEMORY_PRESSURE)) {
+        Ok(psi) => {
+            log.note(&format!(
+                "balloon on: trigger \"{}\", step {}%, floor {} MiB, cooldown {} s",
+                watch.balloon.trigger.as_str(),
+                watch.balloon.step_percent,
+                watch.balloon.floor_mib,
+                watch.balloon.cooldown_secs
+            ));
+            Some(psi)
+        }
+        Err(e) => {
+            let reason = format!(
+                "memory pressure trigger not available ({e}); guest memory is not reclaimed"
+            );
+            log.note(&format!("balloon off: {reason}"));
+            let _ = fs::write(&off, &reason);
+            None
+        }
+    }
 }

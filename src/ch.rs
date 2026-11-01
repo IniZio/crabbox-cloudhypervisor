@@ -129,6 +129,12 @@ impl ChClient {
         self.call("PUT", "vm.resize-disk", Some(&body)).map(drop)
     }
 
+    /// `PUT vm.resize`: asks the guest's balloon to hold `bytes` of its memory.
+    pub fn resize_balloon(&self, bytes: u64) -> Result<(), String> {
+        let body = serde_json::json!({"desired_balloon": bytes}).to_string();
+        self.call("PUT", "vm.resize", Some(&body)).map(drop)
+    }
+
     /// `GET vm.info` reduced to its `state` string (`Running`, `Paused`, ...).
     pub fn state(&self) -> Result<String, String> {
         self.info()?

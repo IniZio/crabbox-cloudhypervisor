@@ -123,6 +123,7 @@ fn lease_response_shape() {
             host_key: String::new(),
         },
         growth_blocked: String::new(),
+        balloon_off: String::new(),
         cache_volumes: Vec::new(),
     };
     let base = r#"{"protocolVersion":1,"lease":{"leaseId":"l1","slug":"s","name":"n","cloudId":"vm1","status":"ready","ssh":{"user":"crabbox","host":"vm1.local","port":"22","key":"/abs/id_ed25519","proxyCommand":"x proxy l1","readyCheck":"true""#;
@@ -188,6 +189,7 @@ fn leases_response_uses_camel_case() {
         cloud_id: "c".into(),
         status: "running".into(),
         growth_blocked: String::new(),
+        balloon_off: String::new(),
     };
     assert_eq!(
         leases_response(&[row]),
@@ -324,6 +326,7 @@ fn lease_echoes_cache_volumes_only_when_present() {
             host_key: String::new(),
         },
         growth_blocked: String::new(),
+        balloon_off: String::new(),
         cache_volumes: Vec::new(),
     };
     assert!(!lease_response(&lease).contains("cacheVolumes"));

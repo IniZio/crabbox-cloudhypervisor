@@ -154,6 +154,10 @@ impl Backend for FakeBackend {
         Ok(format!("ssh-ed25519 AAAAFAKE{lease_id}"))
     }
 
+    fn balloon_off(&self, _lease_id: &str) -> String {
+        String::new()
+    }
+
     fn growth_blocked(&self, _lease_id: &str) -> String {
         String::new()
     }

@@ -125,6 +125,7 @@ pub fn build_lease(record: &LeaseRecord, status: &str, backend: &dyn Backend) ->
             host_key: backend.host_key(id).unwrap_or_default(),
         },
         growth_blocked: backend.growth_blocked(id),
+        balloon_off: backend.balloon_off(id),
         cache_volumes: backend.cache_echo(id),
     }
 }

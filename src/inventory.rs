@@ -26,6 +26,7 @@ pub fn list(
             LeaseRow {
                 status: backend.power(&r).status().to_owned(),
                 growth_blocked: backend.growth_blocked(&r.lease_id),
+                balloon_off: backend.balloon_off(&r.lease_id),
                 lease_id: r.lease_id,
                 slug: r.slug,
                 name: r.name,

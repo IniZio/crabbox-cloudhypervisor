@@ -117,6 +117,8 @@ pub trait Backend {
 
     /// Why the lease's disk cannot grow; empty when nothing blocks it.
     fn growth_blocked(&self, lease_id: &str) -> String;
+    /// Why the lease cannot balloon, or empty.
+    fn balloon_off(&self, lease_id: &str) -> String;
 
     /// If CH is dead but passt is alive, kills passt (orphan). Best effort;
     /// notes to `diag`. Never fails.

@@ -55,6 +55,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             key_ttl_days: 30,
         },
         cgroup: crate::scope::Cgroup::Systemd,
+        balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
     }
 }
@@ -162,6 +163,7 @@ fn overrides_apply() {
         curl: PathBuf::from("/b/curl"),
         ready_timeout: Duration::from_secs(10),
         cgroup: crate::scope::Cgroup::Off,
+        balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 1024,
         ..expected("/s", "/r", "/c")
     };
@@ -402,4 +404,59 @@ fn cgroup_rejects_unknown_modes() {
     assert_eq!(err, "config.cgroup must be \"systemd\" or \"off\"");
     let err = parse(&json!({"vmmOverheadMiB": 10}), HOME).unwrap_err();
     assert!(err.starts_with("config.vmmOverheadMiB"), "{err}");
+}
+
+#[test]
+fn balloon_defaults_are_on_with_a_two_second_window() {
+    let c = parse(&json!({}), HOME).unwrap().balloon;
+    assert!(c.enabled);
+    assert_eq!(c.trigger.as_str(), "some 500000 2000000");
+    assert_eq!(
+        (c.step_percent, c.floor_mib, c.cooldown_secs),
+        (25, 1024, 60)
+    );
+}
+
+#[test]
+fn balloon_keys_are_read() {
+    let c = parse(
+        &json!({"balloon": "off", "memoryPressureTrigger": "full 100000 4000000",
+                "balloonStepPercent": 10, "balloonFloorMiB": 512, "balloonCooldownSecs": 5}),
+        HOME,
+    )
+    .unwrap()
+    .balloon;
+    assert!(!c.enabled);
+    assert_eq!(c.trigger.as_str(), "full 100000 4000000");
+    assert_eq!((c.step_percent, c.floor_mib, c.cooldown_secs), (10, 512, 5));
+}
+
+#[test]
+fn balloon_keys_reject_bad_values_naming_the_key() {
+    for (config, key) in [
+        (json!({"balloon": "maybe"}), "config.balloon"),
+        (
+            json!({"memoryPressureTrigger": "some 150000 1000000"}),
+            "config.memoryPressureTrigger",
+        ),
+        (
+            json!({"memoryPressureTrigger": 3}),
+            "config.memoryPressureTrigger",
+        ),
+        (
+            json!({"balloonStepPercent": 0}),
+            "config.balloonStepPercent",
+        ),
+        (
+            json!({"balloonStepPercent": 101}),
+            "config.balloonStepPercent",
+        ),
+        (
+            json!({"balloonCooldownSecs": 0}),
+            "config.balloonCooldownSecs",
+        ),
+    ] {
+        let e = parse(&config, HOME).unwrap_err();
+        assert!(e.contains(key), "{config}: {e}");
+    }
 }

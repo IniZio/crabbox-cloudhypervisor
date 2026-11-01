@@ -55,6 +55,7 @@ pub(super) fn config(root: &Path) -> Config {
             key_ttl_days: 30,
         },
         cgroup: crate::scope::Cgroup::Off,
+        balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
     }
 }

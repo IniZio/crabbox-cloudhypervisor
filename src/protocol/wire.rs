@@ -42,6 +42,9 @@ pub struct Lease {
     /// Why the disk cannot grow, when something blocks it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub growth_blocked: String,
+    /// Why the guest cannot balloon under host memory pressure, when it cannot.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub balloon_off: String,
     /// What acquire did for each requested cache volume.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_volumes: Vec<CacheVolumeEcho>,
@@ -75,4 +78,7 @@ pub struct LeaseRow {
     /// Why the disk cannot grow, when something blocks it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub growth_blocked: String,
+    /// Why the guest cannot balloon under host memory pressure, when it cannot.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub balloon_off: String,
 }
