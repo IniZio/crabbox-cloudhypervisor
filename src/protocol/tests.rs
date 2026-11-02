@@ -193,7 +193,7 @@ fn leases_response_uses_camel_case() {
         host_memory_mib: None,
     };
     assert_eq!(
-        leases_response(&[row.clone()]),
+        leases_response(std::slice::from_ref(&row)),
         r#"{"protocolVersion":1,"leases":[{"leaseId":"l","slug":"s","name":"n","cloudId":"c","status":"running"}]}"#
     );
     let row = LeaseRow {
