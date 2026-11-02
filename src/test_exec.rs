@@ -26,7 +26,13 @@ pub(crate) fn script(path: &Path, body: &str) {
     assert!(child.wait().unwrap().success(), "write {}", path.display());
 }
 
-/// Links `path` to `/bin/sleep`, so its process comm is `path`'s file name.
-pub(crate) fn sleep_as(path: &Path) {
-    std::os::unix::fs::symlink("/bin/sleep", path).unwrap();
+/// A process that blocks until its stdin closes, with comm set to `path`'s
+/// file name.
+pub(crate) fn idle_as(path: &Path) -> Command {
+    // A link to /bin/sleep does not work here: a multicall coreutils such as
+    // uutils exits at once when run under a name it does not know.
+    script(path, "read _");
+    let mut idle = Command::new(path);
+    idle.stdin(Stdio::piped());
+    idle
 }
