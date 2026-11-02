@@ -115,6 +115,12 @@ pub fn oom_killed(result: &str, memory_events: &str) -> bool {
         })
 }
 
+/// Bytes in `systemctl show -p MemoryCurrent --value` output; `None` for `[not set]`.
+#[must_use]
+pub fn memory_current(value: &str) -> Option<u64> {
+    value.trim().parse().ok().filter(|&n| n != u64::MAX)
+}
+
 /// The confinement mode plus where this user's systemd manager listens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scopes {
@@ -226,6 +232,19 @@ impl Scopes {
             fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/memory.events")).unwrap_or_default()
         };
         oom_killed(&show("Result"), &events)
+    }
+
+    /// The VM scope's `MemoryCurrent` in bytes; `None` when off or unreadable.
+    #[must_use]
+    pub fn vm_memory_bytes(&self, lease_id: &str) -> Option<u64> {
+        if self.mode == Cgroup::Off {
+            return None;
+        }
+        let name = unit(lease_id, Role::Vm);
+        match self.systemctl(&["show", "-p", "MemoryCurrent", "--value", &name]) {
+            Ok((Some(0), out, _)) => memory_current(&out),
+            _ => None,
+        }
     }
 
     /// Stops a lease's scopes and forgets failed ones; a scope already gone is fine.

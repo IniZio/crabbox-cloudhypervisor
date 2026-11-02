@@ -11,6 +11,7 @@ use super::{mkdir_private, remove_tree, spec, RealBackend, CH_COMM, PASST_COMM};
 use crate::backend::{Backend, Power};
 use crate::ch::ChClient;
 use crate::host;
+use crate::scope::Cgroup;
 use crate::ready;
 use crate::state::LeaseRecord;
 
@@ -176,6 +177,18 @@ impl RealBackend {
         self.wait_state(&client, "Paused")?;
         let _ = writeln!(diag, "vm paused");
         Ok(())
+    }
+
+    /// Bytes the VM holds on the host: its scope's `memory.current`, or
+    /// cloud-hypervisor's resident memory when cgroups are off.
+    pub(super) fn vm_memory_bytes(&self, record: &LeaseRecord) -> Option<u64> {
+        if !Self::ch_alive(record) {
+            return None;
+        }
+        match self.config.cgroup {
+            Cgroup::Systemd => self.scopes().vm_memory_bytes(&record.lease_id),
+            Cgroup::Off => record.ch_pid.and_then(host::resident_bytes),
+        }
     }
 
     /// True iff the record's cloud-hypervisor process is alive.

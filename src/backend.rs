@@ -145,6 +145,11 @@ pub trait Backend {
     fn cache_gc(&self, _dry_run: bool, _diag: &mut dyn Write) -> String {
         String::new()
     }
+
+    /// Host memory a live VM holds, in MiB; `None` when it cannot be read.
+    fn host_memory_mib(&self, _record: &LeaseRecord) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]

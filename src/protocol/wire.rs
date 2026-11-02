@@ -81,4 +81,8 @@ pub struct LeaseRow {
     /// Why the guest cannot balloon under host memory pressure, when it cannot.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub balloon_off: String,
+    /// Host memory the VM holds now, in MiB; 0 when stopped or suspended,
+    /// absent when it cannot be read.
+    #[serde(rename = "hostMemoryMiB", skip_serializing_if = "Option::is_none")]
+    pub host_memory_mib: Option<u64>,
 }
