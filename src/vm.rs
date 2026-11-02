@@ -132,6 +132,7 @@ impl RealBackend {
         record: &LeaseRecord,
         desired: &Desired,
         base_raw: &Path,
+        diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
         let comment = format!("crabbox-{id}");
@@ -141,6 +142,7 @@ impl RealBackend {
         host::clone_disk(base_raw, &self.store.disk_path(id), size)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
+        self.collect_cache_garbage(diag);
         let guest = self
             .restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
             .guest_setup();
@@ -252,7 +254,7 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &assets.base_raw)?;
+        self.prepare_guest(&record, desired, &assets.base_raw, diag)?;
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, size, None, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;
@@ -379,7 +381,9 @@ impl Backend for RealBackend {
         self.scopes().stop(lease_id, diag)?;
         self.settle_cache(lease_id, quiesced, diag);
         remove_tree(&run_dir)?;
-        self.store.remove(lease_id)
+        let removed = self.store.remove(lease_id);
+        self.collect_cache_garbage(diag);
+        removed
     }
 
     fn ssh_key(&self, lease_id: &str) -> PathBuf {
