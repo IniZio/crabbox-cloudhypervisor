@@ -11,8 +11,8 @@ use super::{mkdir_private, remove_tree, spec, RealBackend, CH_COMM, PASST_COMM};
 use crate::backend::{Backend, Power};
 use crate::ch::ChClient;
 use crate::host;
-use crate::scope::Cgroup;
 use crate::ready;
+use crate::scope::Cgroup;
 use crate::state::LeaseRecord;
 
 /// Timeout for each API call while stopping a VM.
