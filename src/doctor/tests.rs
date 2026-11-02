@@ -51,6 +51,7 @@ fn config(root: &Path) -> Config {
         cgroup: Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
+        reclaim: crate::reclaim::ReclaimConfig::default(),
     }
 }
 

@@ -22,6 +22,7 @@ use crate::ch::ChClient;
 use crate::config::Config;
 use crate::host;
 use crate::protocol::{CacheVolumeEcho, Desired};
+use crate::reclaim;
 use crate::scope::{self, Limits, Role};
 use crate::seed::{self, SeedParams};
 use crate::size::Size;
@@ -143,9 +144,10 @@ impl RealBackend {
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
         self.collect_cache_garbage(diag);
-        let guest = self
+        let mut guest = self
             .restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
             .guest_setup();
+        reclaim::add_to(&mut guest, &self.config.reclaim);
         let params = SeedParams {
             instance_id: &instance_id,
             hostname: &hostname,

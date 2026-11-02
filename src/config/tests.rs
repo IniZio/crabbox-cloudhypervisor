@@ -57,6 +57,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         cgroup: crate::scope::Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
+        reclaim: crate::reclaim::ReclaimConfig::default(),
     }
 }
 
@@ -472,4 +473,46 @@ fn pause_key_is_removed_and_rejected() {
 #[test]
 fn pause_disk_from_an_older_config_still_loads() {
     parse(&json!({"pause": "disk"}), HOME).unwrap();
+}
+
+#[test]
+fn guest_reclaim_keys_are_read() {
+    let c = parse(
+        &json!({"guestReclaimIntervalSecs": 30, "guestReclaimFloorMiB": 256,
+                "guestReclaimRefaultMiB": 0, "guestReclaimSkipRuns": 3, "pageReportingOrder": 9}),
+        HOME,
+    )
+    .unwrap()
+    .reclaim;
+    assert_eq!(
+        c,
+        crate::reclaim::ReclaimConfig {
+            interval_secs: 30,
+            floor_mib: 256,
+            refault_mib: 0,
+            skip_runs: 3,
+            page_reporting_order: 9,
+        }
+    );
+}
+
+#[test]
+fn guest_reclaim_keys_reject_bad_values_naming_the_key() {
+    for (config, key) in [
+        (
+            json!({"guestReclaimIntervalSecs": 0}),
+            "config.guestReclaimIntervalSecs",
+        ),
+        (
+            json!({"guestReclaimFloorMiB": -1}),
+            "config.guestReclaimFloorMiB",
+        ),
+        (
+            json!({"pageReportingOrder": 11}),
+            "config.pageReportingOrder",
+        ),
+    ] {
+        let e = parse(&config, HOME).unwrap_err();
+        assert!(e.contains(key), "{config}: {e}");
+    }
 }
