@@ -324,3 +324,11 @@ fn balloon_off_warns_instead_of_probing() {
     assert!(ok, "{r}");
     assert!(r.contains("warn memory_pressure: balloon off"), "{r}");
 }
+
+#[test]
+fn dig_holes_is_reported_and_never_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
+    assert!(ok, "{r}");
+    assert!(r.contains(" dig_holes: "), "{r}");
+}

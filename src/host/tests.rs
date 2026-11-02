@@ -119,3 +119,33 @@ fn free_bytes_matches_df_for_the_same_filesystem() {
     assert!(ours.abs_diff(df) < slack, "stat {ours} vs df {df}");
     assert!(free_bytes(Path::new("/no/such/dir")).is_err());
 }
+
+#[test]
+fn dig_holes_frees_zero_blocks_and_keeps_content() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("mem");
+    let mut data = vec![0u8; 64 << 20];
+    for at in [0usize, 7 << 20, 40 << 20, (64 << 20) - 4096] {
+        data.get_mut(at..at + 4096).unwrap().fill(0xab);
+    }
+    fs::write(&file, &data).unwrap();
+    dig_holes(Path::new(DIG_HOLES_TOOL), &file).unwrap();
+    let meta = fs::metadata(&file).unwrap();
+    assert_eq!(meta.len(), 64 << 20);
+    assert!(
+        meta.blocks() * 512 < 1 << 20,
+        "{} bytes",
+        meta.blocks() * 512
+    );
+    assert!(fs::read(&file).unwrap() == data, "content changed");
+}
+
+#[test]
+fn dig_holes_reports_a_missing_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("mem");
+    fs::write(&file, b"x").unwrap();
+    let err = dig_holes(Path::new("/no/such/fallocate"), &file).unwrap_err();
+    assert!(err.contains("cannot run fallocate"), "{err}");
+}

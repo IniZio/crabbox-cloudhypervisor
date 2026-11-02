@@ -173,3 +173,12 @@ fn restore_starts_cloud_hypervisor_from_the_snapshot() {
     );
     assert_eq!(crate::vm::spec::ch_args(Path::new("/x"), None).len(), 2);
 }
+
+#[test]
+fn failed_hole_digging_only_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut diag = Vec::new();
+    super::dig_snapshot_holes(Path::new("/no/such/fallocate"), dir.path(), &mut diag);
+    let text = String::from_utf8(diag).unwrap();
+    assert!(text.contains("snapshot kept dense"), "{text}");
+}
