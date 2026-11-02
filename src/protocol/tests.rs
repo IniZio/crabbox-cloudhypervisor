@@ -190,11 +190,17 @@ fn leases_response_uses_camel_case() {
         status: "running".into(),
         growth_blocked: String::new(),
         balloon_off: String::new(),
+        host_memory_mib: None,
     };
     assert_eq!(
-        leases_response(&[row]),
+        leases_response(&[row.clone()]),
         r#"{"protocolVersion":1,"leases":[{"leaseId":"l","slug":"s","name":"n","cloudId":"c","status":"running"}]}"#
     );
+    let row = LeaseRow {
+        host_memory_mib: Some(1122),
+        ..row
+    };
+    assert!(leases_response(&[row]).contains(r#""status":"running","hostMemoryMiB":1122}"#));
 }
 
 #[test]

@@ -149,3 +149,16 @@ fn dig_holes_reports_a_missing_binary() {
     let err = dig_holes(Path::new("/no/such/fallocate"), &file).unwrap_err();
     assert!(err.contains("cannot run fallocate"), "{err}");
 }
+
+#[test]
+fn vm_rss_bytes_reads_status_line() {
+    let status = "Name:\tcloud-hyperviso\nVmHWM:\t 1200000 kB\nVmRSS:\t 1148928 kB\nThreads:\t8\n";
+    assert_eq!(vm_rss_bytes(status), Some(1_148_928 * 1024));
+    assert_eq!(vm_rss_bytes("Name:\tx\n"), None);
+}
+
+#[test]
+fn resident_bytes_of_this_process_is_nonzero() {
+    assert!(resident_bytes(std::process::id()).is_some_and(|b| b > 0));
+    assert_eq!(resident_bytes(u32::MAX), None);
+}

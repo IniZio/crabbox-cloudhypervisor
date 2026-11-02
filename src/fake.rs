@@ -42,6 +42,8 @@ pub(crate) struct Fake {
     pub(crate) blocked: RefCell<BTreeMap<String, String>>,
     /// What `cache_gc` reports.
     pub(crate) cache_gc_note: RefCell<String>,
+    /// Lease id to the host memory its VM holds, in MiB.
+    pub(crate) host_memory: RefCell<BTreeMap<String, u64>>,
 }
 
 impl Fake {
@@ -297,5 +299,9 @@ impl Backend for Fake {
             .borrow_mut()
             .push(format!("cache_gc dry={dry_run}"));
         self.cache_gc_note.borrow().clone()
+    }
+
+    fn host_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
+        self.host_memory.borrow().get(&record.lease_id).copied()
     }
 }

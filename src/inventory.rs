@@ -23,8 +23,13 @@ pub fn list(
         .into_iter()
         .map(|r| {
             reap_if_idle(backend, &r, diag);
+            let power = backend.power(&r);
             LeaseRow {
-                status: backend.power(&r).status().to_owned(),
+                status: power.status().to_owned(),
+                host_memory_mib: match power {
+                    Power::Stopped | Power::Suspended => Some(0),
+                    _ => backend.host_memory_mib(&r),
+                },
                 growth_blocked: backend.growth_blocked(&r.lease_id),
                 balloon_off: backend.balloon_off(&r.lease_id),
                 lease_id: r.lease_id,

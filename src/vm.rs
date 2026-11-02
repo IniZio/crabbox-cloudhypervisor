@@ -94,12 +94,7 @@ fn serial_tail(path: &Path) -> String {
     let text = fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let skip = lines.len().saturating_sub(SERIAL_TAIL_LINES);
-    lines
-        .iter()
-        .skip(skip)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n")
+    lines.get(skip..).unwrap_or_default().join("\n")
 }
 
 /// Where a create gets its downloaded inputs.
@@ -317,6 +312,10 @@ impl Backend for RealBackend {
 
     fn cache_gc(&self, dry_run: bool, diag: &mut dyn Write) -> String {
         self.gc_cache(dry_run, diag)
+    }
+
+    fn host_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
+        self.vm_memory_bytes(record).map(|b| b / (1024 * 1024))
     }
 
     fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {

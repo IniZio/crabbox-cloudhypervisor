@@ -41,6 +41,31 @@ fn list_sorted_with_status() {
 }
 
 #[test]
+fn list_reports_host_memory_zero_when_down_and_omits_unreadable() {
+    let fake = Fake::default();
+    for (id, alive) in [("run", true), ("unread", true), ("down", false), ("susp", false)] {
+        fake.add(id, alive);
+    }
+    fake.suspended.borrow_mut().insert("susp".into());
+    fake.host_memory.borrow_mut().insert("run".into(), 1122);
+    fake.host_memory.borrow_mut().insert("down".into(), 99);
+    let rows = list(&request(Operation::List), &fake, &mut std::io::sink()).unwrap();
+    let got: Vec<(&str, &str, Option<u64>)> = rows
+        .iter()
+        .map(|r| (r.lease_id.as_str(), r.status.as_str(), r.host_memory_mib))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("down", "stopped", Some(0)),
+            ("run", "ready", Some(1122)),
+            ("susp", "suspended", Some(0)),
+            ("unread", "ready", None),
+        ]
+    );
+}
+
+#[test]
 fn list_empty() {
     let fake = Fake::default();
     assert!(list(&request(Operation::List), &fake, &mut std::io::sink())

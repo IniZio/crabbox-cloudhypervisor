@@ -135,3 +135,11 @@ fn vm_limits_add_overhead_to_class_memory() {
     assert_eq!(limits.cpus, 3);
     assert_eq!(limits.memory_bytes, 4608 * 1024 * 1024);
 }
+
+#[test]
+fn memory_current_reads_bytes_and_rejects_unset() {
+    assert_eq!(memory_current("1176502272\n"), Some(1_176_502_272));
+    assert_eq!(memory_current("[not set]\n"), None);
+    assert_eq!(memory_current(""), None);
+    assert_eq!(memory_current("18446744073709551615"), None);
+}

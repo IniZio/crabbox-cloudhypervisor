@@ -195,6 +195,20 @@ pub fn proc_start(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// Resident memory of `pid` in bytes, from `VmRSS` in `/proc/<pid>/status`.
+#[must_use]
+pub fn resident_bytes(pid: u32) -> Option<u64> {
+    vm_rss_bytes(&fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+}
+
+/// Bytes in the `VmRSS:   <n> kB` line of a `/proc/<pid>/status` text.
+#[must_use]
+pub fn vm_rss_bytes(status: &str) -> Option<u64> {
+    let line = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    let kib: u64 = line.trim().strip_suffix("kB")?.trim().parse().ok()?;
+    kib.checked_mul(1024)
+}
+
 /// Identifier of the current boot; a pid means nothing across boots.
 #[must_use]
 pub fn boot_id() -> Option<String> {
