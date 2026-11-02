@@ -90,6 +90,11 @@ All keys go under `external.config`. All are optional.
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 | `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
 | `vmmOverheadMiB` | `512` | MiB a VM scope may use above the class memory, for cloud-hypervisor itself (at least 64) |
+| `guestReclaimIntervalSecs` | `60` | seconds between guest file cache trims (at least 1) |
+| `guestReclaimFloorMiB` | `512` | file cache a guest keeps; each trim asks for the rest back |
+| `guestReclaimRefaultMiB` | `16` | file re-read from disk between trims, in MiB, above which... |
+| `guestReclaimSkipRuns` | `10` | ...the next this many trims are skipped |
+| `pageReportingOrder` | `2` | smallest free block, 2^order pages, the guest reports to the host (0-10) |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -125,6 +130,23 @@ A VM gets its class size at boot, and the host admits a class against its totals
 backed lazily and freed pages are reported back, so only memory the guest has
 touched is claimed on the host. Setting the removed keys `cpusMax` or
 `memoryMiBMax` fails the config with a message saying so; delete them.
+
+## Guest memory reclaim
+
+A guest keeps file cache until it needs the memory, so after a big build the host
+stays charged for pages the guest no longer uses. Each new lease runs a systemd timer
+that writes to the guest's root `memory.reclaim`, asking for file cache above
+`guestReclaimFloorMiB`. Freed pages go back to the host through free page reporting,
+which the guest sets to report blocks of `pageReportingOrder` at boot (Linux
+defaults to 2 MiB blocks; order 2 is 16 KiB).
+
+- When more than `guestReclaimRefaultMiB` was read back from disk since the last
+  trim, the cache was still in use: the next `guestReclaimSkipRuns` trims are
+  skipped, about 10 minutes at the defaults.
+- A guest with swap is left alone, since `memory.reclaim` would also swap out
+  anonymous memory. Linux 6.8 has no `swappiness=` argument to stop that.
+- The timer and setting are written by the seed when a lease is created, so leases
+  created before an upgrade or a config change keep their old behaviour.
 
 ## Per-lease limits
 

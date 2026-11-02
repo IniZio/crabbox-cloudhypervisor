@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::balloon::{BalloonConfig, Trigger};
+use crate::reclaim::ReclaimConfig;
 use crate::scope::Cgroup;
 use crate::size::{self, Size};
 
@@ -111,6 +112,8 @@ pub struct Config {
     pub balloon: BalloonConfig,
     /// MiB a VM scope may use above its class memory, for the VMM itself.
     pub vmm_overhead_mib: u64,
+    /// Guest file cache reclaim, set up in new leases.
+    pub reclaim: ReclaimConfig,
 }
 
 /// Environment lookup used for default directories.
@@ -171,6 +174,7 @@ impl Config {
             cgroup: cgroup(config)?,
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
+            reclaim: reclaim(config)?,
             state_dir,
         })
     }
@@ -232,6 +236,20 @@ fn balloon(config: &Value) -> Result<BalloonConfig, String> {
         step_percent: int_key(config, "balloonStepPercent", d.step_percent, 1, 100)?,
         floor_mib: int_key(config, "balloonFloorMiB", d.floor_mib, 0, u64::MAX)?,
         cooldown_secs: int_key(config, "balloonCooldownSecs", d.cooldown_secs, 1, u64::MAX)?,
+    })
+}
+
+/// Reads the guest reclaim keys.
+fn reclaim(config: &Value) -> Result<ReclaimConfig, String> {
+    let d = ReclaimConfig::default();
+    let int = |key, default, min| int_key(config, key, default, min, u64::MAX);
+    let order = d.page_reporting_order;
+    Ok(ReclaimConfig {
+        interval_secs: int("guestReclaimIntervalSecs", d.interval_secs, 1)?,
+        floor_mib: int("guestReclaimFloorMiB", d.floor_mib, 0)?,
+        refault_mib: int("guestReclaimRefaultMiB", d.refault_mib, 0)?,
+        skip_runs: int("guestReclaimSkipRuns", d.skip_runs, 0)?,
+        page_reporting_order: int_key(config, "pageReportingOrder", order, 0, 10)?,
     })
 }
 
