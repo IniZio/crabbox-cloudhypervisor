@@ -173,6 +173,12 @@ impl RealBackend {
             .unwrap_or_default()
     }
 
+    /// Collects store garbage before a lease with cache volumes restores, and
+    /// after a release. Failures reach `diag` and never fail the caller.
+    pub(super) fn collect_cache_garbage(&self, diag: &mut dyn Write) {
+        let _ = self.gc_cache(false, diag);
+    }
+
     /// Presses the ACPI power button and waits for the guest to power off.
     /// True only when it did, so its filesystems were unmounted.
     fn quiesce(record: &LeaseRecord, diag: &mut dyn Write) -> bool {
@@ -237,6 +243,9 @@ impl RealBackend {
             .gc(SystemTime::now(), &live, dry_run);
         for path in &report.removed {
             let _ = writeln!(diag, "cache: remove {}", path.display());
+        }
+        for error in &report.errors {
+            let _ = writeln!(diag, "cache gc: {error}");
         }
         match (report.removed.len(), dry_run) {
             (0, _) => String::new(),

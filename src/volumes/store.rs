@@ -1,8 +1,8 @@
 //! Generation store: `<dir>/<compat>/<group>/gen-<unix_ns>-<lease8>.img`.
 //!
-//! Lockless. Restore clones the newest generation into a private working copy,
-//! publish renames a working copy in as the next one, and readers pick the
-//! newest name. Working copies live in `<dir>/leases/<lease>/` on the same
+//! Restore clones the newest generation into a private working copy, publish
+//! renames a working copy in as the next one, and readers pick the newest
+//! name. Restore and publish share a store lock that GC holds exclusively. Working copies live in `<dir>/leases/<lease>/` on the same
 //! filesystem, so clone can reflink and publish is one rename(2).
 
 use std::fs;
@@ -16,6 +16,8 @@ use crate::host;
 
 /// Directory of working copies, beside the compat dirs.
 const LEASES_DIR: &str = "leases";
+/// Lock file in [`LEASES_DIR`], which store listings already skip: shared by restore and publish, exclusive for GC.
+const LOCK_FILE: &str = ".lock";
 /// File whose mtime records a group's last restore or publish.
 const USED_FILE: &str = "used";
 /// Smallest growth (allocated bytes) worth publishing.
@@ -84,6 +86,8 @@ pub enum Publish {
 pub struct GcReport {
     /// Paths removed, in order.
     pub removed: Vec<PathBuf>,
+    /// Why GC could not run or could not remove a path.
+    pub errors: Vec<String>,
 }
 
 /// Generation store rooted at `cacheVolumeDir`.
@@ -277,6 +281,7 @@ impl Store {
 
     /// Clones or creates `image`, grows it to the group capacity; (outcome, baseline).
     fn try_restore(&self, group: &Group, image: &Path) -> Result<(Outcome, u64), String> {
+        let _lock = self.lock(false)?;
         let dir = self.group_dir(&group.id);
         mkdir_private(&dir)?;
         if let Some(parent) = image.parent() {
@@ -333,6 +338,10 @@ impl Store {
             Ok(_) => {}
             Err(e) => return rejected(format!("fsck: {e}")),
         }
+        let _lock = match self.lock(false) {
+            Ok(lock) => lock,
+            Err(e) => return rejected(e),
+        };
         let dir = self.group_dir(&group.id);
         let generation = unix_ns(now);
         let tag: String = lease_id.chars().take(LEASE_TAG).collect();
@@ -350,51 +359,8 @@ impl Store {
     pub fn discard(&self, lease_id: &str) -> Result<(), String> {
         remove(&self.work_dir(lease_id))
     }
-
-    /// Every group of every compat tag, for GC.
-    fn snapshot(&self) -> Vec<GroupSnapshot> {
-        let leases = self.root.join(LEASES_DIR);
-        subdirs(&self.root)
-            .into_iter()
-            .filter(|d| *d != leases)
-            .flat_map(|compat| subdirs(&compat))
-            .map(|dir| {
-                let used = fs::metadata(dir.join(USED_FILE))
-                    .or_else(|_| fs::metadata(&dir))
-                    .and_then(|m| m.modified())
-                    .map_or(0, unix_ns);
-                GroupSnapshot {
-                    gens: generations(&dir),
-                    dir,
-                    used,
-                }
-            })
-            .collect()
-    }
-
-    /// Removes working copies of leases `live` rejects, then what [`plan_gc`]
-    /// picks. `dry_run` only reports.
-    pub fn gc(&self, now: SystemTime, live: &dyn Fn(&str) -> bool, dry_run: bool) -> GcReport {
-        let mut removed: Vec<PathBuf> = subdirs(&self.root.join(LEASES_DIR))
-            .into_iter()
-            .filter(|d| {
-                d.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| !live(n))
-            })
-            .collect();
-        removed.extend(plan_gc(
-            &self.snapshot(),
-            unix_ns(now),
-            self.ttl,
-            self.budget,
-        ));
-        if !dry_run {
-            removed.retain(|p| remove(p).is_ok());
-        }
-        GcReport { removed }
-    }
 }
 
+mod gc;
 #[cfg(test)]
 mod tests;

@@ -191,3 +191,73 @@ fn a_generation_is_restored_only_under_the_scope_that_published_it() {
     assert_eq!(outcome("unscoped", None), "empty");
     assert_eq!(outcome("same-tenant", tenant_a), "restored");
 }
+
+fn publish_grown(b: &RealBackend, root: &Path, id: &str) {
+    lease_dir(root, id);
+    let cache = b.restore_cache(id, &requests()[..1], None).unwrap();
+    grow_in_guest(&cache.groups[0].image);
+    b.settle_cache(id, true, &mut Vec::new());
+}
+
+fn gen_files(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = fs::read_dir(root.join("volumes"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name() != "leases")
+        .flat_map(|c| fs::read_dir(c.path()).unwrap().flatten())
+        .flat_map(|g| fs::read_dir(g.path()).unwrap().flatten())
+        .map(|f| f.path())
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("gen-"))
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn release_collects_a_superseded_generation_without_cleanup() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    publish_grown(&b, dir.path(), "first");
+    let old = gen_files(dir.path()).remove(0);
+    let aged = old.with_file_name("gen-0000000000000000001-first000.img");
+    fs::rename(&old, &aged).unwrap();
+    let newer = aged.with_file_name("gen-0000000000000000002-second00.img");
+    fs::copy(&aged, &newer).unwrap();
+    assert_eq!(generations(dir.path()), 2);
+
+    lease_dir(dir.path(), "third");
+    let mut diag = Vec::new();
+    b.destroy("third", &mut diag).unwrap();
+    assert!(!aged.exists(), "{}", String::from_utf8_lossy(&diag));
+    assert!(newer.exists());
+    assert_eq!(generations(dir.path()), 1);
+}
+
+#[test]
+fn acquire_removes_the_working_copy_of_a_lease_without_a_record() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let store = b.volume_store(None);
+    fs::create_dir_all(store.work_dir("ghost")).unwrap();
+    b.collect_cache_garbage(&mut Vec::new());
+    assert!(!store.work_dir("ghost").exists());
+}
+
+#[test]
+fn a_gc_failure_reaches_diag_and_the_restore_still_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    fs::create_dir_all(dir.path().join("volumes/leases/.lock")).unwrap();
+    let mut diag = Vec::new();
+    b.collect_cache_garbage(&mut diag);
+    let note = String::from_utf8(diag).unwrap();
+    assert!(note.contains("cache gc: open store lock"), "{note}");
+    lease_dir(dir.path(), "l1");
+    assert!(b.restore_cache("l1", &requests()[..1], None).is_ok());
+}
