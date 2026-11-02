@@ -278,22 +278,29 @@ impl FakeCh {
         Self::spawn_as("cloud-hypervisor", super::CH_COMM)
     }
 
-    /// A sleeping process named `name` whose comm starts with `comm`.
+    /// An idle process named `name` whose comm starts with `comm`.
     fn spawn_as(name: &str, comm: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join(name);
-        crate::test_exec::sleep_as(&bin);
-        let child = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let child = crate::test_exec::idle_as(&bin).spawn().unwrap();
         let ch = Self { _dir: dir, child };
         let pid = ch.child.id();
-        for _ in 0..100 {
-            if crate::host::pid_alive(pid, comm) {
-                break;
-            }
+        let up = (0..100).any(|_| {
             std::thread::sleep(Duration::from_millis(20));
-        }
+            crate::host::pid_alive(pid, comm)
+        });
+        assert!(up, "stand-in {name} never ran with comm {comm}");
         ch
     }
+}
+
+#[test]
+fn stand_in_processes_stay_alive_under_the_names_the_backend_checks() {
+    let ch = FakeCh::spawn();
+    let passt = FakeCh::spawn_as("passt", super::PASST_COMM);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(crate::host::pid_alive(ch.child.id(), super::CH_COMM));
+    assert!(crate::host::pid_alive(passt.child.id(), super::PASST_COMM));
 }
 
 impl Drop for FakeCh {
