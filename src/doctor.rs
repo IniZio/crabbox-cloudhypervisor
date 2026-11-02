@@ -224,7 +224,26 @@ fn tool_checks(config: &Config) -> Vec<Check> {
         .collect();
     checks.push(tool("ssh-keygen", &config.ssh_keygen, "-?", false));
     checks.push(tool("setsid", Path::new("setsid"), "--version", false));
+    checks.push(dig_holes());
     checks
+}
+
+/// Without `fallocate --dig-holes` suspended snapshots stay dense; never a failure.
+fn dig_holes() -> Check {
+    let probe = Command::new(crate::host::DIG_HOLES_TOOL)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .output();
+    let supported = probe.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("--dig-holes"));
+    if supported {
+        Check::new(Level::Ok, "dig_holes", "fallocate --dig-holes available")
+    } else {
+        Check::new(
+            Level::Warn,
+            "dig_holes",
+            "fallocate --dig-holes missing; suspended snapshots stay dense",
+        )
+    }
 }
 
 /// Cache volume tools and reflink support; a missing piece only degrades caching.

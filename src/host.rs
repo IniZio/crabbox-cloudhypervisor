@@ -93,6 +93,29 @@ pub fn ssh_keygen(program: &Path, key: &Path, comment: &str) -> Result<String, S
     Ok(text.trim().to_owned())
 }
 
+/// Util-linux tool that turns zero-filled ranges of a file into holes.
+pub const DIG_HOLES_TOOL: &str = "fallocate";
+
+/// Deallocates the zero-filled ranges of `file` in place with `fallocate --dig-holes`;
+/// length and content are unchanged.
+pub fn dig_holes(program: &Path, file: &Path) -> Result<(), String> {
+    let output = Command::new(program)
+        .arg("--dig-holes")
+        .arg(file)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("dig holes: cannot run fallocate: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "dig holes: failed ({}): {}",
+        output.status,
+        stderr.trim()
+    ))
+}
+
 /// A program to start detached: its path, arguments and extra environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {

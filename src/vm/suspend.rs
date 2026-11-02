@@ -23,6 +23,17 @@ const API_TIMEOUT: Duration = Duration::from_secs(2);
 const MIB: u64 = 1024 * 1024;
 /// Free space a snapshot must leave on the state filesystem.
 const SPARE_BYTES: u64 = 1024 * MIB;
+/// File in a snapshot dir that holds guest RAM.
+const MEMORY_FILE: &str = "memory-ranges";
+
+/// Makes the snapshot's memory file sparse so only non-zero pages stay on disk.
+/// A failure leaves the snapshot dense and is only noted: the snapshot is valid.
+pub(super) fn dig_snapshot_holes(program: &Path, snap: &Path, diag: &mut dyn Write) {
+    let memory = snap.join(MEMORY_FILE);
+    if let Err(e) = crate::host::dig_holes(program, &memory) {
+        let _ = writeln!(diag, "warn: snapshot kept dense: {e}");
+    }
+}
 
 /// Fails unless `free` bytes hold a snapshot of `memory_mib` plus [`SPARE_BYTES`].
 pub(super) fn check_room(free: u64, memory_mib: u64) -> Result<(), String> {
@@ -96,6 +107,7 @@ impl RealBackend {
             let _ = remove_tree(&tmp);
             return Err(format!("lease {id}: snapshot failed, pause aborted: {e}"));
         }
+        dig_snapshot_holes(Path::new(crate::host::DIG_HOLES_TOOL), &snap, diag);
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "snapshot written in {secs:.1}s");
         if let Err(e) = Self::stop_processes(record, diag) {
