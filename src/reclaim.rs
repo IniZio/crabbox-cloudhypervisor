@@ -66,7 +66,11 @@ pub fn add_to(setup: &mut GuestSetup, config: &ReclaimConfig) {
     );
     setup.files.extend([
         file(SCRIPT_PATH, "0755", script(config)),
-        file("/etc/systemd/system/crabbox-reclaim.service", "0644", service),
+        file(
+            "/etc/systemd/system/crabbox-reclaim.service",
+            "0644",
+            service,
+        ),
         file(&format!("/etc/systemd/system/{TIMER}"), "0644", timer),
         file(
             TMPFILES_PATH,
