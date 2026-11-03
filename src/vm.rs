@@ -2,6 +2,7 @@
 
 mod cache;
 mod checkpoint;
+mod hygiene;
 mod power;
 #[cfg(test)]
 mod size_tests;
