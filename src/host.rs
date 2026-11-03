@@ -27,17 +27,60 @@ pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), Strin
             stderr.trim()
         ));
     }
+    grow(dest, size_bytes).map_err(|e| format!("disk clone: {e}"))
+}
+
+/// Where a new lease's root disk comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiskSource {
+    /// A raw image, copied.
+    Raw(PathBuf),
+    /// A qcow2 image whose backing chain is flattened into a raw copy.
+    Qcow2(PathBuf),
+}
+
+/// Writes the raw root disk of a new lease at `dest` from `source`, sparse and
+/// grown to `size_bytes` (never shrunk). The disk refers to no other file.
+pub fn make_disk(
+    qemu_img: &Path,
+    source: &DiskSource,
+    dest: &Path,
+    size_bytes: u64,
+) -> Result<(), String> {
+    let top = match source {
+        DiskSource::Raw(base) => return clone_disk(base, dest, size_bytes),
+        DiskSource::Qcow2(top) => top,
+    };
+    let output = Command::new(qemu_img)
+        .args(["convert", "-q", "-f", "qcow2", "-O", "raw", "-S", "4k"])
+        .arg(top)
+        .arg(dest)
+        .output()
+        .map_err(|e| format!("disk flatten: cannot run qemu-img: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "disk flatten: qemu-img failed ({}): {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    grow(dest, size_bytes).map_err(|e| format!("disk flatten: {e}"))
+}
+
+/// Grows `disk` to `size_bytes`; never shrinks it.
+fn grow(disk: &Path, size_bytes: u64) -> Result<(), String> {
     let file = OpenOptions::new()
         .write(true)
-        .open(dest)
-        .map_err(|e| format!("disk clone: cannot open clone: {e}"))?;
+        .open(disk)
+        .map_err(|e| format!("cannot open disk: {e}"))?;
     let current = file
         .metadata()
-        .map_err(|e| format!("disk clone: cannot stat clone: {e}"))?
+        .map_err(|e| format!("cannot stat disk: {e}"))?
         .len();
     if current < size_bytes {
         file.set_len(size_bytes)
-            .map_err(|e| format!("disk clone: cannot grow clone: {e}"))?;
+            .map_err(|e| format!("cannot grow disk: {e}"))?;
     }
     Ok(())
 }

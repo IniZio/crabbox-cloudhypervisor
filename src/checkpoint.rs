@@ -5,7 +5,7 @@ use std::io::Write;
 
 use crate::backend::{Backend, Power};
 use crate::lease::{build_lease, check_agreement, require_running, target_id};
-use crate::protocol::{Lease, Request};
+use crate::protocol::{CheckpointMade, Lease, Request};
 
 #[cfg(test)]
 mod tests;
@@ -18,13 +18,12 @@ fn checkpoint_id(request: &Request) -> Result<&str, String> {
         .ok_or_else(|| "checkpointId must be a non-empty string".to_owned())
 }
 
-/// Snapshots a running lease; returns the checkpoint's id and its bytes on disk.
-/// The lease keeps running.
+/// Snapshots a running lease and reports the checkpoint. The lease keeps running.
 pub(crate) fn create(
     request: &Request,
     backend: &dyn Backend,
     diag: &mut dyn Write,
-) -> Result<(String, u64), String> {
+) -> Result<CheckpointMade, String> {
     let checkpoint = checkpoint_id(request)?;
     let id = target_id(request)?;
     let _lock = backend.lock(&id)?;
@@ -35,9 +34,14 @@ pub(crate) fn create(
     backend.reap(&record, diag);
     require_running(backend.power(&record), &id)?;
     let name = request.name.as_deref().unwrap_or_default();
-    let bytes = backend.checkpoint_create(&record, checkpoint, name, diag)?;
-    let _ = writeln!(diag, "checkpoint {checkpoint} of {id}: {bytes} bytes");
-    Ok((checkpoint.to_owned(), bytes))
+    let made = backend.checkpoint_create(&record, checkpoint, name, diag)?;
+    let parent = made.parent_checkpoint_id.as_deref().unwrap_or("none");
+    let _ = writeln!(
+        diag,
+        "checkpoint {checkpoint} of {id}: {} bytes of its own, parent {parent}",
+        made.unique_bytes
+    );
+    Ok(made)
 }
 
 /// Starts the lease in `request.desired` from a checkpoint and waits until it
@@ -72,7 +76,8 @@ pub(crate) fn fork(
     Ok(build_lease(&record, Power::Running.status(), backend))
 }
 
-/// Removes a checkpoint's files; an unknown id is fine.
+/// Removes a checkpoint's files; an unknown id is fine, one that others are
+/// deltas over is refused.
 pub(crate) fn delete(request: &Request, backend: &dyn Backend) -> Result<(), String> {
     backend.checkpoint_delete(checkpoint_id(request)?)
 }

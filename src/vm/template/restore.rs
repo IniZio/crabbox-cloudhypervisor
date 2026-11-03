@@ -11,6 +11,7 @@ use super::rotate::{self, Identity};
 use super::{Template, BOOTSTRAP_KEY, DISK_FILE, KNOWN_HOSTS, SNAP_DIR};
 use crate::backend::Backend;
 use crate::ch::ChClient;
+use crate::host::DiskSource;
 use crate::protocol::Desired;
 use crate::ready::ReadyProbe;
 use crate::seed;
@@ -61,11 +62,13 @@ fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|e| format!("stage {}: {e}", from.display()))
 }
 
-/// A dir laid out as a template: `snap/`, `disk.raw`, the bootstrap key and
+/// A dir laid out as a template: `snap/`, a root disk, the bootstrap key and
 /// the host pin.
 pub(in crate::vm) struct Origin<'a> {
     /// The dir.
     pub dir: &'a Path,
+    /// Its root disk.
+    pub disk: DiskSource,
     /// What the log calls it.
     pub label: &'a str,
 }
@@ -84,6 +87,7 @@ impl RealBackend {
         let label = format!("template {}", t.meta.key12());
         let origin = Origin {
             dir: &t.dir,
+            disk: DiskSource::Raw(t.dir.join(DISK_FILE)),
             label: &label,
         };
         self.restore_from(desired, run_dir, &origin, size, diag)
@@ -104,7 +108,7 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &origin.dir.join(DISK_FILE), diag)?;
+        self.prepare_guest(&record, desired, &origin.disk, diag)?;
         let stage = self.store.lease_dir(id).join(STAGE_DIR);
         self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record)?;
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);

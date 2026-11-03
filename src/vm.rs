@@ -108,7 +108,7 @@ impl RealBackend {
         &self,
         record: &LeaseRecord,
         desired: &Desired,
-        base_raw: &Path,
+        disk: &host::DiskSource,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
@@ -116,7 +116,7 @@ impl RealBackend {
         let pubkey = host::ssh_keygen(&self.config.ssh_keygen, &self.store.key_path(id), &comment)?;
         let (host_private_key, host_public_key) = self.make_host_key(id)?;
         let size = self.config.disk_gib * 1024 * 1024 * 1024;
-        host::clone_disk(base_raw, &self.store.disk_path(id), size)?;
+        host::make_disk(&self.config.qemu_img, disk, &self.store.disk_path(id), size)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
         self.collect_cache_garbage(diag);
@@ -217,7 +217,8 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &assets.base_raw, diag)?;
+        let disk = host::DiskSource::Raw(assets.base_raw.clone());
+        self.prepare_guest(&record, desired, &disk, diag)?;
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, size, None, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;
@@ -367,7 +368,7 @@ impl Backend for RealBackend {
         checkpoint_id: &str,
         name: &str,
         diag: &mut dyn Write,
-    ) -> Result<u64, String> {
+    ) -> Result<crate::protocol::CheckpointMade, String> {
         self.take_checkpoint(record, checkpoint_id, name, diag)
     }
 

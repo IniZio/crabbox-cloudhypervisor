@@ -30,13 +30,16 @@ fn delete_request(checkpoint: &str) -> Value {
 }
 
 #[test]
-fn create_snapshots_the_running_lease_and_reports_the_bytes() {
+fn create_snapshots_the_running_lease_and_reports_its_parent_and_bytes() {
     let fake = Fake::default();
     fake.add("l1", true);
     let (code, body, _) = call(&fake, &create_request("l1", "ck1"));
     assert_eq!(code, 0, "{body}");
-    assert_eq!(body["checkpointId"], "ck1");
-    assert_eq!(body["bytes"], 4096);
+    assert_eq!(
+        body,
+        json!({"protocolVersion":1,"checkpointId":"ck1","parentCheckpointId":"ck0",
+            "bytes":4096,"uniqueBytes":4096,"apparentBytes":8192})
+    );
     assert!(fake.called("lock:l1"));
     assert!(fake.called("checkpoint_create l1 ck1 after clone"));
     assert!(
