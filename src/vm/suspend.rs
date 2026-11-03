@@ -127,18 +127,29 @@ impl RealBackend {
     /// Starts cloud-hypervisor from the lease's snapshot and resumes it.
     /// A failed restore keeps the snapshot and returns the error.
     pub(super) fn restore(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        // Once the guest runs its disk moves past the snapshot, so the snapshot
+        // must be gone before vm.resume or a later restore would corrupt it.
+        self.restore_snapshot(record, &self.snapshot_dir(&record.lease_id), true, diag)
+    }
+
+    /// Starts the stopped lease's cloud-hypervisor and passt from `snap` and
+    /// resumes it, deleting `snap` before the resume when `consume` is set.
+    pub(super) fn restore_snapshot(
+        &self,
+        record: &LeaseRecord,
+        snap: &Path,
+        consume: bool,
+        diag: &mut dyn Write,
+    ) -> Result<(), String> {
         let id = record.lease_id.clone();
-        let snap = self.snapshot_dir(&id);
         let mut record = self.relaunch_prep(record, diag)?;
         let size = record.size.unwrap_or_else(|| self.default_size());
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let started = Instant::now();
-        // Once the guest runs its disk moves past the snapshot, so the snapshot
-        // must be gone before vm.resume or a later restore would corrupt it.
         let restored = self
-            .start_processes(&mut record, size, Some(&snap), diag)
+            .start_processes(&mut record, size, Some(snap), diag)
             .and_then(|()| self.wait_state(&client, "Paused"))
-            .and_then(|()| remove_tree(&snap));
+            .and_then(|()| if consume { remove_tree(snap) } else { Ok(()) });
         if let Err(e) = restored {
             if let Err(stop) = Self::stop_processes(&record, diag) {
                 let _ = writeln!(diag, "warn: {stop}");

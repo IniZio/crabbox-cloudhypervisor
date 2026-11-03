@@ -412,8 +412,14 @@ identity rotation code of the [boot template](#boot-template).
   `name` is a label kept in the checkpoint's `checkpoint.json`.
 - `checkpointCreate` needs a running lease. It pauses the VM, writes its
   snapshot, reflinks its disk (a copy when the filesystem cannot), keeps the
-  lease's login key and a host key pin, and resumes the VM. The lease runs on
-  after a short pause, also when the checkpoint fails. `bytes` is the space the
+  lease's login key and a host key pin. It then restarts the lease from that
+  snapshot with a new passt and cloud-hypervisor, as `resume` does for a
+  suspended lease. Guest processes continue, but open TCP connections and ssh
+  sessions drop. A resume in place would leave the guest network dead.
+  cloud-hypervisor stops the passt rings to save their state and never
+  restarts them. When the snapshot itself fails the VM is resumed
+  in place. The lease runs on after a short pause, also when the checkpoint
+  fails. `bytes` is the space the
   checkpoint allocates on disk. A second create under the same id replaces the
   first. A lease with cache volumes attached is refused, because the snapshot
   would name their disks.
