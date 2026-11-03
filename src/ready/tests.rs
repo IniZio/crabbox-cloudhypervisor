@@ -133,3 +133,38 @@ fn known_hosts_line_format() {
         "crabbox-x ssh-ed25519 AAAA\n"
     );
 }
+
+#[test]
+fn clock_step_runs_through_the_ready_argv() {
+    let p = probe(Path::new("ssh"));
+    let step = p.args(&super::clock_step_remote(1_700_000_000));
+    let ready = p.args("true");
+    let (command, step_head) = step.split_last().unwrap();
+    let (_, ready_head) = ready.split_last().unwrap();
+    assert_eq!(command, "sudo date -s @1700000000");
+    assert_eq!(step_head, ready_head);
+}
+
+#[test]
+fn step_clock_sends_the_host_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let body = format!(
+        "for a; do last=$a; done; echo \"$last\" > '{}'",
+        log.display()
+    );
+    let ssh = script(dir.path(), "ssh", &body);
+    probe(&ssh).step_clock(Duration::from_secs(5)).unwrap();
+    let sent = std::fs::read_to_string(&log).unwrap();
+    let epoch: u64 = sent
+        .trim()
+        .strip_prefix("sudo date -s @")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(now.abs_diff(epoch) < 10, "{sent}");
+}

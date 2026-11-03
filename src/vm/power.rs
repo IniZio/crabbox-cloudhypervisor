@@ -233,14 +233,34 @@ impl RealBackend {
     ) -> Result<(), String> {
         let current = self.store.read(&record.lease_id)?;
         let record = current.as_ref().unwrap_or(record);
+        let cold = !Self::ch_alive(record) && !self.snapshot_dir(&record.lease_id).is_dir();
         let changed = self.bring_up(record, diag)?;
         let now = self.store.read(&record.lease_id)?;
         let now = now.as_ref().unwrap_or(record);
         self.ensure_watcher(now, diag)?;
         if changed {
             self.wait_ready(now, diag)?;
+            if !cold {
+                self.step_guest_clock(now, diag);
+            }
         }
         Ok(())
+    }
+
+    /// KVM leaves the guest clock at its pause time, so TLS in the guest sees
+    /// certificates as not yet valid. A failure only logs: the VM is usable.
+    fn step_guest_clock(&self, record: &LeaseRecord, diag: &mut dyn Write) {
+        let c = &self.config;
+        let id = record.lease_id.as_str();
+        let probe = spec::guest_ssh(&c.ssh, &self.store, &self.exe, &c.state_dir, id);
+        match probe.step_clock(crate::ready::CLOCK_STEP_LIMIT) {
+            Ok(()) => {
+                let _ = writeln!(diag, "guest clock stepped to host time");
+            }
+            Err(e) => {
+                let _ = writeln!(diag, "guest clock step failed: {e}");
+            }
+        }
     }
 
     /// Resumes or cold boots; false means the VM already ran and nothing changed.
