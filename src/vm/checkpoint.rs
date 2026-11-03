@@ -125,6 +125,7 @@ impl RealBackend {
         remove_tree(&tmp)?;
         mkdir_private(&tmp)?;
         let started = Instant::now();
+        self.tidy_guest(record, diag);
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let written = self.pause_vm(record, diag).and_then(|()| {
             let captured = self.capture(record, &tmp, &meta, &pin, diag);

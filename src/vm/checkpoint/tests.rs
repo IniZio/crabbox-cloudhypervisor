@@ -329,6 +329,22 @@ fn a_checkpoint_of_a_running_lease_holds_its_ram_disk_and_login_and_the_lease_re
 }
 
 #[test]
+fn the_guest_is_tidied_before_the_pause_and_a_failed_tidy_never_fails_the_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    let api = Api::start(&rec.api_socket(), 5, false);
+    let mut diag = Vec::new();
+    b.take_checkpoint(&rec, "ck1", "n", &mut diag).unwrap();
+    api.finish();
+    let diag = String::from_utf8(diag).unwrap();
+    let tidy = diag
+        .find("warn: guest not tidied before the checkpoint")
+        .unwrap();
+    assert!(tidy < diag.find("vm paused").unwrap(), "{diag}");
+    assert_files(&b);
+}
+
+#[test]
 fn a_failed_snapshot_resumes_the_lease_and_leaves_no_checkpoint() {
     let root = tempfile::tempdir().unwrap();
     let (b, rec, _ch) = running_lease(root.path());

@@ -413,7 +413,10 @@ identity rotation code of the [boot template](#boot-template).
 
 - `checkpointId` is chosen by the caller: 1 to 64 characters of `A-Z a-z 0-9 _ -`.
   `name` is a label kept in the checkpoint's `checkpoint.json`.
-- `checkpointCreate` needs a running lease. It pauses the VM, writes its
+- `checkpointCreate` needs a running lease. First it runs `sync`, drops the
+  guest's caches and compacts its memory over the lease's ssh, then waits up to
+  10 s for the guest's free pages to reach the host, so the snapshot holds less.
+  If that fails, it is logged and the checkpoint goes ahead. It pauses the VM, writes its
   snapshot, reflinks its disk (a copy when the filesystem cannot), keeps the
   lease's login key and a host key pin, and resumes the VM in place. Guest
   processes, open TCP connections and ssh sessions carry on after a short
