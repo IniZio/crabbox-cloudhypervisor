@@ -10,7 +10,9 @@ use crate::vm::tests::config;
 use crate::volumes::tests::{have_e2fsprogs, noise, req};
 
 fn backend(root: &Path) -> RealBackend {
-    RealBackend::new(config(root), PathBuf::from("/bin/cb"))
+    let mut config = config(root);
+    config.qemu_img = PathBuf::from("qemu-img");
+    RealBackend::new(config, PathBuf::from("/bin/cb"))
 }
 
 fn lease_dir(root: &Path, id: &str) -> PathBuf {
@@ -62,8 +64,11 @@ fn echo_lists_every_name_and_disks_carry_serials() {
     let rec = |i: usize, outcome: Outcome| RecordedGroup {
         group: plan.groups[i].clone(),
         outcome,
-        image: PathBuf::from(format!("/w/{i}.img")),
-        baseline: 0,
+        copy: WorkingCopy {
+            image: PathBuf::from(format!("/w/{i}.img")),
+            format: Format::Raw,
+            baseline: 0,
+        },
     };
     let cache = LeaseCache {
         groups: vec![rec(0, skipped), rec(1, Outcome::Empty)],
@@ -141,7 +146,7 @@ fn release_publishes_only_after_a_clean_shutdown() {
     for (id, quiesced) in [("killed", false), ("clean", true)] {
         lease_dir(dir.path(), id);
         let cache = b.restore_cache(id, &requests()[..1], None).unwrap();
-        grow_in_guest(&cache.groups[0].image);
+        grow_in_guest(&cache.groups[0].copy.image);
         let mut diag = Vec::new();
         b.settle_cache(id, quiesced, &mut diag);
         let note = String::from_utf8(diag).unwrap();
@@ -179,7 +184,7 @@ fn a_generation_is_restored_only_under_the_scope_that_published_it() {
     let cache = b
         .restore_cache("first", &requests()[..1], tenant_a)
         .unwrap();
-    grow_in_guest(&cache.groups[0].image);
+    grow_in_guest(&cache.groups[0].copy.image);
     b.settle_cache("first", true, &mut Vec::new());
 
     let outcome = |id: &str, scope: Option<&str>| {
@@ -195,7 +200,7 @@ fn a_generation_is_restored_only_under_the_scope_that_published_it() {
 fn publish_grown(b: &RealBackend, root: &Path, id: &str) {
     lease_dir(root, id);
     let cache = b.restore_cache(id, &requests()[..1], None).unwrap();
-    grow_in_guest(&cache.groups[0].image);
+    grow_in_guest(&cache.groups[0].copy.image);
     b.settle_cache(id, true, &mut Vec::new());
 }
 
@@ -260,4 +265,44 @@ fn a_gc_failure_reaches_diag_and_the_restore_still_succeeds() {
     assert!(note.contains("cache gc: open store lock"), "{note}");
     lease_dir(dir.path(), "l1");
     assert!(b.restore_cache("l1", &requests()[..1], None).is_ok());
+}
+
+#[test]
+fn an_overlay_attaches_as_qcow2_with_its_backing_file_and_survives_a_reread() {
+    if !have_e2fsprogs() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    publish_grown(&b, dir.path(), "first");
+    lease_dir(dir.path(), "second");
+    b.restore_cache("second", &requests()[..1], None).unwrap();
+    let cache = b.read_cache("second");
+    assert_eq!(cache.groups[0].copy.format, Format::Qcow2);
+    let mut vm = json!({"disks": []});
+    cache.attach(&mut vm);
+    assert_eq!(
+        vm["disks"][0],
+        json!({
+            "id": "cv0",
+            "path": cache.groups[0].copy.image,
+            "image_type": "Qcow2",
+            "backing_files": true,
+            "readonly": false,
+            "serial": "cbxcv0",
+        })
+    );
+}
+
+#[test]
+fn a_cache_record_from_before_overlays_reads_as_raw() {
+    let old = json!({
+        "group": volumes::plan(&requests()[..1], &crate::volumes::tests::limits(40)).groups[0],
+        "outcome": {"outcome": "empty"},
+        "image": "/w/g1.img",
+        "baseline": 7,
+    });
+    let g: RecordedGroup = serde_json::from_value(old).unwrap();
+    assert_eq!(g.copy.format, Format::Raw);
+    assert_eq!(g.copy.baseline, 7);
 }

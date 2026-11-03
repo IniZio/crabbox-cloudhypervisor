@@ -3,10 +3,70 @@
 use std::process::Command;
 
 use super::*;
+use crate::host;
 use crate::volumes::tests::{have_e2fsprogs, limits, noise};
 use crate::volumes::{GuestPath, Volume, SEAL_MARKER};
 
+mod overlay;
+
 const MIB: u64 = 1024 * 1024;
+
+/// e2fsprogs for the images, qemu-img for the overlays.
+fn have_tools() -> bool {
+    have_e2fsprogs() && Command::new("qemu-img").arg("--version").output().is_ok()
+}
+
+/// Runs `qemu-img args... image`, asserting it succeeds; its stdout.
+fn qemu_img(args: &[&str], image: &Path) -> Vec<u8> {
+    let out = Command::new("qemu-img")
+        .args(args)
+        .arg(image)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// What `qemu-img info` says of `image`.
+fn info(image: &Path) -> serde_json::Value {
+    serde_json::from_slice(&qemu_img(&["info", "-U", "--output=json"], image)).unwrap()
+}
+
+/// What the guest sees in `copy`, as a raw image.
+fn view(copy: &WorkingCopy) -> PathBuf {
+    if copy.format == Format::Raw {
+        return copy.image.clone();
+    }
+    let flat = copy.image.with_extension("view.raw");
+    let _ = fs::remove_file(&flat);
+    let source = host::DiskSource::Qcow2(copy.image.clone());
+    host::make_disk(Path::new("qemu-img"), &source, &flat, 0).unwrap();
+    flat
+}
+
+/// The guest edits `copy` through `edit`, which works on a raw image; an
+/// overlay keeps only the clusters that end up differing from its backing file.
+fn in_guest(copy: &WorkingCopy, edit: impl FnOnce(&Path)) {
+    if copy.format == Format::Raw {
+        edit(&copy.image);
+        return;
+    }
+    let backing = info(&copy.image)["backing-filename"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let raw = fs::canonicalize(view(copy)).unwrap();
+    edit(&raw);
+    fs::remove_file(&copy.image).unwrap();
+    host::make_overlay(Path::new("qemu-img"), "test", &raw, &copy.image).unwrap();
+    let rebase = ["rebase", "-q", "-f", "qcow2", "-F", "raw", "-b", &backing];
+    qemu_img(&rebase, &copy.image);
+    fs::remove_file(raw).unwrap();
+}
 
 fn store(root: &Path) -> Store {
     scoped(root, None)
@@ -15,7 +75,7 @@ fn store(root: &Path) -> Store {
 fn scoped(root: &Path, scope: Option<&str>) -> Store {
     let mut cfg = limits(40);
     cfg.volume_dir = root.to_path_buf();
-    Store::new(&cfg, "abcdef0123456789", scope)
+    Store::new(&cfg, Path::new("qemu-img"), "abcdef0123456789", scope)
 }
 
 fn group(id: &str, capacity: u64) -> Group {
@@ -63,7 +123,11 @@ fn debugfs_script(image: &Path, requests: &[String]) {
 
 /// The guest seals `volume`: 40 MiB of data, and the marker in each path dir
 /// whose index `marked` lists.
-fn guest_seals(image: &Path, volume: &Volume, marked: &[usize]) {
+fn guest_seals(copy: &WorkingCopy, volume: &Volume, marked: &[usize]) {
+    in_guest(copy, |image| seal_raw(image, volume, marked));
+}
+
+fn seal_raw(image: &Path, volume: &Volume, marked: &[usize]) {
     let dir = tempfile::tempdir().unwrap();
     let blob = dir.path().join("blob");
     fs::write(&blob, noise(40 * MIB)).unwrap();
@@ -90,7 +154,11 @@ fn marked(image: &Path, volume: &Volume) -> Vec<bool> {
 }
 
 /// Writes `bytes` of random data into `image` at `/npm/<name>` without mounting it.
-fn guest_writes(image: &Path, name: &str, bytes: u64) {
+fn guest_writes(copy: &WorkingCopy, name: &str, bytes: u64) {
+    in_guest(copy, |image| write_raw(image, name, bytes));
+}
+
+fn write_raw(image: &Path, name: &str, bytes: u64) {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("blob");
     fs::write(&src, noise(bytes)).unwrap();
@@ -112,7 +180,8 @@ fn guest_writes(image: &Path, name: &str, bytes: u64) {
 }
 
 /// Size of `/npm/<name>` inside `image`, read without mounting it.
-fn guest_size(image: &Path, name: &str) -> Option<u64> {
+fn guest_size(copy: &WorkingCopy, name: &str) -> Option<u64> {
+    let image = view(copy);
     let out = Command::new("debugfs")
         .arg("-R")
         .arg(format!("stat npm/{name}"))
@@ -124,7 +193,11 @@ fn guest_size(image: &Path, name: &str) -> Option<u64> {
     after.split_whitespace().next()?.parse().ok()
 }
 
-fn debugfs_w(image: &Path, request: &str) {
+fn debugfs_w(copy: &WorkingCopy, request: &str) {
+    in_guest(copy, |image| debugfs_raw(image, request));
+}
+
+fn debugfs_raw(image: &Path, request: &str) {
     let out = Command::new("debugfs")
         .arg("-w")
         .arg("-R")
@@ -151,28 +224,28 @@ fn at(secs: u64) -> SystemTime {
 
 #[test]
 fn first_restore_is_an_empty_sparse_working_copy() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let first = s.restore(&group("g1", GIB), "lease-one");
     assert_eq!(first.outcome, Outcome::Empty);
-    assert_eq!(fs::metadata(&first.image).unwrap().len(), GIB);
-    assert!(first.image.starts_with(s.work_dir("lease-one")));
-    assert!(first.baseline < 32 * MIB);
+    assert_eq!(fs::metadata(&first.copy.image).unwrap().len(), GIB);
+    assert!(first.copy.image.starts_with(s.work_dir("lease-one")));
+    assert!(first.copy.baseline < 32 * MIB);
 }
 
 /// Restores, writes `bytes` in the guest, publishes at `secs`.
 fn publish_one(s: &Store, g: &Group, lease: &str, file: &str, secs: u64) -> Publish {
     let r = s.restore(g, lease);
-    guest_writes(&r.image, file, 40 * MIB);
-    s.publish(g, &r.image, r.baseline, lease, at(secs))
+    guest_writes(&r.copy, file, 40 * MIB);
+    s.publish(g, &r.copy, lease, at(secs))
 }
 
 #[test]
 fn a_grown_copy_publishes_and_the_next_lease_restores_it() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -186,7 +259,7 @@ fn a_grown_copy_publishes_and_the_next_lease_restores_it() {
 
     let second = s.restore(&g, "lease-two");
     assert_eq!(second.outcome, Outcome::Restored { generation });
-    assert_eq!(guest_size(&second.image, "pkg"), Some(40 * MIB));
+    assert_eq!(guest_size(&second.copy, "pkg"), Some(40 * MIB));
     assert_eq!(
         gens(&s, "g1").len(),
         1,
@@ -196,7 +269,7 @@ fn a_grown_copy_publishes_and_the_next_lease_restores_it() {
 
 #[test]
 fn restore_picks_the_newest_generation_and_grows_it_to_capacity() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -214,25 +287,25 @@ fn restore_picks_the_newest_generation_and_grows_it_to_capacity() {
             generation: 20_000_000_000
         }
     );
-    assert_eq!(guest_size(&r.image, "new"), Some(40 * MIB));
-    assert_eq!(fs::metadata(&r.image).unwrap().len(), 512 * MIB);
-    assert_eq!(ext4::check(&r.image).unwrap().total * 4096, 512 * MIB);
+    assert_eq!(guest_size(&r.copy, "new"), Some(40 * MIB));
+    assert_eq!(fs::metadata(&r.copy.image).unwrap().len(), 512 * MIB);
+    assert_eq!(ext4::check(&r.copy.image).unwrap().total * 4096, 512 * MIB);
 }
 
 /// A fresh working copy of a 1 GiB group after the guest wrote `bytes`.
 fn written(s: &Store, lease: &str, bytes: u64) -> Restored {
     let r = s.restore(&group("g", GIB), lease);
-    guest_writes(&r.image, "pkg", bytes);
+    guest_writes(&r.copy, "pkg", bytes);
     r
 }
 
 fn publish_at(s: &Store, r: &Restored, lease: &str) -> Publish {
-    s.publish(&group("g", GIB), &r.image, r.baseline, lease, at(1))
+    s.publish(&group("g", GIB), &r.copy, lease, at(1))
 }
 
 #[test]
 fn publish_without_growth_is_unchanged() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -244,13 +317,13 @@ fn publish_without_growth_is_unchanged() {
 
 #[test]
 fn publish_rejects_a_failed_fsck() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let r = written(&s, "corrupt", 40 * MIB);
-    debugfs_w(&r.image, "set_bg 0 free_blocks_count 1");
+    debugfs_w(&r.copy, "set_bg 0 free_blocks_count 1");
     let got = publish_at(&s, &r, "corrupt");
     assert!(
         matches!(&got, Publish::Rejected { reason } if reason.starts_with("fsck")),
@@ -261,13 +334,13 @@ fn publish_rejects_a_failed_fsck() {
 
 #[test]
 fn publish_rejects_an_unclean_unmount() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let r = written(&s, "killed", 40 * MIB);
-    debugfs_w(&r.image, "feature needs_recovery");
+    debugfs_w(&r.copy, "feature needs_recovery");
     let reason = "not cleanly unmounted".to_owned();
     assert_eq!(publish_at(&s, &r, "killed"), Publish::Rejected { reason });
     assert!(gens(&s, "g").is_empty());
@@ -275,16 +348,16 @@ fn publish_rejects_an_unclean_unmount() {
 
 #[test]
 fn publish_rejects_a_full_group() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let tight = group("t", 128 * MIB);
     let r = s.restore(&tight, "full");
-    let usage = ext4::check(&r.image).unwrap();
-    guest_writes(&r.image, "pkg", (usage.total - usage.used) * 4096 - 2 * MIB);
-    let got = s.publish(&tight, &r.image, r.baseline, "full", at(4));
+    let usage = ext4::check(&r.copy.image).unwrap();
+    guest_writes(&r.copy, "pkg", (usage.total - usage.used) * 4096 - 2 * MIB);
+    let got = s.publish(&tight, &r.copy, "full", at(4));
     assert!(
         matches!(&got, Publish::Rejected { reason } if reason.starts_with("full")),
         "{got:?}"
@@ -309,7 +382,7 @@ fn a_failed_restore_is_skipped_and_leaves_no_working_copy() {
         "{:?}",
         r.outcome
     );
-    assert!(!r.image.exists());
+    assert!(!r.copy.image.exists());
 }
 
 fn snap(dir: &str, used: u64, gens: &[(u64, u64)]) -> GroupSnapshot {
@@ -369,16 +442,16 @@ fn gc_removes_working_copies_of_dead_leases_and_honours_dry_run() {
 }
 
 #[test]
-fn restore_deletes_the_seal_marker_from_the_working_copy() {
-    if !have_e2fsprogs() {
+fn a_restored_lease_starts_without_the_seal_marker() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let g = sealed_group("gx");
     let first = s.restore(&g, "lease-one");
-    guest_seals(&first.image, &g.volumes[0], &[0, 1]);
-    let got = s.publish(&g, &first.image, first.baseline, "lease-one", at(5));
+    guest_seals(&first.copy, &g.volumes[0], &[0, 1]);
+    let got = s.publish(&g, &first.copy, "lease-one", at(5));
     assert!(matches!(got, Publish::Published { .. }), "{got:?}");
 
     let second = s.restore(&g, "lease-two");
@@ -386,18 +459,43 @@ fn restore_deletes_the_seal_marker_from_the_working_copy() {
         matches!(second.outcome, Outcome::Restored { .. }),
         "{second:?}"
     );
-    assert_eq!(marked(&second.image, &g.volumes[0]), [false, false]);
+    assert_eq!(second.copy.format, Format::Qcow2);
+    assert_eq!(marked(&view(&second.copy), &g.volumes[0]), [false, false]);
     let generation = generations(&s.group_dir(&g.id)).pop().unwrap();
     assert_eq!(
         marked(&generation.path, &g.volumes[0]),
-        [true, true],
-        "the published generation keeps its marker"
+        [false, false],
+        "publish clears the markers, so the generation is never edited after"
+    );
+}
+
+#[test]
+fn a_generation_that_still_holds_a_marker_is_restored_as_a_copy_without_it() {
+    if !have_tools() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let g = sealed_group("gx");
+    let first = s.restore(&g, "old");
+    seal_raw(&first.copy.image, &g.volumes[0], &[0, 1]);
+    let legacy = s.group_dir(&g.id).join("gen-0000000000000000009-old.img");
+    fs::rename(&first.copy.image, &legacy).unwrap();
+    let before = fs::read(&legacy).unwrap();
+
+    let r = s.restore(&g, "new");
+    assert_eq!(r.outcome, Outcome::Restored { generation: 9 });
+    assert_eq!(r.copy.format, Format::Raw);
+    assert_eq!(marked(&r.copy.image, &g.volumes[0]), [false, false]);
+    assert!(
+        fs::read(&legacy).unwrap() == before,
+        "the generation is untouched"
     );
 }
 
 #[test]
 fn publish_rejects_a_sealed_volume_without_the_marker_in_every_path() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -405,17 +503,17 @@ fn publish_rejects_a_sealed_volume_without_the_marker_in_every_path() {
     let g = sealed_group("gx");
     for marked in [&[][..], &[0], &[1]] {
         let r = s.restore(&g, "half");
-        guest_seals(&r.image, &g.volumes[0], marked);
+        guest_seals(&r.copy, &g.volumes[0], marked);
         let reason = "unsealed: docker".to_owned();
-        let got = s.publish(&g, &r.image, r.baseline, "half", at(6));
+        let got = s.publish(&g, &r.copy, "half", at(6));
         assert_eq!(got, Publish::Rejected { reason }, "markers {marked:?}");
         s.discard("half").unwrap();
     }
     assert!(gens(&s, "gx").is_empty());
 
     let r = s.restore(&g, "sealed");
-    guest_seals(&r.image, &g.volumes[0], &[0, 1]);
-    let got = s.publish(&g, &r.image, r.baseline, "sealed", at(7));
+    guest_seals(&r.copy, &g.volumes[0], &[0, 1]);
+    let got = s.publish(&g, &r.copy, "sealed", at(7));
     assert_eq!(
         got,
         Publish::Published {
@@ -426,7 +524,7 @@ fn publish_rejects_a_sealed_volume_without_the_marker_in_every_path() {
 
 #[test]
 fn only_sealed_volumes_need_the_marker() {
-    if !have_e2fsprogs() {
+    if !have_tools() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -435,10 +533,10 @@ fn only_sealed_volumes_need_the_marker() {
     let sealed = sealed_group("gx");
     let a = s.restore(&plain, "both");
     let b = s.restore(&sealed, "both");
-    guest_writes(&a.image, "pkg", 40 * MIB);
-    guest_seals(&b.image, &sealed.volumes[0], &[]);
-    let got_plain = s.publish(&plain, &a.image, a.baseline, "both", at(8));
-    let got_sealed = s.publish(&sealed, &b.image, b.baseline, "both", at(8));
+    guest_writes(&a.copy, "pkg", 40 * MIB);
+    guest_seals(&b.copy, &sealed.volumes[0], &[]);
+    let got_plain = s.publish(&plain, &a.copy, "both", at(8));
+    let got_sealed = s.publish(&sealed, &b.copy, "both", at(8));
     assert!(
         matches!(got_plain, Publish::Published { .. }),
         "{got_plain:?}"
