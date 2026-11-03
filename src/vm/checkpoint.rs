@@ -125,33 +125,15 @@ impl RealBackend {
         remove_tree(&tmp)?;
         mkdir_private(&tmp)?;
         let started = Instant::now();
-        let snap = tmp.join(SNAP_DIR);
-        let paused = self.pause_vm(record, diag);
-        let snapped = paused
-            .clone()
-            .and_then(|()| Self::snapshot_into(record, &snap, diag));
-        let kept = snapped
-            .clone()
-            .and_then(|()| self.keep_lease_files(record, &tmp, &meta, &pin));
-        // cloud-hypervisor stops a vhost-user backend's rings to save its state
-        // and never restarts them on vm.resume, so the guest NIC would stay
-        // dead. A restore from the snapshot sets the rings up again.
-        let resumed = match (&paused, &snapped) {
-            (Err(_), _) => Ok(()),
-            (Ok(()), Ok(())) => Self::stop_processes(record, diag)
-                .and_then(|()| self.restore_snapshot(record, &snap, false, diag))
-                .map_err(|e| {
-                    format!("lease {lease} did not restart from its snapshot, resume it: {e}")
-                }),
-            (Ok(()), Err(_)) => {
-                let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
-                client
-                    .resume()
-                    .and_then(|()| self.wait_state(&client, "Running"))
-                    .map_err(|e| format!("lease {lease} is still paused, resume it: {e}"))
-            }
-        };
-        let written = kept.and(resumed);
+        let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
+        let written = self.pause_vm(record, diag).and_then(|()| {
+            let captured = self.capture(record, &tmp, &meta, &pin, diag);
+            let resumed = client
+                .resume()
+                .and_then(|()| self.wait_state(&client, "Running"))
+                .map_err(|e| format!("lease {lease} is still paused, resume it: {e}"));
+            captured.and(resumed)
+        });
         let published = written.and_then(|()| {
             let dir = self.checkpoint_dir(id);
             remove_tree(&dir)?;
@@ -166,31 +148,23 @@ impl RealBackend {
         published
     }
 
-    /// Writes the paused lease's snapshot into `snap`.
-    fn snapshot_into(
-        record: &LeaseRecord,
-        snap: &Path,
-        diag: &mut dyn Write,
-    ) -> Result<(), String> {
-        let lease = record.lease_id.as_str();
-        mkdir_private(snap)?;
-        ChClient::new(&record.api_socket())
-            .with_timeout(SNAPSHOT_TIMEOUT)
-            .snapshot(snap)
-            .map_err(|e| format!("lease {lease}: snapshot failed: {e}"))?;
-        suspend::dig_snapshot_holes(Path::new(host::DIG_HOLES_TOOL), snap, diag);
-        Ok(())
-    }
-
-    /// Writes the paused lease's disk, login key, host pin and `meta` into `dir`.
-    fn keep_lease_files(
+    /// Writes the paused lease's snapshot, disk, login key and host pin into `dir`.
+    fn capture(
         &self,
         record: &LeaseRecord,
         dir: &Path,
         meta: &Meta,
         pin: &str,
+        diag: &mut dyn Write,
     ) -> Result<(), String> {
         let lease = record.lease_id.as_str();
+        let snap = dir.join(SNAP_DIR);
+        mkdir_private(&snap)?;
+        ChClient::new(&record.api_socket())
+            .with_timeout(SNAPSHOT_TIMEOUT)
+            .snapshot(&snap)
+            .map_err(|e| format!("lease {lease}: snapshot failed: {e}"))?;
+        suspend::dig_snapshot_holes(Path::new(host::DIG_HOLES_TOOL), &snap, diag);
         host::clone_disk(&self.store.disk_path(lease), &dir.join(DISK_FILE), 0)?;
         fs::copy(self.store.key_path(lease), dir.join(BOOTSTRAP_KEY))
             .map_err(|e| format!("keep login key: {e}"))?;

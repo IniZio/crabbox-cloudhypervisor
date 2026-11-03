@@ -12,7 +12,10 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
 - Linux x86_64. No root needed.
 - Read/write access to `/dev/kvm` (usually membership of the `kvm` group).
   `/dev/vhost-vsock` should also be accessible; `doctor` warns if it is not.
-- `cloud-hypervisor` (tested with v52.0).
+- `cloud-hypervisor` (tested with v52.0). Checkpoints need v52.0 with the
+  vhost-user resume patch, [v52.0-moor.1](https://github.com/IniZio/cloud-hypervisor/releases/tag/v52.0-moor.1)
+  (`cloud-hypervisor-static`). With stock v52.0 the guest network is dead after
+  `checkpointCreate`.
 - `passt` with `--vhost-user` support (tested with 2026_06_11).
 - `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`.
 - For cache volumes: `mke2fs`, `e2fsck`, `resize2fs` and `debugfs` (e2fsprogs). Without
@@ -412,15 +415,12 @@ identity rotation code of the [boot template](#boot-template).
   `name` is a label kept in the checkpoint's `checkpoint.json`.
 - `checkpointCreate` needs a running lease. It pauses the VM, writes its
   snapshot, reflinks its disk (a copy when the filesystem cannot), keeps the
-  lease's login key and a host key pin. It then restarts the lease from that
-  snapshot with a new passt and cloud-hypervisor, as `resume` does for a
-  suspended lease. Guest processes continue, but open TCP connections and ssh
-  sessions drop. A resume in place would leave the guest network dead.
-  cloud-hypervisor stops the passt rings to save their state and never
-  restarts them. When the snapshot itself fails the VM is resumed
-  in place. The lease runs on after a short pause, also when the checkpoint
-  fails. `bytes` is the space the
-  checkpoint allocates on disk. A second create under the same id replaces the
+  lease's login key and a host key pin, and resumes the VM in place. Guest
+  processes, open TCP connections and ssh sessions carry on after a short
+  pause, also when the checkpoint fails. Stock cloud-hypervisor v52.0 stops
+  the passt rings to save their state and never restarts them, so the guest
+  network stays dead. v52.0-moor.1 restarts them on resume. `bytes` is the
+  space the checkpoint allocates on disk. A second create under the same id replaces the
   first. A lease with cache volumes attached is refused, because the snapshot
   would name their disks.
 - The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
