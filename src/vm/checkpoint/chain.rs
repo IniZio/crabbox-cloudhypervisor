@@ -4,9 +4,10 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use super::{check_id, read_meta, DIR_PREFIX};
+use crate::host::{make_overlay, qemu_img};
 use crate::vm::{mkdir_private, spec, RealBackend};
 
 /// In a lease dir: the checkpoint the lease's next checkpoint is a delta over.
@@ -62,21 +63,6 @@ impl Backing {
     }
 }
 
-/// Runs qemu-img; `Err` carries what it said.
-fn qemu_img(program: &Path, what: &str, args: &mut Command) -> Result<(), String> {
-    let Output { status, stderr, .. } = args
-        .output()
-        .map_err(|e| format!("{what}: cannot run {}: {e}", program.display()))?;
-    if status.success() {
-        return Ok(());
-    }
-    let said = String::from_utf8_lossy(&stderr);
-    Err(format!(
-        "{what}: qemu-img failed ({status}): {}",
-        said.trim()
-    ))
-}
-
 /// Writes `delta` holding only the clusters where the raw disk `frozen`
 /// differs from `backing`, then removes `frozen`. `delta` reads as `frozen` did.
 pub(super) fn write_delta(
@@ -87,14 +73,7 @@ pub(super) fn write_delta(
 ) -> Result<(), String> {
     let what = "checkpoint delta";
     let frozen_abs = fs::canonicalize(frozen).map_err(|e| format!("{what}: {e}"))?;
-    qemu_img(
-        program,
-        what,
-        Command::new(program)
-            .args(["create", "-q", "-f", "qcow2", "-F", "raw", "-b"])
-            .arg(&frozen_abs)
-            .arg(delta),
-    )?;
+    make_overlay(program, what, &frozen_abs, delta)?;
     qemu_img(
         program,
         what,
