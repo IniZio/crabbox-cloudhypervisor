@@ -23,11 +23,21 @@ const SMALL: Size = Size {
     memory_mib: 64,
 };
 
-/// A backend whose cloud-hypervisor prints [`CH`].
+/// A backend whose cloud-hypervisor prints [`CH`] and otherwise writes its
+/// arguments to `ch-args`, and whose passt only creates its socket.
 fn backend(root: &Path) -> RealBackend {
     let mut cfg = config(root);
     cfg.cloud_hypervisor = root.join("cloud-hypervisor");
-    crate::test_exec::script(&cfg.cloud_hypervisor, &format!("echo '{CH}'"));
+    let args = root.join("ch-args");
+    crate::test_exec::script(
+        &cfg.cloud_hypervisor,
+        &format!(
+            "if [ \"$1\" = --version ]; then echo '{CH}'; else echo \"$@\" >'{}'; fi",
+            args.display()
+        ),
+    );
+    cfg.passt = root.join("passt");
+    crate::test_exec::script(&cfg.passt, "for a; do :; done; touch \"$a\"");
     RealBackend::new(cfg, PathBuf::from("/bin/cb"))
 }
 
@@ -179,9 +189,9 @@ fn dir_bytes_sums_allocated_blocks_of_every_file() {
     assert!((200_000..400_000).contains(&got), "{got}");
 }
 
-/// A stand-in cloud-hypervisor API: pause, snapshot, resume and info, in any
-/// order. Records `METHOD endpoint` per request and, on `vm.snapshot`, writes
-/// the three snapshot files into the destination (or answers 500).
+/// A stand-in cloud-hypervisor API: ping, pause, snapshot, resume and info, in
+/// any order. Records `METHOD endpoint` per request and, on `vm.snapshot`,
+/// writes the three snapshot files into the destination (or answers 500).
 struct Api {
     log: Arc<Mutex<Vec<String>>>,
     thread: std::thread::JoinHandle<()>,
@@ -190,10 +200,34 @@ struct Api {
 impl Api {
     fn start(sock: &Path, requests: usize, fail_snapshot: bool) -> Self {
         let listener = UnixListener::bind(sock).unwrap();
+        Self::serve(move || listener, requests, fail_snapshot, "Running")
+    }
+
+    /// The API of a cloud-hypervisor restored paused, on `sock` once `ready`
+    /// exists.
+    fn restored(sock: &Path, ready: &Path) -> Self {
+        let (sock, ready) = (sock.to_path_buf(), ready.to_path_buf());
+        let bind = move || {
+            let up = (0..1000).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                ready.exists()
+            });
+            assert!(up, "no new passt socket: the lease was not restarted");
+            UnixListener::bind(sock).unwrap()
+        };
+        Self::serve(bind, 4, false, "Paused")
+    }
+
+    fn serve(
+        bind: impl FnOnce() -> UnixListener + Send + 'static,
+        requests: usize,
+        fail_snapshot: bool,
+        mut state: &'static str,
+    ) -> Self {
         let log = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&log);
         let thread = std::thread::spawn(move || {
-            let mut state = "Running";
+            let listener = bind();
             for _ in 0..requests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut buf = [0u8; 8192];
@@ -207,6 +241,10 @@ impl Api {
                 let mut status = "204 No Content";
                 let mut body = String::new();
                 match endpoint {
+                    "vmm.ping" => {
+                        status = "200 OK";
+                        body = "{}".to_owned();
+                    }
                     "vm.pause" => state = "Paused",
                     "vm.resume" => state = "Running",
                     "vm.info" => {
@@ -304,21 +342,40 @@ fn assert_meta(b: &RealBackend, bytes: u64) {
 #[test]
 fn a_checkpoint_of_a_running_lease_holds_its_ram_disk_and_login_and_the_lease_resumes() {
     let root = tempfile::tempdir().unwrap();
-    let (b, rec, _ch) = running_lease(root.path());
-    let api = Api::start(&rec.api_socket(), 5, false);
+    let (b, rec, ch) = running_lease(root.path());
+    let api = Api::start(&rec.api_socket(), 3, false);
+    let restored = Api::restored(&rec.api_socket(), &rec.passt_socket());
     let mut diag = Vec::new();
     let bytes = b
         .take_checkpoint(&rec, "ck1", "after clone", &mut diag)
         .unwrap();
     assert_eq!(
         api.finish(),
+        ["PUT vm.pause", "GET vm.info", "PUT vm.snapshot"],
+        "the snapshotted VM is never resumed in place: its vhost-user net rings stay stopped"
+    );
+    assert!(
+        !crate::host::pid_alive(ch.child.id(), crate::vm::CH_COMM),
+        "the snapshotted cloud-hypervisor is stopped"
+    );
+    assert_eq!(
+        restored.finish(),
         [
-            "PUT vm.pause",
+            "GET vmm.ping",
             "GET vm.info",
-            "PUT vm.snapshot",
             "PUT vm.resume",
             "GET vm.info"
-        ]
+        ],
+        "a new cloud-hypervisor restored from the snapshot runs the lease"
+    );
+    let snap = b.config.cache_dir.join("checkpoint-ck1.tmp/snap");
+    assert_eq!(
+        fs::read_to_string(root.path().join("ch-args")).unwrap(),
+        format!(
+            "--api-socket {} --restore source_url=file://{}\n",
+            rec.api_socket().display(),
+            snap.display()
+        )
     );
     assert_files(&b);
     assert_meta(&b, bytes);
@@ -353,10 +410,12 @@ fn a_second_checkpoint_under_the_same_id_replaces_the_first() {
     let (b, rec, _ch) = running_lease(root.path());
     let old = plant(&b, "ck1", SMALL, "cloud-hypervisor v51.0");
     fs::write(old.join("stale"), "x").unwrap();
-    let api = Api::start(&rec.api_socket(), 5, false);
+    let api = Api::start(&rec.api_socket(), 3, false);
+    let restored = Api::restored(&rec.api_socket(), &rec.passt_socket());
     b.take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
         .unwrap();
     api.finish();
+    restored.finish();
     assert!(!old.join("stale").exists());
     assert!(old.join("snap/memory-ranges").exists());
 }
