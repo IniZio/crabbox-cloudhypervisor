@@ -95,6 +95,7 @@ All keys go under `external.config`. All are optional.
 | `guestReclaimRefaultMiB` | `16` | file re-read from disk between trims, in MiB, above which... |
 | `guestReclaimSkipRuns` | `10` | ...the next this many trims are skipped |
 | `pageReportingOrder` | `2` | smallest free block, 2^order pages, the guest reports to the host (0-10) |
+| `bootTemplate` | `false` | `true` restores new leases from a boot template snapshot instead of cold booting them; see [Boot template](#boot-template) |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -351,13 +352,56 @@ pid. A pid that now belongs to another process, or that survives a reboot, is
 never signalled. `list` and `cleanup` skip a lease that an operation currently
 holds, so a create or resume in flight keeps its passt.
 
+## Boot template
+
+With `bootTemplate: true`, a new lease restores a snapshot of an already
+provisioned guest instead of cold booting through cloud-init.
+
+- The first lease of a size boots a template guest from the base image with
+  the usual seed, but with a bootstrap key made for that template. Once it is
+  ready and cloud-init is done, the adapter pauses it, snapshots it into
+  `<cacheDir>/template-<key12>/snap`, stops it and keeps its disk beside the
+  snapshot. Builds are serialised by `<cacheDir>/template.lock`.
+- The template key is a SHA-256 over the image and firmware hashes, the
+  rendered template seed, the lease size (vCPUs and memory), `diskGiB` and
+  `cloud-hypervisor --version`. Changing any of them builds a new template, and
+  the old template of the same size is removed. A template recorded under
+  another cloud-hypervisor version is removed and refused.
+- Each lease copies the template disk (reflink when the filesystem allows),
+  hard-links the snapshot's `memory-ranges` and `state.json`, and writes its own
+  `config.json` naming its disk, seed, serial log and sockets. It then restores
+  with `--restore`, resumes, and hot-adds its cache volume disks.
+- Identity rotation is one ssh call made with the bootstrap key. It steps the
+  guest clock to host time and mixes host randomness into the guest RNG. It
+  installs the lease's ssh host key, writes a new `/etc/machine-id` and sets the
+  hostname. It writes the lease's seed files and runs its seed commands, and
+  last it replaces `authorized_keys` with the lease key. The lease also gets its
+  normal seed image, so a later cold boot gives it the same identity.
+- The adapter then checks that the lease key logs in against the pinned new
+  host key, and that the bootstrap key is refused. A lease where the bootstrap
+  key still logs in is destroyed and `acquire` fails.
+- When no template can be used, or the restore fails, the lease cold boots and
+  `acquire` logs `template refused: <why>, cold booting`.
+
+Measured on one host with a 2 vCPU, 4 GiB, 20 GiB lease, `acquire` until ready:
+
+| Path | Seconds |
+| --- | --- |
+| Cold boot, `bootTemplate` off | 40.8 |
+| First lease: template build, then restore | 45.2 |
+| Later lease: restore and identity rotation | 3.6 |
+
+The restore takes about 1.7 s and the identity rotation about 1.5 s. Guest RAM
+is copied in full at restore, because `memory.shared` rules out restoring it on
+demand.
+
 ## State and cache
 
 - Leases: `<stateDir>/leases/<leaseId>/` (lease.json, disk, seed image, SSH key,
   console log, watch.json, grow.log).
 - Sockets: `<runtimeDir>/<12-hex hash of the lease id>/` (`a`, `v`, `p`,
   `p.repair`).
-- Downloads and the converted base image: `<cacheDir>`.
+- Downloads, the converted base image and boot templates: `<cacheDir>`.
 
 `release` removes the lease directory. `cloud-hypervisor`, `passt` and the
 growth watcher run detached per lease and are stopped on release. Only `release` destroys a
