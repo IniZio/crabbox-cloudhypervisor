@@ -130,6 +130,12 @@ impl ChClient {
         self.call("PUT", "vm.snapshot", Some(&body)).map(drop)
     }
 
+    /// `PUT vm.add-disk`: hot-adds a disk described as in a `vm.create` body.
+    pub fn add_disk(&self, disk: &Value) -> Result<(), String> {
+        self.call("PUT", "vm.add-disk", Some(&disk.to_string()))
+            .map(drop)
+    }
+
     /// `PUT vm.resize-disk`: grows disk `id` to `bytes` while the VM runs.
     pub fn resize_disk(&self, id: &str, bytes: u64) -> Result<(), String> {
         let body = serde_json::json!({"id": id, "desired_size": bytes}).to_string();

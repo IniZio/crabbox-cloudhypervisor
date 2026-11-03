@@ -7,6 +7,7 @@ mod size_tests;
 mod sizing;
 pub mod spec;
 mod suspend;
+mod template;
 mod watcher;
 
 use std::ffi::OsString;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::assets;
-use crate::backend::{self, Backend, Power};
+use crate::backend::{Backend, Power};
 use crate::ch::ChClient;
 use crate::config::Config;
 use crate::host;
@@ -231,22 +232,7 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
         let id = desired.lease_id.as_str();
-        let mut record = LeaseRecord {
-            lease_id: id.to_owned(),
-            slug: desired.slug.clone(),
-            name: desired.name.clone(),
-            cloud_id: backend::cloud_id(id),
-            created_at: state::now_unix(),
-            ch_pid: None,
-            passt_pid: None,
-            run_dir: run_dir.to_path_buf(),
-            boot_id: None,
-            ch_start: None,
-            passt_start: None,
-            watch_pid: None,
-            watch_start: None,
-            size: Some(size),
-        };
+        let mut record = spec::new_record(id, &desired.slug, &desired.name, run_dir, size);
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
@@ -334,7 +320,7 @@ impl Backend for RealBackend {
         self.scopes().check_bus()?;
         let size = self.lease_size(desired.class.as_deref())?;
         let assets = self.ensure_assets(diag)?;
-        match self.provision(desired, &run_dir, &assets, size, diag) {
+        match self.provision_lease(desired, &run_dir, &assets, size, diag) {
             Ok(record) => Ok(record),
             Err(error) => {
                 if let Err(e) = self.destroy(id, diag) {
