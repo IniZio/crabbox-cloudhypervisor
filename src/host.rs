@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use rustix::io::Errno;
 use rustix::process::{kill_process, Pid, Signal};
 
-/// Reflink-copies `base` to `dest`, then grows `dest` to `size_bytes` (never shrinks).
+/// Reflink-copies `base` to `dest`, mode 0600 whatever `base`'s mode, then
+/// grows `dest` to `size_bytes` (never shrinks).
 pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), String> {
     let output = Command::new("cp")
         .arg("--reflink=auto")
@@ -27,6 +28,8 @@ pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), Strin
             stderr.trim()
         ));
     }
+    fs::set_permissions(dest, fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("disk clone: cannot make the copy private: {e}"))?;
     grow(dest, size_bytes).map_err(|e| format!("disk clone: {e}"))
 }
 
@@ -66,6 +69,35 @@ pub fn make_disk(
         ));
     }
     grow(dest, size_bytes).map_err(|e| format!("disk flatten: {e}"))
+}
+
+/// Runs the qemu-img command `cmd`; `Err` carries what it said.
+pub fn qemu_img(program: &Path, what: &str, cmd: &mut Command) -> Result<(), String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("{what}: cannot run {}: {e}", program.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "{what}: qemu-img failed ({}): {}",
+        output.status,
+        said.trim()
+    ))
+}
+
+/// Creates the empty qcow2 overlay `dest` over the raw image at absolute
+/// path `backing`; it reads as `backing` and stores only what is written to it.
+pub fn make_overlay(program: &Path, what: &str, backing: &Path, dest: &Path) -> Result<(), String> {
+    qemu_img(
+        program,
+        what,
+        Command::new(program)
+            .args(["create", "-q", "-f", "qcow2", "-F", "raw", "-b"])
+            .arg(backing)
+            .arg(dest),
+    )
 }
 
 /// Grows `disk` to `size_bytes`; never shrinks it.

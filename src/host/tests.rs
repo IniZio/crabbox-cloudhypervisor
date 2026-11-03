@@ -24,6 +24,24 @@ fn clone_disk_never_shrinks() {
 }
 
 #[test]
+fn clone_disk_of_a_read_only_base_is_a_private_writable_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let dest = dir.path().join("dest");
+    fs::write(&base, b"gen").unwrap();
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o444)).unwrap();
+    clone_disk(&base, &dest, 1 << 20).unwrap();
+    assert_eq!(
+        fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(&base).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
+}
+
+#[test]
 fn clone_disk_missing_base_errors() {
     let dir = tempfile::tempdir().unwrap();
     let err = clone_disk(&dir.path().join("nope"), &dir.path().join("d"), 10).unwrap_err();
