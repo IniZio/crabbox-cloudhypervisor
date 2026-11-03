@@ -1,7 +1,7 @@
 //! Boot template: a snapshot of a freshly provisioned guest that new leases
 //! restore instead of cold booting, before they take their own identity.
 
-mod restore;
+pub(super) mod restore;
 mod rotate;
 #[cfg(test)]
 mod tests;
@@ -28,17 +28,17 @@ use crate::state::{self, LeaseRecord};
 /// What the template was built from, inside its dir.
 const META_FILE: &str = "template.json";
 /// Snapshot dir inside a template.
-const SNAP_DIR: &str = "snap";
+pub(super) const SNAP_DIR: &str = "snap";
 /// Root disk of the template guest.
-const DISK_FILE: &str = "disk.raw";
+pub(super) const DISK_FILE: &str = "disk.raw";
 /// Private key the template guest authorizes until a lease rotates it out.
-const BOOTSTRAP_KEY: &str = "bootstrap";
+pub(super) const BOOTSTRAP_KEY: &str = "bootstrap";
 /// Pin of the template guest's host key.
-const KNOWN_HOSTS: &str = "known_hosts";
+pub(super) const KNOWN_HOSTS: &str = "known_hosts";
 /// Serialises template builds across adapter processes.
 const LOCK_FILE: &str = "template.lock";
 /// Files a usable template has.
-const REQUIRED: [&str; 6] = [
+pub(super) const REQUIRED: [&str; 6] = [
     "snap/config.json",
     "snap/state.json",
     "snap/memory-ranges",
@@ -55,7 +55,7 @@ const SETTLE: &str = "cloud-init status --wait >/dev/null 2>&1; sync; sleep 3; s
 /// Longest settle.
 const SETTLE_LIMIT: Duration = Duration::from_secs(300);
 /// Timeout for `vm.snapshot`, which writes all of guest RAM.
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(600);
+pub(super) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(600);
 /// Bytes per GiB.
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -214,7 +214,7 @@ pub(super) fn ensure(
 }
 
 /// `cloud-hypervisor --version`, first line.
-fn ch_version(program: &Path) -> Result<String, String> {
+pub(super) fn ch_version(program: &Path) -> Result<String, String> {
     let out = Command::new(program)
         .arg("--version")
         .output()

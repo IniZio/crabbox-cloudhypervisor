@@ -1,0 +1,394 @@
+//! Checkpoint storage and capture, with a stand-in cloud-hypervisor API and no KVM.
+
+#![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
+
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use super::{dir_bytes, Meta};
+use crate::protocol::Desired;
+use crate::size::Size;
+use crate::state::LeaseRecord;
+use crate::vm::template::REQUIRED;
+use crate::vm::tests::{config, record, FakeCh};
+use crate::vm::RealBackend;
+
+const CH: &str = "cloud-hypervisor v52.0";
+const SMALL: Size = Size {
+    cpus: 1,
+    memory_mib: 64,
+};
+
+/// A backend whose cloud-hypervisor prints [`CH`].
+fn backend(root: &Path) -> RealBackend {
+    let mut cfg = config(root);
+    cfg.cloud_hypervisor = root.join("cloud-hypervisor");
+    crate::test_exec::script(&cfg.cloud_hypervisor, &format!("echo '{CH}'"));
+    RealBackend::new(cfg, PathBuf::from("/bin/cb"))
+}
+
+fn desired(id: &str) -> Desired {
+    Desired {
+        lease_id: id.to_owned(),
+        slug: "s".to_owned(),
+        name: "n".to_owned(),
+        class: None,
+        cache_volumes: Vec::new(),
+        cache_scope: None,
+    }
+}
+
+/// Lays out a complete checkpoint `id` taken at `size` by `ch`.
+fn plant(b: &RealBackend, id: &str, size: Size, ch: &str) -> PathBuf {
+    let dir = b.checkpoint_dir(id);
+    for f in REQUIRED {
+        let path = dir.join(f);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "x").unwrap();
+    }
+    let meta = Meta {
+        checkpoint_id: id.to_owned(),
+        name: "n".to_owned(),
+        lease_id: "src".to_owned(),
+        ch_version: ch.to_owned(),
+        size,
+        created_at: 1,
+    };
+    fs::write(
+        dir.join(super::META_FILE),
+        serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_checkpoint_lives_in_the_cache_dir_under_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    assert_eq!(
+        b.checkpoint_dir("ck_1-a"),
+        dir.path().join("cache/checkpoint-ck_1-a")
+    );
+}
+
+#[test]
+fn ids_that_could_leave_the_cache_dir_are_refused_everywhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let mut diag = Vec::new();
+    for bad in ["", "../x", "a/b", "a.b", ".."] {
+        let want = "invalid checkpoint id";
+        assert_eq!(b.remove_checkpoint(bad).unwrap_err(), want);
+        let err = b
+            .fork_checkpoint(&desired("l2"), bad, &mut diag)
+            .unwrap_err();
+        assert_eq!(err, want);
+        let err = b
+            .take_checkpoint(&record("a"), bad, "n", &mut diag)
+            .unwrap_err();
+        assert_eq!(err, want);
+    }
+}
+
+#[test]
+fn delete_removes_the_checkpoint_and_a_crashed_capture_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let ck = plant(&b, "ck1", SMALL, CH);
+    let tmp = b.config.cache_dir.join("checkpoint-ck1.tmp");
+    fs::create_dir_all(tmp.join("snap")).unwrap();
+    let other = plant(&b, "ck2", SMALL, CH);
+    b.remove_checkpoint("ck1").unwrap();
+    assert!(!ck.exists() && !tmp.exists());
+    assert!(other.exists(), "another checkpoint is untouched");
+    b.remove_checkpoint("ck1").unwrap();
+    b.remove_checkpoint("never-existed").unwrap();
+}
+
+#[test]
+fn fork_of_an_unknown_checkpoint_says_so_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let err = b
+        .fork_checkpoint(&desired("l2"), "ghost", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(err, "checkpoint not found: ghost");
+    assert!(b.store.read("l2").unwrap().is_none());
+    assert!(!b.config.runtime_dir.exists());
+}
+
+#[test]
+fn fork_refuses_an_incomplete_checkpoint_and_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    let ck = plant(&b, "ck1", SMALL, CH);
+    fs::remove_file(ck.join("snap/state.json")).unwrap();
+    let err = b
+        .fork_checkpoint(&desired("l2"), "ck1", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "checkpoint ck1 is incomplete: it has no snap/state.json"
+    );
+    assert!(ck.exists());
+}
+
+#[test]
+fn fork_refuses_a_checkpoint_taken_by_another_cloud_hypervisor() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    plant(&b, "ck1", SMALL, "cloud-hypervisor v51.0");
+    let err = b
+        .fork_checkpoint(&desired("l2"), "ck1", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "checkpoint ck1 was taken by cloud-hypervisor v51.0, running cloud-hypervisor v52.0"
+    );
+}
+
+#[test]
+fn fork_refuses_a_class_that_is_not_the_checkpoints_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = backend(dir.path());
+    plant(&b, "ck1", SMALL, CH);
+    let err = b
+        .fork_checkpoint(&desired("l2"), "ck1", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "checkpoint ck1 was taken at 1 cpus and 64 MiB; this lease would get 2 cpus and 4096 MiB"
+    );
+}
+
+#[test]
+fn dir_bytes_sums_allocated_blocks_of_every_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("snap")).unwrap();
+    assert_eq!(dir_bytes(dir.path()).unwrap(), 0);
+    fs::write(dir.path().join("a"), vec![1u8; 100_000]).unwrap();
+    fs::write(dir.path().join("snap/b"), vec![1u8; 100_000]).unwrap();
+    let sparse = fs::File::create(dir.path().join("hole")).unwrap();
+    sparse.set_len(1 << 30).unwrap();
+    let got = dir_bytes(dir.path()).unwrap();
+    assert!((200_000..400_000).contains(&got), "{got}");
+}
+
+/// A stand-in cloud-hypervisor API: pause, snapshot, resume and info, in any
+/// order. Records `METHOD endpoint` per request and, on `vm.snapshot`, writes
+/// the three snapshot files into the destination (or answers 500).
+struct Api {
+    log: Arc<Mutex<Vec<String>>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Api {
+    fn start(sock: &Path, requests: usize, fail_snapshot: bool) -> Self {
+        let listener = UnixListener::bind(sock).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&log);
+        let thread = std::thread::spawn(move || {
+            let mut state = "Running";
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap();
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = text.lines().next().unwrap_or_default();
+                let mut words = line.split_whitespace();
+                let (method, path) = (words.next().unwrap(), words.next().unwrap());
+                let endpoint = path.rsplit('/').next().unwrap();
+                seen.lock().unwrap().push(format!("{method} {endpoint}"));
+                let mut status = "204 No Content";
+                let mut body = String::new();
+                match endpoint {
+                    "vm.pause" => state = "Paused",
+                    "vm.resume" => state = "Running",
+                    "vm.info" => {
+                        status = "200 OK";
+                        body = format!(r#"{{"state":"{state}"}}"#);
+                    }
+                    "vm.snapshot" if fail_snapshot => {
+                        status = "500 Internal Server Error";
+                        body = "disk full".to_owned();
+                    }
+                    "vm.snapshot" => {
+                        let url = text.split("file://").nth(1).unwrap();
+                        let dest = url.split('"').next().unwrap();
+                        for f in ["config.json", "state.json", "memory-ranges"] {
+                            fs::write(Path::new(dest).join(f), format!("{f} body")).unwrap();
+                        }
+                    }
+                    other => {
+                        seen.lock().unwrap().push(format!("unexpected {other}"));
+                        status = "404 Not Found";
+                    }
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        Self { log, thread }
+    }
+
+    fn finish(self) -> Vec<String> {
+        self.thread.join().unwrap();
+        let log = self.log.lock().unwrap().clone();
+        log
+    }
+}
+
+/// A backend and a running lease `a` with disk, key and host pin on disk.
+fn running_lease(root: &Path) -> (RealBackend, LeaseRecord, FakeCh) {
+    let b = backend(root);
+    let ch = FakeCh::spawn();
+    let mut rec = record("a");
+    rec.run_dir = root.join("run-a");
+    rec.size = Some(SMALL);
+    rec.set_ch_pid(ch.child.id());
+    fs::create_dir_all(&rec.run_dir).unwrap();
+    b.store.write(&rec).unwrap();
+    fs::write(b.store.disk_path("a"), vec![7u8; 50_000]).unwrap();
+    fs::write(b.store.key_path("a"), "LEASE KEY\n").unwrap();
+    fs::set_permissions(b.store.key_path("a"), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(b.store.host_pub_path("a"), "ssh-ed25519 HOST root@x\n").unwrap();
+    fs::write(b.store.known_hosts_path("a"), "stale pin\n").unwrap();
+    (b, rec, ch)
+}
+
+/// Checks the files of checkpoint `ck1`.
+fn assert_files(b: &RealBackend) {
+    let dir = b.checkpoint_dir("ck1");
+    for f in REQUIRED {
+        assert!(dir.join(f).exists(), "missing {f}");
+    }
+    assert_eq!(fs::read(dir.join("disk.raw")).unwrap(), vec![7u8; 50_000]);
+    assert_eq!(
+        fs::read_to_string(dir.join("bootstrap")).unwrap(),
+        "LEASE KEY\n"
+    );
+    let mode = fs::metadata(dir.join("bootstrap"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(
+        fs::read_to_string(dir.join("known_hosts")).unwrap(),
+        "crabbox-a ssh-ed25519 HOST\n",
+        "the pin is rebuilt from the lease's host key under the lease's alias"
+    );
+}
+
+/// Checks the meta of checkpoint `ck1` and that it weighs `bytes`.
+fn assert_meta(b: &RealBackend, bytes: u64) {
+    let dir = b.checkpoint_dir("ck1");
+    let meta: Meta =
+        serde_json::from_slice(&fs::read(dir.join(super::META_FILE)).unwrap()).unwrap();
+    assert_eq!(meta.checkpoint_id, "ck1");
+    assert_eq!(meta.name, "after clone");
+    assert_eq!(meta.lease_id, "a");
+    assert_eq!(meta.ch_version, CH);
+    assert_eq!(meta.size, SMALL);
+    assert_eq!(bytes, dir_bytes(&dir).unwrap());
+    assert!(bytes >= 50_000, "{bytes}");
+}
+
+#[test]
+fn a_checkpoint_of_a_running_lease_holds_its_ram_disk_and_login_and_the_lease_resumes() {
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    let api = Api::start(&rec.api_socket(), 5, false);
+    let mut diag = Vec::new();
+    let bytes = b
+        .take_checkpoint(&rec, "ck1", "after clone", &mut diag)
+        .unwrap();
+    assert_eq!(
+        api.finish(),
+        [
+            "PUT vm.pause",
+            "GET vm.info",
+            "PUT vm.snapshot",
+            "PUT vm.resume",
+            "GET vm.info"
+        ]
+    );
+    assert_files(&b);
+    assert_meta(&b, bytes);
+    assert!(!b.config.cache_dir.join("checkpoint-ck1.tmp").exists());
+    assert!(b.store.disk_path("a").exists(), "the lease keeps its disk");
+    let diag = String::from_utf8(diag).unwrap();
+    assert!(diag.contains("checkpoint ck1 written in "), "{diag}");
+}
+
+#[test]
+fn a_failed_snapshot_resumes_the_lease_and_leaves_no_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    let api = Api::start(&rec.api_socket(), 5, true);
+    let err = b
+        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap_err();
+    assert!(err.contains("snapshot failed"), "{err}");
+    assert!(err.contains("disk full"), "{err}");
+    assert_eq!(
+        api.finish()[3],
+        "PUT vm.resume",
+        "the lease must not stay paused"
+    );
+    assert!(!b.checkpoint_dir("ck1").exists());
+    assert!(!b.config.cache_dir.join("checkpoint-ck1.tmp").exists());
+}
+
+#[test]
+fn a_second_checkpoint_under_the_same_id_replaces_the_first() {
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    let old = plant(&b, "ck1", SMALL, "cloud-hypervisor v51.0");
+    fs::write(old.join("stale"), "x").unwrap();
+    let api = Api::start(&rec.api_socket(), 5, false);
+    b.take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap();
+    api.finish();
+    assert!(!old.join("stale").exists());
+    assert!(old.join("snap/memory-ranges").exists());
+}
+
+#[test]
+fn a_lease_without_a_host_key_cannot_be_checkpointed_and_is_not_paused() {
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    fs::remove_file(b.store.host_pub_path("a")).unwrap();
+    let err = b
+        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap_err();
+    assert!(err.contains("host key for a"), "{err}");
+    assert!(!b.checkpoint_dir("ck1").exists());
+}
+
+#[test]
+fn a_lease_with_cache_volumes_is_refused_before_it_is_paused() {
+    use crate::volumes::tests::{have_e2fsprogs, req};
+    if !have_e2fsprogs() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    b.restore_cache("a", &[req("g1", "npm", &["~/.npm"], 1)], None)
+        .unwrap();
+    let err = b
+        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "lease a has cache volumes attached; a checkpoint cannot hold them"
+    );
+    assert!(!b.config.cache_dir.join("checkpoint-ck1.tmp").exists());
+}

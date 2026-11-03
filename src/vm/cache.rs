@@ -54,6 +54,11 @@ pub(super) struct LeaseCache {
 }
 
 impl LeaseCache {
+    /// True when the lease has a cache disk attached.
+    pub(super) fn has_disks(&self) -> bool {
+        self.attached().next().is_some()
+    }
+
     /// Groups that have a disk, with their disk index.
     fn attached(&self) -> impl Iterator<Item = (usize, &RecordedGroup)> {
         self.groups

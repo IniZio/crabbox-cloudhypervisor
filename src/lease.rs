@@ -27,6 +27,7 @@ pub fn target_id(request: &Request) -> Result<String, String> {
     let expected = request.expected.as_ref();
     let direct = [
         desired.map(|d| d.lease_id.as_str()),
+        request.lease_id.as_deref(),
         lease.and_then(|l| l.lease_id.as_deref()),
         expected.and_then(|e| e.lease_id.as_deref()),
         expected.and_then(|e| e.attempt_lease_id.as_deref()),
@@ -171,7 +172,7 @@ pub fn acquire(
 }
 
 /// Ok when the VM runs; else the paused, stopped or unresponsive error naming `id`.
-fn require_running(power: Power, id: &str) -> Result<(), String> {
+pub(crate) fn require_running(power: Power, id: &str) -> Result<(), String> {
     match power {
         Power::Running => Ok(()),
         Power::Paused => Err(backend::paused_error(id)),

@@ -1,6 +1,7 @@
 //! The real backend: boots and destroys cloud-hypervisor microVMs.
 
 mod cache;
+mod checkpoint;
 mod power;
 #[cfg(test)]
 mod size_tests;
@@ -8,6 +9,7 @@ mod sizing;
 pub mod spec;
 mod suspend;
 mod template;
+mod util;
 mod watcher;
 
 use std::ffi::OsString;
@@ -15,7 +17,9 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use util::{serial_tail, wait_until};
 
 use crate::assets;
 use crate::backend::{Backend, Power};
@@ -36,8 +40,6 @@ const PASST_COMM: &str = "passt";
 const PASST_WAIT: Duration = Duration::from_secs(5);
 /// Longest wait for the cloud-hypervisor API to answer.
 const CH_WAIT: Duration = Duration::from_secs(10);
-/// Serial log lines shown when readiness fails.
-const SERIAL_TAIL_LINES: usize = 20;
 
 /// Leases real microVMs on this host.
 pub struct RealBackend {
@@ -74,28 +76,6 @@ fn remove_tree(path: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove run dir: {e}")),
     }
-}
-
-/// Polls `done` every 100 ms until it holds or `timeout` passes.
-fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if done() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Last lines of the guest serial log, for failure diagnostics.
-fn serial_tail(path: &Path) -> String {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    let skip = lines.len().saturating_sub(SERIAL_TAIL_LINES);
-    lines.get(skip..).unwrap_or_default().join("\n")
 }
 
 /// Where a create gets its downloaded inputs.
@@ -378,6 +358,29 @@ impl Backend for RealBackend {
 
     fn proxy_command(&self, lease_id: &str) -> String {
         spec::proxy_command(&self.exe, lease_id, &self.config.state_dir)
+    }
+
+    fn checkpoint_create(
+        &self,
+        record: &LeaseRecord,
+        checkpoint_id: &str,
+        name: &str,
+        diag: &mut dyn Write,
+    ) -> Result<u64, String> {
+        self.take_checkpoint(record, checkpoint_id, name, diag)
+    }
+
+    fn checkpoint_fork(
+        &self,
+        desired: &Desired,
+        checkpoint_id: &str,
+        diag: &mut dyn Write,
+    ) -> Result<LeaseRecord, String> {
+        self.fork_checkpoint(desired, checkpoint_id, diag)
+    }
+
+    fn checkpoint_delete(&self, checkpoint_id: &str) -> Result<(), String> {
+        self.remove_checkpoint(checkpoint_id)
     }
 }
 

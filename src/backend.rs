@@ -150,6 +150,36 @@ pub trait Backend {
     fn host_memory_mib(&self, _record: &LeaseRecord) -> Option<u64> {
         None
     }
+
+    /// Snapshots the running lease's RAM and disk under `checkpoint_id` and
+    /// returns the checkpoint's bytes on disk. The lease keeps running, also
+    /// when this fails. Only called when [`Power::Running`].
+    fn checkpoint_create(
+        &self,
+        _record: &LeaseRecord,
+        _checkpoint_id: &str,
+        _name: &str,
+        _diag: &mut dyn Write,
+    ) -> Result<u64, String> {
+        Err("this backend does not support checkpoints".to_owned())
+    }
+
+    /// Starts a new lease from a checkpoint with a fresh identity; persists the
+    /// record before returning and removes everything it made on its own
+    /// failure. An unknown checkpoint fails with `checkpoint not found`.
+    fn checkpoint_fork(
+        &self,
+        _desired: &Desired,
+        _checkpoint_id: &str,
+        _diag: &mut dyn Write,
+    ) -> Result<LeaseRecord, String> {
+        Err("this backend does not support checkpoints".to_owned())
+    }
+
+    /// Removes a checkpoint's files; an unknown id is `Ok`.
+    fn checkpoint_delete(&self, _checkpoint_id: &str) -> Result<(), String> {
+        Err("this backend does not support checkpoints".to_owned())
+    }
 }
 
 #[cfg(test)]

@@ -367,3 +367,67 @@ fn cache_scope_is_sixteen_lowercase_hex_or_absent() {
         assert!(scope(bad).unwrap_err().contains("cacheScope"), "{bad}");
     }
 }
+
+#[test]
+fn parses_checkpoint_create() {
+    let req = parse_request(
+        br#"{"protocolVersion":1,"operation":"checkpointCreate","leaseId":"l1","checkpointId":"ck_1-a","name":"after clone"}"#,
+    )
+    .unwrap();
+    assert_eq!(req.operation, Operation::CheckpointCreate);
+    assert_eq!(req.operation.as_str(), "checkpointCreate");
+    assert_eq!(req.lease_id.as_deref(), Some("l1"));
+    assert_eq!(req.checkpoint_id.as_deref(), Some("ck_1-a"));
+    assert_eq!(req.name.as_deref(), Some("after clone"));
+}
+
+#[test]
+fn parses_checkpoint_fork_with_the_acquire_fields() {
+    let req = parse_request(
+        br#"{"protocolVersion":1,"operation":"checkpointFork","checkpointId":"ck1",
+            "desired":{"leaseId":"l2","slug":"s","name":"n"}}"#,
+    )
+    .unwrap();
+    assert_eq!(req.operation, Operation::CheckpointFork);
+    assert_eq!(req.checkpoint_id.as_deref(), Some("ck1"));
+    assert_eq!(req.desired.unwrap().lease_id, "l2");
+}
+
+#[test]
+fn parses_checkpoint_delete() {
+    let req = parse_request(
+        br#"{"protocolVersion":1,"operation":"checkpointDelete","checkpointId":"ck1"}"#,
+    )
+    .unwrap();
+    assert_eq!(req.operation, Operation::CheckpointDelete);
+    assert_eq!(req.checkpoint_id.as_deref(), Some("ck1"));
+}
+
+#[test]
+fn checkpoint_operations_need_a_checkpoint_id() {
+    for op in ["checkpointCreate", "checkpointFork", "checkpointDelete"] {
+        let text = format!(r#"{{"protocolVersion":1,"operation":"{op}","leaseId":"l1"}}"#);
+        let err = parse_request(text.as_bytes()).unwrap_err();
+        assert_eq!(err, "checkpointId must be a non-empty string", "{op}");
+    }
+}
+
+#[test]
+fn a_checkpoint_id_cannot_leave_its_directory() {
+    let long = "a".repeat(65);
+    for bad in ["../x", "a/b", "a.b", "a b", "", &long] {
+        let text = format!(
+            r#"{{"protocolVersion":1,"operation":"checkpointDelete","checkpointId":"{bad}"}}"#
+        );
+        assert!(parse_request(text.as_bytes()).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn other_operations_ignore_checkpoint_fields() {
+    let req = parse_request(
+        br#"{"protocolVersion":1,"operation":"list","checkpointId":"../x","name":"n"}"#,
+    )
+    .unwrap();
+    assert_eq!(req.operation, Operation::List);
+}

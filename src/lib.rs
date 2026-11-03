@@ -7,6 +7,7 @@ pub mod assets;
 pub mod backend;
 pub mod balloon;
 pub mod ch;
+mod checkpoint;
 pub mod config;
 pub mod doctor;
 pub mod grow;
@@ -130,6 +131,14 @@ fn with_backend(
         }
         Operation::Resume => {
             power::resume(request, backend, diag).map(|l| protocol::lease_response(&l))
+        }
+        Operation::CheckpointCreate => checkpoint::create(request, backend, diag)
+            .map(|(id, bytes)| protocol::checkpoint_response(&id, bytes)),
+        Operation::CheckpointFork => {
+            checkpoint::fork(request, backend, diag).map(|l| protocol::lease_response(&l))
+        }
+        Operation::CheckpointDelete => {
+            checkpoint::delete(request, backend).map(|()| protocol::ok_response())
         }
         Operation::Doctor | Operation::Touch => Ok(protocol::ok_response()),
     }

@@ -49,7 +49,7 @@ pub(super) fn check_room(free: u64, memory_mib: u64) -> Result<(), String> {
 }
 
 /// Bytes available to this user on the filesystem holding `path`.
-fn free_bytes(path: &Path) -> Result<u64, String> {
+pub(super) fn free_bytes(path: &Path) -> Result<u64, String> {
     let st = rustix::fs::statvfs(path).map_err(|e| format!("statvfs state dir: {e}"))?;
     Ok(st.f_bavail.saturating_mul(st.f_frsize))
 }
