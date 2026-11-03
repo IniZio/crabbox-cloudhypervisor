@@ -114,6 +114,8 @@ pub struct Config {
     pub vmm_overhead_mib: u64,
     /// Guest file cache reclaim, set up in new leases.
     pub reclaim: ReclaimConfig,
+    /// New leases restore a golden snapshot instead of cold booting.
+    pub boot_template: bool,
 }
 
 /// Environment lookup used for default directories.
@@ -175,6 +177,7 @@ impl Config {
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             reclaim: reclaim(config)?,
+            boot_template: bool_key(config, "bootTemplate")?,
             state_dir,
         })
     }
@@ -251,6 +254,16 @@ fn reclaim(config: &Value) -> Result<ReclaimConfig, String> {
         skip_runs: int("guestReclaimSkipRuns", d.skip_runs, 0)?,
         page_reporting_order: int_key(config, "pageReportingOrder", order, 0, 10)?,
     })
+}
+
+/// Reads an optional boolean key; absent is false.
+fn bool_key(config: &Value, key: &str) -> Result<bool, String> {
+    match get(config, key) {
+        None => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| format!("config.{key} must be true or false")),
+    }
 }
 
 /// Reads the disk growth keys.
