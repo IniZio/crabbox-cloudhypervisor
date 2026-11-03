@@ -258,12 +258,10 @@ fn reclaim(config: &Value) -> Result<ReclaimConfig, String> {
 
 /// Reads an optional boolean key; absent is false.
 fn bool_key(config: &Value, key: &str) -> Result<bool, String> {
-    match get(config, key) {
-        None => Ok(false),
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| format!("config.{key} must be true or false")),
-    }
+    get(config, key).map_or(Ok(false), |v| {
+        v.as_bool()
+            .ok_or_else(|| format!("config.{key} must be true or false"))
+    })
 }
 
 /// Reads the disk growth keys.
