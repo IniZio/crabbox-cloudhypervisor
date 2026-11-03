@@ -4,11 +4,13 @@
 //! host pin), so a fork restores and rotates identity through the same code.
 //! The lease's own login key plays the bootstrap key. Its disk is a qcow2
 //! delta over its parent checkpoint's disk; a fork flattens the chain into a
-//! raw disk, so a running lease never reads through a chain.
+//! raw disk, so a running lease never reads through a chain. Its cache disks
+//! are copies kept beside it, each an overlay over a hard link of its cache
+//! generation; a fork gets its own copies under the same cache plan only.
 
 mod chain;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 use std::fs;
 use std::io::Write;
@@ -23,7 +25,7 @@ use super::template::restore::Origin;
 use super::template::{
     ch_version, BOOTSTRAP_KEY, DISK_FILE, KNOWN_HOSTS, SNAPSHOT_TIMEOUT, SNAP_DIR,
 };
-use super::{mkdir_private, remove_tree, suspend, RealBackend};
+use super::{mkdir_private, remove_tree, suspend, CacheFrom, RealBackend};
 use crate::backend::Backend;
 use crate::ch::ChClient;
 use crate::host::{self, DiskSource};
@@ -94,7 +96,8 @@ struct DirBytes {
     apparent: u64,
 }
 
-/// What every file under `dir` weighs.
+/// What every file under `dir` weighs; a file with other hard links, such as a
+/// cache generation the store still holds, is not counted.
 fn dir_bytes(dir: &Path) -> Result<DirBytes, String> {
     let mut total = DirBytes::default();
     let entries = fs::read_dir(dir).map_err(|e| format!("size {}: {e}", dir.display()))?;
@@ -104,6 +107,8 @@ fn dir_bytes(dir: &Path) -> Result<DirBytes, String> {
             .map_err(|e| format!("size {}: {e}", entry.path().display()))?;
         let add = if meta.is_dir() {
             dir_bytes(&entry.path())?
+        } else if meta.nlink() > 1 {
+            DirBytes::default()
         } else {
             DirBytes {
                 allocated: meta.blocks() * BLOCK,
@@ -139,11 +144,6 @@ impl RealBackend {
     ) -> Result<CheckpointMade, String> {
         check_id(id)?;
         let lease = record.lease_id.as_str();
-        if self.read_cache(lease).has_disks() {
-            return Err(format!(
-                "lease {lease} has cache volumes attached; a checkpoint cannot hold them"
-            ));
-        }
         let size = record.size.unwrap_or_else(|| self.default_size());
         let cache = &self.config.cache_dir;
         mkdir_private(cache)?;
@@ -231,6 +231,7 @@ impl RealBackend {
             .map_err(|e| format!("lease {lease}: snapshot failed: {e}"))?;
         suspend::dig_snapshot_holes(Path::new(host::DIG_HOLES_TOOL), &snap, diag);
         host::clone_disk(&self.store.disk_path(lease), &dir.join(DISK_FILE), 0)?;
+        self.hold_cache(lease, dir)?;
         fs::copy(self.store.key_path(lease), dir.join(BOOTSTRAP_KEY))
             .map_err(|e| format!("keep login key: {e}"))?;
         fs::write(dir.join(KNOWN_HOSTS), pin).map_err(|e| format!("keep host pin: {e}"))?;
@@ -285,11 +286,15 @@ impl RealBackend {
                 meta.size.cpus, meta.size.memory_mib, size.cpus, size.memory_mib
             ));
         }
+        let held = Self::held_cache(&dir).map_err(|e| format!("checkpoint {id}: {e}"))?;
+        self.check_held(&held, desired)
+            .map_err(|e| format!("checkpoint {id} {e}"))?;
         let label = format!("checkpoint {id}");
         let origin = Origin {
             dir: &dir,
             disk: DiskSource::Qcow2(dir.join(DELTA_FILE)),
             label: &label,
+            cache: CacheFrom::Checkpoint(&dir),
         };
         let alias = format!("crabbox-{}", meta.lease_id);
         let restored = self

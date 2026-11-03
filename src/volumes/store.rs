@@ -312,8 +312,11 @@ impl Store {
     }
 }
 
+mod copy;
 mod gc;
 mod publish;
 mod restore;
 #[cfg(test)]
 mod tests;
+
+pub use copy::{copy_working, BackingName};
