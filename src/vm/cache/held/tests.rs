@@ -120,6 +120,23 @@ fn a_checkpoint_holds_a_cache_overlay_over_a_hard_link_of_its_generation() {
 }
 
 #[test]
+fn removing_a_checkpoint_drops_its_link_to_the_generation() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = running_lease(root.path());
+    publish_generation(&b);
+    b.restore_cache("a", &npm(), None).unwrap();
+    let base = image_of(&b, "a").with_file_name("g1.base.img");
+    let before = fs::metadata(&base).unwrap().nlink();
+    checkpoint(&b, &rec);
+    assert_eq!(fs::metadata(&base).unwrap().nlink(), before + 1);
+    b.remove_checkpoint("ck1").unwrap();
+    assert_eq!(fs::metadata(&base).unwrap().nlink(), before);
+}
+
+#[test]
 fn a_raw_cache_disk_is_copied_whole_and_counted() {
     if !tools() {
         return;
