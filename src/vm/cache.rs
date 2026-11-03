@@ -4,7 +4,6 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,7 @@ use crate::ch::ChClient;
 use crate::protocol::{CacheVolumeEcho, CacheVolumeRequest};
 use crate::state::LeaseRecord;
 use crate::volumes::guest::{self, Attached, GuestSetup};
-use crate::volumes::store::{Publish, Store};
+use crate::volumes::store::{Format, Publish, Store, WorkingCopy};
 use crate::volumes::{self, Group, Outcome};
 
 /// Record of a lease's cache disks, next to `lease.json`.
@@ -35,9 +34,8 @@ struct RecordedGroup {
     /// What restore did.
     outcome: Outcome,
     /// Working copy.
-    image: PathBuf,
-    /// Allocated bytes right after restore.
-    baseline: u64,
+    #[serde(flatten)]
+    copy: WorkingCopy,
 }
 
 /// A lease's cache disks; empty for a lease without cache volumes.
@@ -97,13 +95,17 @@ impl LeaseCache {
     pub(super) fn attach(&self, config: &mut Value) {
         if let Some(disks) = config.get_mut("disks").and_then(Value::as_array_mut) {
             for (i, g) in self.attached() {
-                disks.push(json!({
+                let mut disk = json!({
                     "id": format!("cv{i}"),
-                    "path": g.image,
-                    "image_type": "Raw",
+                    "path": g.copy.image,
+                    "image_type": g.copy.format.image_type(),
                     "readonly": false,
                     "serial": Self::serial(i),
-                }));
+                });
+                if let (Format::Qcow2, Some(fields)) = (g.copy.format, disk.as_object_mut()) {
+                    fields.insert("backing_files".to_owned(), Value::Bool(true));
+                }
+                disks.push(disk);
             }
         }
     }
@@ -125,7 +127,12 @@ impl LeaseCache {
 impl RealBackend {
     /// The generation store of tenant `scope` for this config.
     fn volume_store(&self, scope: Option<&str>) -> Store {
-        Store::new(&self.config.cache, &self.config.image.sha256, scope)
+        Store::new(
+            &self.config.cache,
+            &self.config.qemu_img,
+            &self.config.image.sha256,
+            scope,
+        )
     }
 
     /// Restores every requested group for lease `id` and records the result.
@@ -148,8 +155,7 @@ impl RealBackend {
                 RecordedGroup {
                     group,
                     outcome: r.outcome,
-                    image: r.image,
-                    baseline: r.baseline,
+                    copy: r.copy,
                 }
             })
             .collect();
@@ -223,7 +229,7 @@ impl RealBackend {
         for (_, g) in cache.attached() {
             let group = g.group.id.as_str();
             let note = if quiesced {
-                match store.publish(&g.group, &g.image, g.baseline, id, SystemTime::now()) {
+                match store.publish(&g.group, &g.copy, id, SystemTime::now()) {
                     Publish::Published { generation } => {
                         format!("published gen {}", generation / 1_000_000_000)
                     }

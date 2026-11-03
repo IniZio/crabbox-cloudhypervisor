@@ -1,18 +1,21 @@
 //! Generation store: `<dir>/<compat>/<group>/gen-<unix_ns>-<lease8>.img`.
 //!
-//! Restore clones the newest generation into a private working copy, publish
-//! renames a working copy in as the next one, and readers pick the newest
-//! name. Restore and publish share a store lock that GC holds exclusively. Working copies live in `<dir>/leases/<lease>/` on the same
-//! filesystem, so clone can reflink and publish is one rename(2).
+//! A generation is a raw ext4 image, read-only once published. Restore gives a
+//! lease a qcow2 overlay over the newest one, publish flattens a lease's
+//! overlay into the next one, and readers pick the newest name. Restore and
+//! publish share a store lock that GC holds exclusively. Working copies live
+//! in `<dir>/leases/<lease>/` on the same filesystem, so an overlay's backing
+//! file is a hard link there and publish ends in one rename(2).
 
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use super::{ext4, Group, Outcome, Token, GIB};
 use crate::config::CacheConfig;
-use crate::host;
 
 /// Directory of working copies, beside the compat dirs.
 const LEASES_DIR: &str = "leases";
@@ -30,6 +33,13 @@ pub const GRACE: Duration = Duration::from_secs(3600);
 const COMPAT_HASH: usize = 12;
 /// Lease id characters in a generation name.
 const LEASE_TAG: usize = 8;
+/// Suffix of a raw working copy in a lease's work dir.
+const RAW_SUFFIX: &str = ".img";
+/// Suffix of a working copy that is an overlay over a generation.
+const OVERLAY_SUFFIX: &str = ".qcow2";
+/// Suffix of the overlay's backing file: a hard link to its generation, so
+/// the generation outlives GC while the overlay needs it.
+const BASE_SUFFIX: &str = ".base.img";
 
 /// One published generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,15 +63,48 @@ pub struct GroupSnapshot {
     pub gens: Vec<Generation>,
 }
 
-/// A private working copy for one lease.
+/// How a working copy is stored on the host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    /// A whole ext4 image of its own.
+    #[default]
+    Raw,
+    /// A qcow2 overlay over a read-only generation.
+    Qcow2,
+}
+
+impl Format {
+    /// cloud-hypervisor's `image_type` for this format.
+    #[must_use]
+    pub const fn image_type(self) -> &'static str {
+        match self {
+            Self::Raw => "Raw",
+            Self::Qcow2 => "Qcow2",
+        }
+    }
+}
+
+/// A lease's writable disk for one group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingCopy {
+    /// Image file.
+    pub image: PathBuf,
+    /// How `image` is stored; records written before overlays are raw.
+    #[serde(default)]
+    pub format: Format,
+    /// Allocated bytes of `image` right after restore.
+    pub baseline: u64,
+}
+
+/// What restore gave one lease for one group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restored {
     /// What the lease got.
     pub outcome: Outcome,
-    /// Working copy; absent when skipped.
-    pub image: PathBuf,
-    /// Allocated bytes of the working copy right after restore.
-    pub baseline: u64,
+    /// Working copy; absent on disk when skipped.
+    pub copy: WorkingCopy,
 }
 
 /// What release did with a working copy.
@@ -101,6 +144,8 @@ pub struct Store {
     budget: u64,
     /// Idle time after which a group goes.
     ttl: Duration,
+    /// `qemu-img` binary.
+    qemu_img: PathBuf,
 }
 
 /// Unix nanoseconds of `t`; 0 before the epoch.
@@ -224,7 +269,12 @@ impl Store {
     /// Store for `cfg`, tagged with the base image hash, this host's arch and
     /// the tenant `scope`; `None` is the store leases without a scope share.
     #[must_use]
-    pub fn new(cfg: &CacheConfig, image_sha256: &str, scope: Option<&str>) -> Self {
+    pub fn new(
+        cfg: &CacheConfig,
+        qemu_img: &Path,
+        image_sha256: &str,
+        scope: Option<&str>,
+    ) -> Self {
         let hash: String = image_sha256.chars().take(COMPAT_HASH).collect();
         let arch = std::env::consts::ARCH;
         Self {
@@ -235,6 +285,7 @@ impl Store {
             ),
             budget: cfg.store_max_gib.saturating_mul(GIB),
             ttl: Duration::from_secs(cfg.key_ttl_days.saturating_mul(86_400)),
+            qemu_img: qemu_img.to_path_buf(),
         }
     }
 
@@ -255,106 +306,6 @@ impl Store {
         let _ = fs::File::create(dir.join(USED_FILE));
     }
 
-    /// A private copy of the newest generation, or a fresh filesystem when
-    /// there is none. Any failure is `Skipped` and leaves no working copy.
-    #[must_use]
-    pub fn restore(&self, group: &Group, lease_id: &str) -> Restored {
-        let image = self
-            .work_dir(lease_id)
-            .join(format!("{}.img", group.id.as_str()));
-        match self.try_restore(group, &image) {
-            Ok((outcome, baseline)) => Restored {
-                outcome,
-                image,
-                baseline,
-            },
-            Err(reason) => {
-                let _ = remove(&image);
-                Restored {
-                    outcome: Outcome::Skipped { reason },
-                    image,
-                    baseline: 0,
-                }
-            }
-        }
-    }
-
-    /// Clones or creates `image`, grows it to the group capacity; (outcome, baseline).
-    fn try_restore(&self, group: &Group, image: &Path) -> Result<(Outcome, u64), String> {
-        let _lock = self.lock(false)?;
-        let dir = self.group_dir(&group.id);
-        mkdir_private(&dir)?;
-        if let Some(parent) = image.parent() {
-            mkdir_private(parent)?;
-        }
-        Self::touch(&dir);
-        let outcome = if let Some(newest) = generations(&dir).pop() {
-            host::clone_disk(&newest.path, image, 0)?;
-            ext4::grow(image, group.capacity)?;
-            for (_, marker) in group.seal_markers() {
-                ext4::remove_file(image, &marker)?;
-            }
-            Outcome::Restored {
-                generation: newest.ns,
-            }
-        } else {
-            ext4::make(image, group.capacity)?;
-            Outcome::Empty
-        };
-        Ok((outcome, ext4::allocated(image)?))
-    }
-
-    /// Renames `image` in as the next generation of `group` when it grew by at
-    /// least [`MIN_GROWTH`] over `baseline`, unmounted cleanly, every sealed
-    /// volume left its marker, it passes a read-only fsck and is under
-    /// [`FULL_PERCENT`] full. Never touches the store otherwise.
-    #[must_use]
-    pub fn publish(
-        &self,
-        group: &Group,
-        image: &Path,
-        baseline: u64,
-        lease_id: &str,
-        now: SystemTime,
-    ) -> Publish {
-        let rejected = |reason: String| Publish::Rejected { reason };
-        match ext4::allocated(image) {
-            Ok(bytes) if bytes < baseline.saturating_add(MIN_GROWTH) => return Publish::Unchanged,
-            Ok(_) => {}
-            Err(e) => return rejected(e),
-        }
-        match ext4::needs_recovery(image) {
-            Ok(false) => {}
-            Ok(true) => return rejected("not cleanly unmounted".to_owned()),
-            Err(e) => return rejected(e),
-        }
-        if let Err(e) = check_sealed(group, image) {
-            return rejected(e);
-        }
-        match ext4::check(image) {
-            Ok(usage) if usage.at_least(FULL_PERCENT) => {
-                return rejected(format!("full ({}/{} blocks)", usage.used, usage.total));
-            }
-            Ok(_) => {}
-            Err(e) => return rejected(format!("fsck: {e}")),
-        }
-        let _lock = match self.lock(false) {
-            Ok(lock) => lock,
-            Err(e) => return rejected(e),
-        };
-        let dir = self.group_dir(&group.id);
-        let generation = unix_ns(now);
-        let tag: String = lease_id.chars().take(LEASE_TAG).collect();
-        let dest = dir.join(format!("gen-{generation:019}-{tag}.img"));
-        if let Err(e) = mkdir_private(&dir).and_then(|()| {
-            fs::rename(image, &dest).map_err(|e| format!("rename into store: {}", e.kind()))
-        }) {
-            return rejected(e);
-        }
-        Self::touch(&dir);
-        Publish::Published { generation }
-    }
-
     /// Removes a lease's working copies.
     pub fn discard(&self, lease_id: &str) -> Result<(), String> {
         remove(&self.work_dir(lease_id))
@@ -362,5 +313,7 @@ impl Store {
 }
 
 mod gc;
+mod publish;
+mod restore;
 #[cfg(test)]
 mod tests;
