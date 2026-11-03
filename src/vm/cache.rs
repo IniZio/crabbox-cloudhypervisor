@@ -126,7 +126,7 @@ impl LeaseCache {
 
 impl RealBackend {
     /// The generation store of tenant `scope` for this config.
-    fn volume_store(&self, scope: Option<&str>) -> Store {
+    pub(super) fn volume_store(&self, scope: Option<&str>) -> Store {
         Store::new(
             &self.config.cache,
             &self.config.qemu_img,
@@ -164,7 +164,13 @@ impl RealBackend {
             refused: plan.skipped,
             scope: scope.map(str::to_owned),
         };
-        let json = serde_json::to_vec_pretty(&cache).map_err(|e| format!("encode cache: {e}"))?;
+        self.write_cache(id, &cache)?;
+        Ok(cache)
+    }
+
+    /// Records `cache` as lease `id`'s cache disks.
+    fn write_cache(&self, id: &str, cache: &LeaseCache) -> Result<(), String> {
+        let json = serde_json::to_vec_pretty(cache).map_err(|e| format!("encode cache: {e}"))?;
         fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -172,8 +178,7 @@ impl RealBackend {
             .mode(0o600)
             .open(self.store.lease_dir(id).join(CACHE_FILE))
             .and_then(|mut f| f.write_all(&json))
-            .map_err(|e| format!("write cache record: {e}"))?;
-        Ok(cache)
+            .map_err(|e| format!("write cache record: {e}"))
     }
 
     /// The lease's cache record; empty when it has none or it is unreadable.
@@ -266,5 +271,8 @@ impl RealBackend {
     }
 }
 
+mod held;
 #[cfg(test)]
 mod tests;
+
+pub(super) use held::CacheFrom;

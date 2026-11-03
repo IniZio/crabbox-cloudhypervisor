@@ -25,12 +25,12 @@ pub(super) const SMALL: Size = Size {
 };
 
 /// True when `qemu-img` is on `PATH`; tests that write deltas skip without it.
-pub(super) fn have_qemu_img() -> bool {
+pub(in crate::vm) fn have_qemu_img() -> bool {
     Command::new("qemu-img").arg("--version").output().is_ok()
 }
 
 /// What `qemu-img info` says of `image`.
-pub(super) fn image_info(image: &Path) -> serde_json::Value {
+pub(in crate::vm) fn image_info(image: &Path) -> serde_json::Value {
     let out = Command::new("qemu-img")
         .args(["info", "--output=json"])
         .arg(image)
@@ -45,7 +45,7 @@ pub(super) fn image_info(image: &Path) -> serde_json::Value {
 }
 
 /// What the guest reads from disk image `image`, flattened through its chain.
-pub(super) fn read_image(image: &Path) -> Vec<u8> {
+pub(in crate::vm) fn read_image(image: &Path) -> Vec<u8> {
     let out = image.with_extension("read.raw");
     let status = Command::new("qemu-img")
         .args(["convert", "-O", "raw"])
@@ -60,7 +60,7 @@ pub(super) fn read_image(image: &Path) -> Vec<u8> {
 }
 
 /// A backend whose cloud-hypervisor prints [`CH`].
-pub(super) fn backend(root: &Path) -> RealBackend {
+pub(in crate::vm) fn backend(root: &Path) -> RealBackend {
     let mut cfg = config(root);
     cfg.qemu_img = PathBuf::from("qemu-img");
     cfg.cloud_hypervisor = root.join("cloud-hypervisor");
@@ -80,7 +80,7 @@ fn desired(id: &str) -> Desired {
 }
 
 /// Lays out a complete checkpoint `id` taken at `size` by `ch`.
-pub(super) fn plant(b: &RealBackend, id: &str, size: Size, ch: &str) -> PathBuf {
+pub(in crate::vm) fn plant(b: &RealBackend, id: &str, size: Size, ch: &str) -> PathBuf {
     plant_child(b, id, None, size, ch)
 }
 
@@ -232,13 +232,13 @@ fn dir_bytes_sums_allocated_blocks_of_every_file() {
 /// A stand-in cloud-hypervisor API: pause, snapshot, resume and info, in any
 /// order. Records `METHOD endpoint` per request and, on `vm.snapshot`, writes
 /// the three snapshot files into the destination (or answers 500).
-pub(super) struct Api {
+pub(in crate::vm) struct Api {
     log: Arc<Mutex<Vec<String>>>,
     thread: std::thread::JoinHandle<()>,
 }
 
 impl Api {
-    pub(super) fn start(sock: &Path, requests: usize, fail_snapshot: bool) -> Self {
+    pub(in crate::vm) fn start(sock: &Path, requests: usize, fail_snapshot: bool) -> Self {
         let listener = UnixListener::bind(sock).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&log);
@@ -289,7 +289,7 @@ impl Api {
         Self { log, thread }
     }
 
-    pub(super) fn finish(self) -> Vec<String> {
+    pub(in crate::vm) fn finish(self) -> Vec<String> {
         self.thread.join().unwrap();
         let log = self.log.lock().unwrap().clone();
         log
@@ -297,7 +297,7 @@ impl Api {
 }
 
 /// A backend and a running lease `a` with disk, key and host pin on disk.
-pub(super) fn running_lease(root: &Path) -> (RealBackend, LeaseRecord, FakeCh) {
+pub(in crate::vm) fn running_lease(root: &Path) -> (RealBackend, LeaseRecord, FakeCh) {
     let b = backend(root);
     let ch = FakeCh::spawn();
     let mut rec = record("a");
@@ -452,24 +452,4 @@ fn a_lease_without_a_host_key_cannot_be_checkpointed_and_is_not_paused() {
         .unwrap_err();
     assert!(err.contains("host key for a"), "{err}");
     assert!(!b.checkpoint_dir("ck1").exists());
-}
-
-#[test]
-fn a_lease_with_cache_volumes_is_refused_before_it_is_paused() {
-    use crate::volumes::tests::{have_e2fsprogs, req};
-    if !have_e2fsprogs() {
-        return;
-    }
-    let root = tempfile::tempdir().unwrap();
-    let (b, rec, _ch) = running_lease(root.path());
-    b.restore_cache("a", &[req("g1", "npm", &["~/.npm"], 1)], None)
-        .unwrap();
-    let err = b
-        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
-        .unwrap_err();
-    assert_eq!(
-        err,
-        "lease a has cache volumes attached; a checkpoint cannot hold them"
-    );
-    assert!(!b.config.cache_dir.join("checkpoint-ck1.tmp").exists());
 }

@@ -433,15 +433,21 @@ identity rotation code of the [boot template](#boot-template).
   the passt rings to save their state and never restarts them, so the guest
   network stays dead. v52.0-moor.1 restarts them on resume. A second create
   under the same id replaces the first, unless other checkpoints are deltas
-  over it. A lease with cache volumes attached is refused, because the snapshot
-  would name their disks.
+  over it.
+- A lease's cache disks are kept too, while it is paused, in `cache/` of the
+  checkpoint dir, and `cache.json` records which group each disk holds. An
+  overlay is copied as `<group>.qcow2` beside `<group>.base.img`, a hard link to
+  its generation, so store GC of that generation never breaks the checkpoint.
+  A raw cache disk is copied whole as `<group>.img`. When the store is on
+  another filesystem, the generation is copied instead of linked.
 - After the lease resumes, the copied disk is stored as a qcow2 delta that
   holds only the clusters that differ from its parent (`qemu-img rebase`, about
   10 s for a 20 GiB disk). The parent is the lease's last checkpoint, or the
   checkpoint it was forked from. Without one, or when that checkpoint is gone,
   the parent is the base image. `parentCheckpointId` names the parent
   checkpoint and is absent over the base image. `uniqueBytes` is the space only
-  this checkpoint allocates on disk, which deleting it frees. `bytes` repeats
+  this checkpoint allocates on disk, which deleting it frees. It counts the
+  cache copies but not a generation the store or a lease still links. `bytes` repeats
   it. `apparentBytes` is the sum of its files' lengths, holes included. The
   checkpoint is published only once its delta is complete.
 - The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
@@ -460,11 +466,18 @@ identity rotation code of the [boot template](#boot-template).
   (`checkpoint not found: <id>`), incomplete, taken by another
   `cloud-hypervisor --version`, or taken at another size than the request's
   class gives.
+- A fork's cache volumes must plan to the same groups and scope as the
+  checkpoint's lease had, because its snapshot names those disks and its guest
+  has them mounted. Otherwise the fork is refused before anything is made, as
+  in `checkpoint <id> holds cache groups [g1]; this lease asks for no cache disks`.
+  A fork gets its own copy of each held disk in the store's working dir, the
+  same overlay over a hard link of the generation that a restore gives, and the
+  snapshot is pointed at those copies. It publishes at release like any lease.
 - `checkpointDelete` removes the dir and any half-written copy. An unknown id
   succeeds. A checkpoint that others are deltas over is refused with
   `cannot delete checkpoint <id>: checkpoints <ids> are deltas over it; delete them first`,
   so delete leaves first. A fork already running is not affected, because it
-  runs on its own raw disk.
+  runs on its own raw disk and its own cache copies.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 

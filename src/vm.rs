@@ -20,6 +20,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use cache::CacheFrom;
 use util::{serial_tail, wait_until};
 
 use crate::assets;
@@ -109,6 +110,7 @@ impl RealBackend {
         record: &LeaseRecord,
         desired: &Desired,
         disk: &host::DiskSource,
+        cache: CacheFrom<'_>,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
@@ -120,9 +122,13 @@ impl RealBackend {
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
         self.collect_cache_garbage(diag);
-        let mut guest = self
-            .restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
-            .guest_setup();
+        let cache = match cache {
+            CacheFrom::Store => {
+                self.restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
+            }
+            CacheFrom::Checkpoint(dir) => self.adopt_cache(id, dir, desired)?,
+        };
+        let mut guest = cache.guest_setup();
         crate::reclaim::add_to(&mut guest, &self.config.reclaim);
         let params = SeedParams {
             instance_id: &instance_id,
@@ -218,7 +224,7 @@ impl RealBackend {
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
         let disk = host::DiskSource::Raw(assets.base_raw.clone());
-        self.prepare_guest(&record, desired, &disk, diag)?;
+        self.prepare_guest(&record, desired, &disk, CacheFrom::Store, diag)?;
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, size, None, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;

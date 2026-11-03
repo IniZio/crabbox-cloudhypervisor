@@ -17,7 +17,7 @@ use crate::ready::ReadyProbe;
 use crate::seed;
 use crate::size::Size;
 use crate::state::{self, LeaseRecord};
-use crate::vm::{mkdir_private, remove_tree, spec, RealBackend};
+use crate::vm::{mkdir_private, remove_tree, spec, CacheFrom, RealBackend};
 use crate::volumes::guest::GuestSetup;
 
 /// Restore source staged in a lease dir; removed once the VM is paused.
@@ -71,6 +71,8 @@ pub(in crate::vm) struct Origin<'a> {
     pub disk: DiskSource,
     /// What the log calls it.
     pub label: &'a str,
+    /// Where the lease's cache disks come from.
+    pub cache: CacheFrom<'a>,
 }
 
 impl RealBackend {
@@ -89,11 +91,14 @@ impl RealBackend {
             dir: &t.dir,
             disk: DiskSource::Raw(t.dir.join(DISK_FILE)),
             label: &label,
+            cache: CacheFrom::Store,
         };
         self.restore_from(desired, run_dir, &origin, size, diag)
     }
 
-    /// Like [`Self::restore_template`] for any dir laid out as a template.
+    /// Like [`Self::restore_template`] for any dir laid out as a template. Cache
+    /// disks a checkpoint holds are in its snapshot already, so they are
+    /// pointed at the lease's copies instead of hot-added.
     pub(in crate::vm) fn restore_from(
         &self,
         desired: &Desired,
@@ -108,9 +113,9 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &origin.disk, diag)?;
+        self.prepare_guest(&record, desired, &origin.disk, origin.cache, diag)?;
         let stage = self.store.lease_dir(id).join(STAGE_DIR);
-        self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record)?;
+        self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record, origin.cache)?;
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let restored = self
             .start_processes(&mut record, size, Some(&stage), diag)
@@ -122,7 +127,9 @@ impl RealBackend {
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "restored from {} in {secs:.1}s", origin.label);
         let mut disks = json!({"disks": []});
-        self.read_cache(id).attach(&mut disks);
+        if matches!(origin.cache, CacheFrom::Store) {
+            self.read_cache(id).attach(&mut disks);
+        }
         for disk in disks
             .get("disks")
             .and_then(Value::as_array)
@@ -141,6 +148,7 @@ impl RealBackend {
         snap: &Path,
         stage: &Path,
         record: &LeaseRecord,
+        cache: CacheFrom<'_>,
     ) -> Result<(), String> {
         remove_tree(stage)?;
         mkdir_private(stage)?;
@@ -159,6 +167,9 @@ impl RealBackend {
             serial: &self.store.serial_log(id),
         };
         retarget(&mut config, paths, record)?;
+        if matches!(cache, CacheFrom::Checkpoint(_)) {
+            self.read_cache(id).retarget(&mut config)?;
+        }
         fs::write(stage.join("config.json"), config.to_string())
             .map_err(|e| format!("write config.json: {e}"))
     }
