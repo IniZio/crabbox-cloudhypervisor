@@ -249,17 +249,24 @@ acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
 - **Size.** A group's filesystem is the sum of its declared `sizeGB`, at least
   20 GiB, at most `cacheMaxVolumeGB`. The image is sparse, so only used blocks
   take host space.
-- **Restore.** A new lease gets a private copy of the group's newest
-  generation (a reflink where the filesystem allows it, else a sparse copy of
-  the used blocks), grown host-side to the current size. With no generation it
-  gets a fresh empty filesystem. Two leases never share an image. Restore
-  deletes `.crabbox-sealed` from each path directory of every `sealed` volume.
+- **Restore.** A new lease gets a qcow2 overlay over the group's newest
+  generation, attached with `backing_files=on`. The overlay starts near empty
+  and holds only what the lease writes, on any host filesystem, so restore
+  takes no time and N leases of one group store the generation once. The
+  overlay's backing file is a hard link to the generation in the lease's work
+  directory. A generation smaller than the group's current size, or one that
+  still holds a `.crabbox-sealed` marker, is copied instead (a reflink where
+  the filesystem allows it), grown host-side and has its markers deleted. With
+  no generation the lease gets a fresh empty filesystem.
 - **Publish.** `release` presses the ACPI power button and waits up to 30
   seconds for the guest to power off. Then a group publishes as the newest
   generation only if it grew by at least 32 MiB of allocated blocks, its
   journal is clean, every `sealed` volume has `.crabbox-sealed` in each of its
   path directories (else `unsealed: <name>`), `e2fsck -fn` passes and it is
-  less than 95% full. Anything
+  less than 95% full. An overlay is first flattened (`qemu-img convert`)
+  into a raw image that refers to no other file, and the checks run on that.
+  The seal markers are deleted before the image is renamed in, mode 0444, so a
+  published generation is never written again. Anything
   else is discarded and the previous generation stays. A VM that is stopped,
   paused or killed publishes nothing. A cache never fails a release.
 - **Echo.** The acquire response lists each name with its outcome:
@@ -271,18 +278,20 @@ acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
   scope share the unscoped ones. Release publishes back into the scope the
   lease was restored under. Working copies sit in
   `<cacheVolumeDir>/leases/<leaseId>/` on the same filesystem. The host runs
-  only e2fsprogs on a guest-written image and never mounts it.
+  only e2fsprogs and qemu-img on a guest-written image and never mounts it.
 - **GC.** `cleanup` removes superseded generations an hour after a newer one
   appeared, groups unused for `cacheKeyTtlDays`, then least recently used
   groups until the store fits `cacheStoreMaxGB`, and working copies of leases
-  that no longer exist. `dryRun` only reports.
+  that no longer exist. `dryRun` only reports. A removed generation that a
+  live overlay backs stays on disk through its hard link until that lease is
+  released, so no release or GC pulls a backing file from another lease.
 - **Docker.** Every seed points Docker's `data-root` at `/home/crabbox/docker`
   (merged into an existing `/etc/docker/daemon.json`), so a cache volume on
   `~/docker` carries image layers.
 
 `doctor` checks the four e2fsprogs tools, creates `cacheVolumeDir` mode 0700,
-and warns when it cannot reflink, because then each restore copies the cache's
-used bytes.
+and warns when it cannot hard-link there, because then cache volumes are
+skipped. It does not need reflink.
 
 ## What is pinned
 

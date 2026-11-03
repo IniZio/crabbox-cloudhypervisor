@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{reflink, run, run_with, Level, Probes};
+use super::{cache_store, run, run_with, Level, Probes};
 use crate::config::{Asset, Config};
 use crate::scope::{Cgroup, Scopes};
 use crate::vm::spec::{firmware_cache_path, image_cache_path};
@@ -216,35 +216,45 @@ fn real_host_report() {
 }
 
 #[test]
-fn cache_tools_and_reflink_are_reported_and_never_fail() {
+fn cache_tools_are_reported_and_a_filesystem_without_reflink_is_not_a_warning() {
     let dir = tempfile::tempdir().unwrap();
     let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
     assert!(ok, "{r}");
-    for name in ["mke2fs", "e2fsck", "resize2fs", "debugfs", "cache_reflink"] {
+    for name in ["mke2fs", "e2fsck", "resize2fs", "debugfs", "cache_store"] {
         assert!(r.contains(&format!(" {name}: ")), "{name} in {r}");
     }
+    assert!(!r.contains("reflink"), "{r}");
 }
 
 #[test]
-fn unusable_cache_dir_warns_about_reflink() {
+fn an_unusable_cache_dir_warns_that_cache_volumes_are_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("file");
     fs::write(&blocker, b"x").unwrap();
-    let check = reflink(&blocker.join("volumes"));
+    let check = cache_store(&blocker.join("volumes"));
     assert_eq!(check.level, Level::Warn);
-    assert!(check.detail.contains("cannot reflink"), "{}", check.detail);
+    assert!(
+        check.detail.contains("cache volumes are skipped"),
+        "{}",
+        check.detail
+    );
 }
 
 #[test]
-fn reflink_probe_creates_the_store_dir_private() {
+fn the_cache_store_probe_creates_the_store_dir_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("cache").join("volumes");
-    let _ = reflink(&store);
+    assert_eq!(cache_store(&store).level, Level::Ok);
     for d in [&store, &dir.path().join("cache")] {
         let mode = fs::metadata(d).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "{}", d.display());
     }
+    assert_eq!(
+        fs::read_dir(&store).unwrap().count(),
+        0,
+        "the probe cleans up"
+    );
 }
 
 #[test]
