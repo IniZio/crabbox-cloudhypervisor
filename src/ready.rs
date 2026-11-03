@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 /// Guest-side script that exits 0 once provisioning has finished.
 const READY_REMOTE: &str = "/usr/local/bin/crabbox-ready";
+/// Longest the clock-step command may run.
+pub const CLOCK_STEP_LIMIT: Duration = Duration::from_secs(20);
 /// Longest a single ssh attempt may run before it is killed.
 const ATTEMPT_LIMIT: Duration = Duration::from_secs(30);
 /// How often a running attempt is polled.
@@ -39,6 +41,12 @@ pub struct ReadyProbe {
 #[must_use]
 pub fn known_hosts_line(alias: &str, host_key: &str) -> String {
     format!("{alias} {host_key}\n")
+}
+
+/// Remote command that sets the guest clock to `epoch` seconds.
+#[must_use]
+pub fn clock_step_remote(epoch: u64) -> String {
+    format!("sudo date -s @{epoch}")
 }
 
 impl ReadyProbe {
@@ -125,6 +133,15 @@ impl ReadyProbe {
             Ok(_) => (true, String::new()),
             Err(error) => (false, error),
         }
+    }
+
+    /// Sets the guest clock to the host's current time.
+    pub fn step_clock(&self, limit: Duration) -> Result<(), String> {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("host clock before epoch: {e}"))?
+            .as_secs();
+        self.output(&clock_step_remote(epoch), limit).map(drop)
     }
 
     /// Runs `remote` once, killed after `limit`; stdout on exit 0, else the
