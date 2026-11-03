@@ -58,6 +58,7 @@ pub(super) fn config(root: &Path) -> Config {
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
+        boot_template: false,
     }
 }
 
