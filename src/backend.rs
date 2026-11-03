@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::protocol::{CacheVolumeEcho, Desired};
+use crate::protocol::{CacheVolumeEcho, CheckpointMade, Desired};
 use crate::state::{LeaseLock, LeaseRecord};
 
 /// Login user inside every guest.
@@ -152,15 +152,15 @@ pub trait Backend {
     }
 
     /// Snapshots the running lease's RAM and disk under `checkpoint_id` and
-    /// returns the checkpoint's bytes on disk. The lease keeps running, also
-    /// when this fails. Only called when [`Power::Running`].
+    /// reports what was written. The lease keeps running, also when this
+    /// fails. Only called when [`Power::Running`].
     fn checkpoint_create(
         &self,
         _record: &LeaseRecord,
         _checkpoint_id: &str,
         _name: &str,
         _diag: &mut dyn Write,
-    ) -> Result<u64, String> {
+    ) -> Result<CheckpointMade, String> {
         Err("this backend does not support checkpoints".to_owned())
     }
 
@@ -176,7 +176,8 @@ pub trait Backend {
         Err("this backend does not support checkpoints".to_owned())
     }
 
-    /// Removes a checkpoint's files; an unknown id is `Ok`.
+    /// Removes a checkpoint's files; an unknown id is `Ok`. A checkpoint that
+    /// other checkpoints are deltas over is refused, naming them.
     fn checkpoint_delete(&self, _checkpoint_id: &str) -> Result<(), String> {
         Err("this backend does not support checkpoints".to_owned())
     }

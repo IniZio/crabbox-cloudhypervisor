@@ -43,4 +43,5 @@ jobs:
       - run: make format-check
       - run: make lint
       - run: make audit
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils
       - run: make unit

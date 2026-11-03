@@ -407,7 +407,7 @@ identity rotation code of the [boot template](#boot-template).
 
 | Operation | Request adds | Response |
 | --- | --- | --- |
-| `checkpointCreate` | `leaseId`, `checkpointId`, `name` | `{"checkpointId", "bytes"}` |
+| `checkpointCreate` | `leaseId`, `checkpointId`, `name` | `{"checkpointId", "parentCheckpointId", "bytes", "uniqueBytes", "apparentBytes"}` |
 | `checkpointFork` | the `acquire` request and `checkpointId` | the `acquire` response |
 | `checkpointDelete` | `checkpointId` | `{}` |
 
@@ -422,15 +422,28 @@ identity rotation code of the [boot template](#boot-template).
   processes, open TCP connections and ssh sessions carry on after a short
   pause, also when the checkpoint fails. Stock cloud-hypervisor v52.0 stops
   the passt rings to save their state and never restarts them, so the guest
-  network stays dead. v52.0-moor.1 restarts them on resume. `bytes` is the
-  space the checkpoint allocates on disk. A second create under the same id replaces the
-  first. A lease with cache volumes attached is refused, because the snapshot
+  network stays dead. v52.0-moor.1 restarts them on resume. A second create
+  under the same id replaces the first, unless other checkpoints are deltas
+  over it. A lease with cache volumes attached is refused, because the snapshot
   would name their disks.
+- After the lease resumes, the copied disk is stored as a qcow2 delta that
+  holds only the clusters that differ from its parent (`qemu-img rebase`, about
+  10 s for a 20 GiB disk). The parent is the lease's last checkpoint, or the
+  checkpoint it was forked from. Without one, or when that checkpoint is gone,
+  the parent is the base image. `parentCheckpointId` names the parent
+  checkpoint and is absent over the base image. `uniqueBytes` is the space only
+  this checkpoint allocates on disk, which deleting it frees. `bytes` repeats
+  it. `apparentBytes` is the sum of its files' lengths, holes included. The
+  checkpoint is published only once its delta is complete.
 - The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
-  a template: `snap/`, `disk.raw`, `bootstrap`, `known_hosts` and
-  `checkpoint.json`. While it is written the dir is `checkpoint-<id>.tmp`.
-  The `bootstrap` file is the source lease's private login key.
-- `checkpointFork` starts a new lease from it. It copies the disk, restores the
+  a template: `snap/`, `disk.qcow2`, `bootstrap`, `known_hosts` and
+  `checkpoint.json`, which names the parent. `disk.qcow2` refers to
+  `../checkpoint-<parent>/disk.qcow2` or to the base image `../image-<sha>.raw`,
+  so neither may be removed by hand while it is in use. While a checkpoint is
+  written the dir is `checkpoint-<id>.tmp`. The `bootstrap` file is the source
+  lease's private login key.
+- `checkpointFork` starts a new lease from it. It flattens the chain into a
+  sparse raw disk for the new lease (`qemu-img convert`), restores the
   snapshot onto the new lease's files, and rotates identity through one ssh call
   made with the source lease's key. The new lease gets its own keys, host key,
   machine id and hostname. The adapter then checks that the source key is
@@ -439,8 +452,10 @@ identity rotation code of the [boot template](#boot-template).
   `cloud-hypervisor --version`, or taken at another size than the request's
   class gives.
 - `checkpointDelete` removes the dir and any half-written copy. An unknown id
-  succeeds. A fork already running is not affected, because it holds its own
-  files.
+  succeeds. A checkpoint that others are deltas over is refused with
+  `cannot delete checkpoint <id>: checkpoints <ids> are deltas over it; delete them first`,
+  so delete leaves first. A fork already running is not affected, because it
+  runs on its own raw disk.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 

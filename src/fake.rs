@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::backend::{cloud_id, Backend, Power};
-use crate::protocol::{Desired, Expected, LeaseRef, Operation, Request};
+use crate::protocol::{CheckpointMade, Desired, Expected, LeaseRef, Operation, Request};
 use crate::state::{LeaseLock, LeaseRecord};
 
 /// Fake host: records, liveness, a call log and failure knobs.
@@ -318,7 +318,7 @@ impl Backend for Fake {
         checkpoint_id: &str,
         name: &str,
         _diag: &mut dyn Write,
-    ) -> Result<u64, String> {
+    ) -> Result<CheckpointMade, String> {
         self.calls.borrow_mut().push(format!(
             "checkpoint_create {} {checkpoint_id} {name}",
             record.lease_id
@@ -329,7 +329,12 @@ impl Backend for Fake {
         self.checkpoints
             .borrow_mut()
             .insert(checkpoint_id.to_owned());
-        Ok(4096)
+        Ok(CheckpointMade {
+            checkpoint_id: checkpoint_id.to_owned(),
+            parent_checkpoint_id: Some("ck0".to_owned()),
+            unique_bytes: 4096,
+            apparent_bytes: 8192,
+        })
     }
 
     fn checkpoint_fork(

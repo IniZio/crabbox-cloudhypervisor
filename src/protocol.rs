@@ -8,8 +8,8 @@ mod checkpoint;
 mod wire;
 pub use cache::CacheVolumeRequest;
 use cache::{parse_cache_scope, parse_cache_volumes};
-pub use checkpoint::checkpoint_response;
 use checkpoint::parse_checkpoint_id;
+pub use checkpoint::{checkpoint_response, CheckpointMade};
 pub use wire::{CacheVolumeEcho, Lease, LeaseRow, Ssh};
 
 /// The only protocol version this adapter speaks.

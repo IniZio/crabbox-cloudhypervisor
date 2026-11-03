@@ -133,7 +133,7 @@ fn with_backend(
             power::resume(request, backend, diag).map(|l| protocol::lease_response(&l))
         }
         Operation::CheckpointCreate => checkpoint::create(request, backend, diag)
-            .map(|(id, bytes)| protocol::checkpoint_response(&id, bytes)),
+            .map(|made| protocol::checkpoint_response(&made)),
         Operation::CheckpointFork => {
             checkpoint::fork(request, backend, diag).map(|l| protocol::lease_response(&l))
         }

@@ -28,20 +28,37 @@ pub(super) fn parse_checkpoint_id(
     }
 }
 
-/// Success response for a created checkpoint: its id and its size on disk.
+/// A checkpoint just written, as the create response reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointMade {
+    /// Its id.
+    pub checkpoint_id: String,
+    /// The checkpoint its disk is a delta over; absent for the first of a chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_checkpoint_id: Option<String>,
+    /// Bytes on disk only it holds, which deleting it frees.
+    pub unique_bytes: u64,
+    /// Sum of its files' lengths, holes included.
+    pub apparent_bytes: u64,
+}
+
+/// Success response for a created checkpoint. `bytes` repeats `uniqueBytes`,
+/// the size Crabbox records.
 #[must_use]
-pub fn checkpoint_response(checkpoint_id: &str, bytes: u64) -> String {
+pub fn checkpoint_response(made: &CheckpointMade) -> String {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Envelope<'a> {
         protocol_version: u64,
-        checkpoint_id: &'a str,
         bytes: u64,
+        #[serde(flatten)]
+        made: &'a CheckpointMade,
     }
     let envelope = Envelope {
         protocol_version: super::VERSION,
-        checkpoint_id,
-        bytes,
+        bytes: made.unique_bytes,
+        made,
     };
     serde_json::to_string(&envelope).unwrap_or_default()
 }
