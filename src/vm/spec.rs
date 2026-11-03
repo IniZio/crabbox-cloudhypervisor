@@ -81,6 +81,27 @@ pub fn vm_config(size: Size, paths: VmPaths<'_>, record: &LeaseRecord) -> Value 
     })
 }
 
+/// A record for a lease about to boot at `size`, before any process exists.
+#[must_use]
+pub fn new_record(id: &str, slug: &str, name: &str, run_dir: &Path, size: Size) -> LeaseRecord {
+    LeaseRecord {
+        lease_id: id.to_owned(),
+        slug: slug.to_owned(),
+        name: name.to_owned(),
+        cloud_id: crate::backend::cloud_id(id),
+        created_at: crate::state::now_unix(),
+        ch_pid: None,
+        passt_pid: None,
+        run_dir: run_dir.to_path_buf(),
+        boot_id: None,
+        ch_start: None,
+        passt_start: None,
+        watch_pid: None,
+        watch_start: None,
+        size: Some(size),
+    }
+}
+
 /// cloud-hypervisor arguments: its API socket, plus `--restore` from a
 /// snapshot dir when resuming a suspended VM.
 #[must_use]
