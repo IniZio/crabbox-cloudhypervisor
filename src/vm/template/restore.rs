@@ -61,6 +61,15 @@ fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|e| format!("stage {}: {e}", from.display()))
 }
 
+/// A dir laid out as a template: `snap/`, `disk.raw`, the bootstrap key and
+/// the host pin.
+pub(in crate::vm) struct Origin<'a> {
+    /// The dir.
+    pub dir: &'a Path,
+    /// What the log calls it.
+    pub label: &'a str,
+}
+
 impl RealBackend {
     /// Gives a new lease its files, stages the template snapshot for it and
     /// restores it running, with its cache disks hot-added.
@@ -72,15 +81,32 @@ impl RealBackend {
         size: Size,
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
+        let label = format!("template {}", t.meta.key12());
+        let origin = Origin {
+            dir: &t.dir,
+            label: &label,
+        };
+        self.restore_from(desired, run_dir, &origin, size, diag)
+    }
+
+    /// Like [`Self::restore_template`] for any dir laid out as a template.
+    pub(in crate::vm) fn restore_from(
+        &self,
+        desired: &Desired,
+        run_dir: &Path,
+        origin: &Origin<'_>,
+        size: Size,
+        diag: &mut dyn Write,
+    ) -> Result<LeaseRecord, String> {
         let started = Instant::now();
         let id = desired.lease_id.as_str();
         let mut record = spec::new_record(id, &desired.slug, &desired.name, run_dir, size);
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &t.dir.join(DISK_FILE), diag)?;
+        self.prepare_guest(&record, desired, &origin.dir.join(DISK_FILE), diag)?;
         let stage = self.store.lease_dir(id).join(STAGE_DIR);
-        self.stage_snapshot(&t.dir.join(SNAP_DIR), &stage, &record)?;
+        self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record)?;
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let restored = self
             .start_processes(&mut record, size, Some(&stage), diag)
@@ -90,11 +116,7 @@ impl RealBackend {
         client.resume()?;
         self.wait_state(&client, "Running")?;
         let secs = started.elapsed().as_secs_f64();
-        let _ = writeln!(
-            diag,
-            "restored from template {} in {secs:.1}s",
-            t.meta.key12()
-        );
+        let _ = writeln!(diag, "restored from {} in {secs:.1}s", origin.label);
         let mut disks = json!({"disks": []});
         self.read_cache(id).attach(&mut disks);
         for disk in disks
@@ -144,7 +166,20 @@ impl RealBackend {
         t: &Template,
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
-        match self.rotate_identity(&record, t, diag) {
+        let alias = format!("crabbox-{}", t.meta.guest_id());
+        self.take_identity_from(record, &t.dir, alias, diag)
+    }
+
+    /// Like [`Self::take_identity`] for any template-shaped `source` dir whose
+    /// guest was pinned under host key alias `alias`.
+    pub(in crate::vm) fn take_identity_from(
+        &self,
+        record: LeaseRecord,
+        source: &Path,
+        alias: String,
+        diag: &mut dyn Write,
+    ) -> Result<LeaseRecord, String> {
+        match self.rotate_from(&record, source, alias, diag) {
             Ok(()) => Ok(record),
             Err(e) => Err(match self.destroy(&record.lease_id, diag) {
                 Ok(()) => format!("{e}; lease destroyed"),
@@ -179,10 +214,13 @@ impl RealBackend {
 
     /// Logs in with the bootstrap key, rotates, then proves the lease key logs
     /// in against the new host key and the bootstrap key no longer does.
-    fn rotate_identity(
+    /// Rotation against the guest in `source`, which logs in with its bootstrap
+    /// key and answers under host key alias `alias`.
+    fn rotate_from(
         &self,
         record: &LeaseRecord,
-        t: &Template,
+        source: &Path,
+        alias: String,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let started = Instant::now();
@@ -190,13 +228,12 @@ impl RealBackend {
         let id = record.lease_id.as_str();
         let lease = spec::guest_ssh(&c.ssh, &self.store, &self.exe, &c.state_dir, id);
         let bootstrap = |known_hosts: PathBuf, host_key_alias: String| ReadyProbe {
-            key: t.dir.join(BOOTSTRAP_KEY),
+            key: source.join(BOOTSTRAP_KEY),
             known_hosts,
             host_key_alias,
             ..spec::guest_ssh(&c.ssh, &self.store, &self.exe, &c.state_dir, id)
         };
-        let template_alias = format!("crabbox-{}", t.meta.guest_id());
-        let old = bootstrap(t.dir.join(KNOWN_HOSTS), template_alias);
+        let old = bootstrap(source.join(KNOWN_HOSTS), alias);
         old.wait(
             c.ready_timeout,
             Duration::from_millis(200),

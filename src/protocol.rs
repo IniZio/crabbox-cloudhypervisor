@@ -4,9 +4,12 @@ use serde::Serialize;
 use serde_json::Value;
 
 mod cache;
+mod checkpoint;
 mod wire;
 pub use cache::CacheVolumeRequest;
 use cache::{parse_cache_scope, parse_cache_volumes};
+pub use checkpoint::checkpoint_response;
+use checkpoint::parse_checkpoint_id;
 pub use wire::{CacheVolumeEcho, Lease, LeaseRow, Ssh};
 
 /// The only protocol version this adapter speaks.
@@ -33,6 +36,12 @@ pub enum Operation {
     Pause,
     /// Resume a paused or stopped lease.
     Resume,
+    /// Snapshot a running lease under a caller-named checkpoint.
+    CheckpointCreate,
+    /// Start a new lease restored from a checkpoint.
+    CheckpointFork,
+    /// Remove a checkpoint.
+    CheckpointDelete,
 }
 
 impl Operation {
@@ -49,6 +58,9 @@ impl Operation {
             Self::Cleanup => "cleanup",
             Self::Pause => "pause",
             Self::Resume => "resume",
+            Self::CheckpointCreate => "checkpointCreate",
+            Self::CheckpointFork => "checkpointFork",
+            Self::CheckpointDelete => "checkpointDelete",
         }
     }
 
@@ -64,6 +76,9 @@ impl Operation {
             Self::Cleanup,
             Self::Pause,
             Self::Resume,
+            Self::CheckpointCreate,
+            Self::CheckpointFork,
+            Self::CheckpointDelete,
         ]
         .into_iter()
         .find(|op| op.as_str() == name)
@@ -148,6 +163,12 @@ pub struct Request {
     pub all: bool,
     /// Refresh provider state before answering.
     pub refresh: bool,
+    /// Lease to checkpoint, for checkpoint create.
+    pub lease_id: Option<String>,
+    /// Caller-chosen checkpoint id, for the checkpoint operations.
+    pub checkpoint_id: Option<String>,
+    /// Caller's label for a checkpoint.
+    pub name: Option<String>,
 }
 
 /// Non-empty string field, else `None`.
@@ -279,6 +300,14 @@ pub fn parse_request(input: &[u8]) -> Result<Request, String> {
     let force = flag(object, "force")?;
     let all = flag(object, "all")?;
     let refresh = flag(object, "refresh")?;
+    let checkpoint_id = match operation {
+        Operation::CheckpointCreate | Operation::CheckpointFork | Operation::CheckpointDelete => {
+            Some(parse_checkpoint_id(object)?)
+        }
+        _ => None,
+    };
+    let lease_id = opt_str(object, "leaseId");
+    let name = opt_str(object, "name");
 
     Ok(Request {
         operation,
@@ -295,6 +324,9 @@ pub fn parse_request(input: &[u8]) -> Result<Request, String> {
         force,
         all,
         refresh,
+        lease_id,
+        checkpoint_id,
+        name,
     })
 }
 

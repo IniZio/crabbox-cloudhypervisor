@@ -395,13 +395,53 @@ The restore takes about 1.7 s and the identity rotation about 1.5 s. Guest RAM
 is copied in full at restore, because `memory.shared` rules out restoring it on
 demand.
 
+## Checkpoints
+
+A checkpoint is a snapshot of a running lease that new leases can start from.
+Three operations manage them, in protocol v1 with the same envelope as
+`acquire`. They need no config flag, and they share the snapshot, restore and
+identity rotation code of the [boot template](#boot-template).
+
+| Operation | Request adds | Response |
+| --- | --- | --- |
+| `checkpointCreate` | `leaseId`, `checkpointId`, `name` | `{"checkpointId", "bytes"}` |
+| `checkpointFork` | the `acquire` request and `checkpointId` | the `acquire` response |
+| `checkpointDelete` | `checkpointId` | `{}` |
+
+- `checkpointId` is chosen by the caller: 1 to 64 characters of `A-Z a-z 0-9 _ -`.
+  `name` is a label kept in the checkpoint's `checkpoint.json`.
+- `checkpointCreate` needs a running lease. It pauses the VM, writes its
+  snapshot, reflinks its disk (a copy when the filesystem cannot), keeps the
+  lease's login key and a host key pin, and resumes the VM. The lease runs on
+  after a short pause, also when the checkpoint fails. `bytes` is the space the
+  checkpoint allocates on disk. A second create under the same id replaces the
+  first. A lease with cache volumes attached is refused, because the snapshot
+  would name their disks.
+- The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
+  a template: `snap/`, `disk.raw`, `bootstrap`, `known_hosts` and
+  `checkpoint.json`. While it is written the dir is `checkpoint-<id>.tmp`.
+  The `bootstrap` file is the source lease's private login key.
+- `checkpointFork` starts a new lease from it. It copies the disk, restores the
+  snapshot onto the new lease's files, and rotates identity through one ssh call
+  made with the source lease's key. The new lease gets its own keys, host key,
+  machine id and hostname. The adapter then checks that the source key is
+  refused. A fork never cold boots. It fails if the checkpoint is missing
+  (`checkpoint not found: <id>`), incomplete, taken by another
+  `cloud-hypervisor --version`, or taken at another size than the request's
+  class gives.
+- `checkpointDelete` removes the dir and any half-written copy. An unknown id
+  succeeds. A fork already running is not affected, because it holds its own
+  files.
+- A checkpoint is not removed by `release` of its source lease or by `cleanup`.
+  Delete it with `checkpointDelete`.
+
 ## State and cache
 
 - Leases: `<stateDir>/leases/<leaseId>/` (lease.json, disk, seed image, SSH key,
   console log, watch.json, grow.log).
 - Sockets: `<runtimeDir>/<12-hex hash of the lease id>/` (`a`, `v`, `p`,
   `p.repair`).
-- Downloads, the converted base image and boot templates: `<cacheDir>`.
+- Downloads, the converted base image, boot templates and checkpoints: `<cacheDir>`.
 
 `release` removes the lease directory. `cloud-hypervisor`, `passt` and the
 growth watcher run detached per lease and are stopped on release. Only `release` destroys a

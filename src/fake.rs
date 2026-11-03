@@ -44,6 +44,10 @@ pub(crate) struct Fake {
     pub(crate) cache_gc_note: RefCell<String>,
     /// Lease id to the host memory its VM holds, in MiB.
     pub(crate) host_memory: RefCell<BTreeMap<String, u64>>,
+    /// Checkpoint ids that exist.
+    pub(crate) checkpoints: RefCell<BTreeSet<String>>,
+    /// `checkpoint_create` fails.
+    pub(crate) checkpoint_fails: Cell<bool>,
 }
 
 impl Fake {
@@ -126,6 +130,9 @@ pub(crate) fn request(operation: Operation) -> Request {
         force: false,
         all: false,
         refresh: false,
+        lease_id: None,
+        checkpoint_id: None,
+        name: None,
     }
 }
 
@@ -303,5 +310,49 @@ impl Backend for Fake {
 
     fn host_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
         self.host_memory.borrow().get(&record.lease_id).copied()
+    }
+
+    fn checkpoint_create(
+        &self,
+        record: &LeaseRecord,
+        checkpoint_id: &str,
+        name: &str,
+        _diag: &mut dyn Write,
+    ) -> Result<u64, String> {
+        self.calls.borrow_mut().push(format!(
+            "checkpoint_create {} {checkpoint_id} {name}",
+            record.lease_id
+        ));
+        if self.checkpoint_fails.get() {
+            return Err("checkpoint failed".to_owned());
+        }
+        self.checkpoints
+            .borrow_mut()
+            .insert(checkpoint_id.to_owned());
+        Ok(4096)
+    }
+
+    fn checkpoint_fork(
+        &self,
+        desired: &Desired,
+        checkpoint_id: &str,
+        diag: &mut dyn Write,
+    ) -> Result<LeaseRecord, String> {
+        self.calls.borrow_mut().push(format!(
+            "checkpoint_fork {} {checkpoint_id}",
+            desired.lease_id
+        ));
+        if !self.checkpoints.borrow().contains(checkpoint_id) {
+            return Err(format!("checkpoint not found: {checkpoint_id}"));
+        }
+        self.create(desired, diag)
+    }
+
+    fn checkpoint_delete(&self, checkpoint_id: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("checkpoint_delete {checkpoint_id}"));
+        self.checkpoints.borrow_mut().remove(checkpoint_id);
+        Ok(())
     }
 }
