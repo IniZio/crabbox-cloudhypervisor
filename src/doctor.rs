@@ -246,7 +246,7 @@ fn dig_holes() -> Check {
     }
 }
 
-/// Cache volume tools and reflink support; a missing piece only degrades caching.
+/// Cache volume tools and the store dir; a missing piece only degrades caching.
 fn cache_checks(volume_dir: &Path) -> Vec<Check> {
     let mut checks: Vec<Check> = crate::volumes::ext4::TOOLS
         .iter()
@@ -259,36 +259,28 @@ fn cache_checks(volume_dir: &Path) -> Vec<Check> {
             c
         })
         .collect();
-    checks.push(reflink(volume_dir));
+    checks.push(cache_store(volume_dir));
     checks
 }
 
-/// Probes whether the cache store's filesystem can reflink.
-fn reflink(dir: &Path) -> Check {
-    let src = dir.join(format!(".doctor-reflink-{}", std::process::id()));
+/// Probes that the cache store can hard-link a generation into a lease's work
+/// dir, which every overlay restore does.
+fn cache_store(dir: &Path) -> Check {
+    let src = dir.join(format!(".doctor-link-{}", std::process::id()));
     let mut dst = src.clone().into_os_string();
-    dst.push(".clone");
-    let made = crate::volumes::store::mkdir_private(dir)
-        .and_then(|()| fs::write(&src, b"probe").map_err(|e| e.to_string()));
-    let cloned = made.is_ok()
-        && Command::new("cp")
-            .arg("--reflink=always")
-            .arg(&src)
-            .arg(&dst)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+    dst.push(".link");
+    let linked = crate::volumes::store::mkdir_private(dir)
+        .and_then(|()| fs::write(&src, b"probe").map_err(|e| e.to_string()))
+        .and_then(|()| fs::hard_link(&src, &dst).map_err(|e| e.to_string()));
     let _ = fs::remove_file(&src);
     let _ = fs::remove_file(&dst);
-    if cloned {
-        Check::new(Level::Ok, "cache_reflink", "supported")
-    } else {
-        Check::new(
+    match linked {
+        Ok(()) => Check::new(Level::Ok, "cache_store", "hard links work"),
+        Err(e) => Check::new(
             Level::Warn,
-            "cache_reflink",
-            "cacheVolumeDir cannot reflink; each acquire copies the cache's used bytes",
-        )
+            "cache_store",
+            format!("cacheVolumeDir cannot hard-link ({e}); cache volumes are skipped"),
+        ),
     }
 }
 
