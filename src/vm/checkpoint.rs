@@ -2,13 +2,13 @@
 //!
 //! A checkpoint has the layout of a boot template (snapshot, disk, login key,
 //! host pin), so a fork restores and rotates identity through the same code.
-//! The lease's own login key plays the bootstrap key. Its disk is a qcow2
-//! delta over its parent checkpoint's disk; a fork flattens the chain into a
-//! raw disk, so a running lease never reads through a chain. Its cache disks
-//! are copies kept beside it, each an overlay over a hard link of its cache
-//! generation; a fork gets its own copies under the same cache plan only.
+//! The lease's own login key plays the bootstrap key. Its root and cache
+//! disks are each a qcow2 delta over its parent checkpoint's copy of the same
+//! disk (see [`disks`]); a fork gets one image per disk that reads through no
+//! checkpoint, and only under the cache plan the checkpoint was taken with.
 
 mod chain;
+pub(super) mod disks;
 #[cfg(test)]
 pub(super) mod tests;
 
@@ -20,34 +20,33 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use self::chain::{Backing, DELTA_FILE};
+pub(super) use self::disks::DisksFrom;
+use self::disks::HeldDisk;
+use super::cache::LeaseCache;
 use super::template::restore::Origin;
-use super::template::{
-    ch_version, BOOTSTRAP_KEY, DISK_FILE, KNOWN_HOSTS, SNAPSHOT_TIMEOUT, SNAP_DIR,
-};
-use super::{mkdir_private, remove_tree, suspend, CacheFrom, RealBackend};
+use super::template::{ch_version, BOOTSTRAP_KEY, KNOWN_HOSTS, SNAPSHOT_TIMEOUT, SNAP_DIR};
+use super::{mkdir_private, remove_tree, suspend, RealBackend};
 use crate::backend::Backend;
 use crate::ch::ChClient;
-use crate::host::{self, DiskSource};
+use crate::host;
 use crate::protocol::{CheckpointMade, Desired};
 use crate::ready::known_hosts_line;
 use crate::size::Size;
 use crate::state::{self, LeaseRecord};
 
 /// What the checkpoint was taken from, inside its dir.
-const META_FILE: &str = "checkpoint.json";
+pub(super) const META_FILE: &str = "checkpoint.json";
 /// Prefix of a checkpoint dir in the cache dir; `.tmp` marks one being written.
 const DIR_PREFIX: &str = "checkpoint-";
 /// Timeout for the pause and resume calls around the snapshot.
 const API_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bytes per block in `st_blocks`.
 const BLOCK: u64 = 512;
-/// Files a usable checkpoint has.
-pub(super) const REQUIRED: [&str; 6] = [
+/// Files a usable checkpoint has besides its disks.
+pub(super) const REQUIRED: [&str; 5] = [
     "snap/config.json",
     "snap/state.json",
     "snap/memory-ranges",
-    DELTA_FILE,
     BOOTSTRAP_KEY,
     KNOWN_HOSTS,
 ];
@@ -68,9 +67,13 @@ pub(super) struct Meta {
     pub(super) size: Size,
     /// Unix time it was taken.
     pub(super) created_at: u64,
-    /// The checkpoint its disk is a delta over; `None` over the base image.
+    /// The checkpoint its disks are deltas over; `None` for the first of a chain.
     #[serde(default)]
     pub(super) parent: Option<String>,
+    /// Its disks, root first.
+    pub(super) disks: Vec<HeldDisk>,
+    /// The cache record of its lease, whose plan a fork must ask for.
+    pub(super) cache: LeaseCache,
 }
 
 /// A checkpoint id that is safe as a directory name.
@@ -133,8 +136,8 @@ impl RealBackend {
         self.config.cache_dir.join(format!("{DIR_PREFIX}{id}"))
     }
 
-    /// Snapshots the running lease under `id`, resumes it, then stores its disk
-    /// as a delta over its parent. An older leaf checkpoint of that id is replaced.
+    /// Snapshots the running lease under `id`, resumes it, then stores its
+    /// disks as deltas over its parent's. An older leaf checkpoint of that id is replaced.
     pub(super) fn take_checkpoint(
         &self,
         record: &LeaseRecord,
@@ -150,15 +153,16 @@ impl RealBackend {
         suspend::check_room(suspend::free_bytes(cache)?, size.memory_mib)?;
         let _lock = self.checkpoint_lock(false)?;
         self.check_no_children(id, "replace")?;
-        let backing = self.backing_for(lease, id);
-        let meta = Meta {
+        let mut meta = Meta {
             checkpoint_id: id.to_owned(),
             name: name.to_owned(),
             lease_id: lease.to_owned(),
             ch_version: ch_version(&self.config.cloud_hypervisor)?,
             size,
             created_at: state::now_unix(),
-            parent: backing.parent().map(str::to_owned),
+            parent: self.parent_for(lease, id),
+            disks: Vec::new(),
+            cache: LeaseCache::default(),
         };
         let pin = known_hosts_line(&format!("crabbox-{lease}"), &self.read_host_key(lease)?);
         let tmp = cache.join(format!("{DIR_PREFIX}{id}.tmp"));
@@ -169,7 +173,7 @@ impl RealBackend {
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let pausing = Instant::now();
         let written = self.pause_vm(record, diag).and_then(|()| {
-            let captured = self.capture(record, &tmp, &meta, &pin, diag);
+            let captured = self.capture(record, &tmp, &mut meta, &pin, diag);
             let resumed = client
                 .resume()
                 .and_then(|()| self.wait_state(&client, "Running"))
@@ -177,7 +181,7 @@ impl RealBackend {
             captured.and(resumed)
         });
         let paused = pausing.elapsed().as_secs_f64();
-        let published = written.and_then(|()| self.publish(&tmp, id, &backing));
+        let published = written.and_then(|()| self.publish(&tmp, id, &meta));
         if published.is_err() {
             let _ = remove_tree(&tmp);
         }
@@ -196,29 +200,23 @@ impl RealBackend {
         })
     }
 
-    /// Turns the raw disk copy in `tmp` into a delta over `backing`, then
+    /// Turns the disk copies in `tmp` into deltas over the parent's, then
     /// makes `tmp` checkpoint `id`; returns what the checkpoint weighs.
-    fn publish(&self, tmp: &Path, id: &str, backing: &Backing) -> Result<DirBytes, String> {
-        let qemu_img = &self.config.qemu_img;
-        chain::write_delta(
-            qemu_img,
-            &tmp.join(DISK_FILE),
-            &tmp.join(DELTA_FILE),
-            backing,
-        )?;
+    fn publish(&self, tmp: &Path, id: &str, meta: &Meta) -> Result<DirBytes, String> {
+        self.write_layers(tmp, &meta.disks, meta.parent.as_deref())?;
         let dir = self.checkpoint_dir(id);
         remove_tree(&dir)?;
         fs::rename(tmp, &dir).map_err(|e| format!("publish checkpoint: {e}"))?;
         dir_bytes(&dir)
     }
 
-    /// Writes the paused lease's snapshot, a raw copy of its disk, its login key
-    /// and host pin into `dir`.
+    /// Writes the paused lease's snapshot, copies of its disks, its login key
+    /// and host pin into `dir`, and `meta` naming the disks.
     fn capture(
         &self,
         record: &LeaseRecord,
         dir: &Path,
-        meta: &Meta,
+        meta: &mut Meta,
         pin: &str,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
@@ -230,8 +228,7 @@ impl RealBackend {
             .snapshot(&snap)
             .map_err(|e| format!("lease {lease}: snapshot failed: {e}"))?;
         suspend::dig_snapshot_holes(Path::new(host::DIG_HOLES_TOOL), &snap, diag);
-        host::clone_disk(&self.store.disk_path(lease), &dir.join(DISK_FILE), 0)?;
-        self.hold_cache(lease, dir)?;
+        (meta.disks, meta.cache) = self.hold_disks(lease, dir)?;
         fs::copy(self.store.key_path(lease), dir.join(BOOTSTRAP_KEY))
             .map_err(|e| format!("keep login key: {e}"))?;
         fs::write(dir.join(KNOWN_HOSTS), pin).map_err(|e| format!("keep host pin: {e}"))?;
@@ -244,9 +241,13 @@ impl RealBackend {
         if !dir.is_dir() {
             return Err(format!("checkpoint not found: {id}"));
         }
-        let meta = read_meta(dir)
-            .ok_or_else(|| format!("checkpoint {id} is unreadable: its {META_FILE} is bad"))?;
-        if let Some(missing) = REQUIRED.iter().find(|f| !dir.join(f).exists()) {
+        let meta = read_meta(dir).ok_or_else(|| {
+            format!("checkpoint {id} is unreadable: its {META_FILE} is bad or from an older layout")
+        })?;
+        let disks = meta.disks.iter().map(|d| d.layer(dir));
+        let mut files = REQUIRED.iter().map(|f| dir.join(f)).chain(disks);
+        if let Some(missing) = files.find(|f| !f.exists()) {
+            let missing = missing.strip_prefix(dir).unwrap_or(&missing).display();
             return Err(format!(
                 "checkpoint {id} is incomplete: it has no {missing}"
             ));
@@ -261,9 +262,9 @@ impl RealBackend {
         Ok(meta)
     }
 
-    /// Starts the lease in `desired` from checkpoint `id`, running on a raw
-    /// disk flattened from the checkpoint's chain, with its own keys, hostname
-    /// and machine id. A lease that fails is destroyed.
+    /// Starts the lease in `desired` from checkpoint `id`, on its own copy of
+    /// each disk, with its own keys, hostname and machine id. A lease that
+    /// fails is destroyed.
     pub(super) fn fork_checkpoint(
         &self,
         desired: &Desired,
@@ -286,15 +287,13 @@ impl RealBackend {
                 meta.size.cpus, meta.size.memory_mib, size.cpus, size.memory_mib
             ));
         }
-        let held = Self::held_cache(&dir).map_err(|e| format!("checkpoint {id}: {e}"))?;
-        self.check_held(&held, desired)
+        self.check_held(&meta.cache, desired)
             .map_err(|e| format!("checkpoint {id} {e}"))?;
         let label = format!("checkpoint {id}");
         let origin = Origin {
             dir: &dir,
-            disk: DiskSource::Qcow2(dir.join(DELTA_FILE)),
             label: &label,
-            cache: CacheFrom::Checkpoint(&dir),
+            disks: DisksFrom::Checkpoint(&dir, &meta),
         };
         let alias = format!("crabbox-{}", meta.lease_id);
         let restored = self

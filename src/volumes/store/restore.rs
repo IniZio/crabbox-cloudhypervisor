@@ -69,7 +69,7 @@ impl Store {
         fs::hard_link(&newest.path, &base).map_err(|e| format!("link generation: {}", e.kind()))?;
         let base =
             fs::canonicalize(&base).map_err(|e| format!("resolve generation: {}", e.kind()))?;
-        host::make_overlay(&self.qemu_img, "cache overlay", &base, &overlay)?;
+        host::make_overlay(&self.qemu_img, "cache overlay", &base, "raw", &overlay)?;
         Ok((outcome, working_copy(overlay, Format::Qcow2)?))
     }
 }

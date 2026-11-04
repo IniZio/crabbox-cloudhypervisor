@@ -11,12 +11,14 @@ use std::sync::{Arc, Mutex};
 
 use std::process::Command;
 
+use super::disks::{DiskOf, HeldDisk};
 use super::{dir_bytes, Meta, REQUIRED};
 use crate::protocol::{CheckpointMade, Desired};
 use crate::size::Size;
 use crate::state::LeaseRecord;
 use crate::vm::tests::{config, record, FakeCh};
 use crate::vm::RealBackend;
+use crate::volumes::store::Format;
 
 const CH: &str = "cloud-hypervisor v52.0";
 pub(super) const SMALL: Size = Size {
@@ -84,7 +86,7 @@ pub(in crate::vm) fn plant(b: &RealBackend, id: &str, size: Size, ch: &str) -> P
     plant_child(b, id, None, size, ch)
 }
 
-/// Like [`plant`], for a checkpoint whose disk is a delta over `parent`.
+/// Like [`plant`], for a checkpoint whose disks are deltas over `parent`.
 pub(super) fn plant_child(
     b: &RealBackend,
     id: &str,
@@ -93,8 +95,12 @@ pub(super) fn plant_child(
     ch: &str,
 ) -> PathBuf {
     let dir = b.checkpoint_dir(id);
-    for f in REQUIRED {
-        let path = dir.join(f);
+    let root = HeldDisk {
+        of: DiskOf::Root,
+        format: Format::Raw,
+    };
+    let files = REQUIRED.iter().map(|f| dir.join(f));
+    for path in files.chain([root.layer(&dir)]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "x").unwrap();
     }
@@ -106,6 +112,8 @@ pub(super) fn plant_child(
         size,
         created_at: 1,
         parent: parent.map(str::to_owned),
+        disks: vec![root],
+        cache: crate::vm::cache::LeaseCache::default(),
     };
     fs::write(
         dir.join(super::META_FILE),
@@ -321,10 +329,13 @@ fn assert_files(b: &RealBackend) {
         assert!(dir.join(f).exists(), "missing {f}");
     }
     assert!(
-        read_image(&dir.join("disk.qcow2")) == vec![7u8; 65_536],
+        read_image(&dir.join("disks/root.qcow2")) == vec![7u8; 65_536],
         "the delta reads as the disk"
     );
-    assert!(!dir.join("disk.raw").exists(), "only the delta is kept");
+    assert!(
+        !dir.join("disks/root.frozen").exists(),
+        "only the delta is kept"
+    );
     assert_eq!(
         fs::read_to_string(dir.join("bootstrap")).unwrap(),
         "LEASE KEY\n"

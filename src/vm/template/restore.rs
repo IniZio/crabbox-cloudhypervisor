@@ -11,13 +11,13 @@ use super::rotate::{self, Identity};
 use super::{Template, BOOTSTRAP_KEY, DISK_FILE, KNOWN_HOSTS, SNAP_DIR};
 use crate::backend::Backend;
 use crate::ch::ChClient;
-use crate::host::DiskSource;
+use crate::host::link_or_copy;
 use crate::protocol::Desired;
 use crate::ready::ReadyProbe;
 use crate::seed;
 use crate::size::Size;
 use crate::state::{self, LeaseRecord};
-use crate::vm::{mkdir_private, remove_tree, spec, CacheFrom, RealBackend};
+use crate::vm::{mkdir_private, remove_tree, spec, DisksFrom, RealBackend};
 use crate::volumes::guest::GuestSetup;
 
 /// Restore source staged in a lease dir; removed once the VM is paused.
@@ -55,24 +55,15 @@ pub(super) fn retarget(
     Ok(())
 }
 
-/// Hard-links `from` to `to`, or copies it across filesystems.
-fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
-    fs::hard_link(from, to)
-        .or_else(|_| fs::copy(from, to).map(drop))
-        .map_err(|e| format!("stage {}: {e}", from.display()))
-}
-
-/// A dir laid out as a template: `snap/`, a root disk, the bootstrap key and
-/// the host pin.
+/// A dir laid out as a template: `snap/`, disks, the bootstrap key and the
+/// host pin.
 pub(in crate::vm) struct Origin<'a> {
     /// The dir.
     pub dir: &'a Path,
-    /// Its root disk.
-    pub disk: DiskSource,
     /// What the log calls it.
     pub label: &'a str,
-    /// Where the lease's cache disks come from.
-    pub cache: CacheFrom<'a>,
+    /// Where the lease's disks come from.
+    pub disks: DisksFrom<'a>,
 }
 
 impl RealBackend {
@@ -87,18 +78,18 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
         let label = format!("template {}", t.meta.key12());
+        let disk = t.dir.join(DISK_FILE);
         let origin = Origin {
             dir: &t.dir,
-            disk: DiskSource::Raw(t.dir.join(DISK_FILE)),
             label: &label,
-            cache: CacheFrom::Store,
+            disks: DisksFrom::Image(&disk),
         };
         self.restore_from(desired, run_dir, &origin, size, diag)
     }
 
     /// Like [`Self::restore_template`] for any dir laid out as a template. Cache
-    /// disks a checkpoint holds are in its snapshot already, so they are
-    /// pointed at the lease's copies instead of hot-added.
+    /// disks its snapshot names are pointed at the lease's copies; the rest
+    /// are hot-added.
     pub(in crate::vm) fn restore_from(
         &self,
         desired: &Desired,
@@ -113,9 +104,9 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        self.prepare_guest(&record, desired, &origin.disk, origin.cache, diag)?;
+        self.prepare_guest(&record, desired, origin.disks, diag)?;
         let stage = self.store.lease_dir(id).join(STAGE_DIR);
-        self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record, origin.cache)?;
+        let hot = self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record)?;
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let restored = self
             .start_processes(&mut record, size, Some(&stage), diag)
@@ -126,30 +117,21 @@ impl RealBackend {
         self.wait_state(&client, "Running")?;
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "restored from {} in {secs:.1}s", origin.label);
-        let mut disks = json!({"disks": []});
-        if matches!(origin.cache, CacheFrom::Store) {
-            self.read_cache(id).attach(&mut disks);
-        }
-        for disk in disks
-            .get("disks")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for disk in &hot {
             client.add_disk(disk)?;
         }
         self.start_watcher(&mut record, diag)?;
         Ok(record)
     }
 
-    /// Links the shared snapshot files into `stage` and writes its retargeted config.
+    /// Links the shared snapshot files into `stage` and writes its retargeted
+    /// config; returns the cache disks it does not name.
     fn stage_snapshot(
         &self,
         snap: &Path,
         stage: &Path,
         record: &LeaseRecord,
-        cache: CacheFrom<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<Value>, String> {
         remove_tree(stage)?;
         mkdir_private(stage)?;
         for name in SHARED_FILES {
@@ -167,11 +149,10 @@ impl RealBackend {
             serial: &self.store.serial_log(id),
         };
         retarget(&mut config, paths, record)?;
-        if matches!(cache, CacheFrom::Checkpoint(_)) {
-            self.read_cache(id).retarget(&mut config)?;
-        }
+        let hot = self.read_cache(id).retarget(&mut config)?;
         fs::write(stage.join("config.json"), config.to_string())
-            .map_err(|e| format!("write config.json: {e}"))
+            .map_err(|e| format!("write config.json: {e}"))?;
+        Ok(hot)
     }
 
     /// Rotates the clone's identity; a lease that fails it is destroyed.

@@ -43,8 +43,7 @@ fn view(copy: &WorkingCopy) -> PathBuf {
     }
     let flat = copy.image.with_extension("view.raw");
     let _ = fs::remove_file(&flat);
-    let source = host::DiskSource::Qcow2(copy.image.clone());
-    host::make_disk(Path::new("qemu-img"), &source, &flat, 0).unwrap();
+    host::flatten(Path::new("qemu-img"), &copy.image, &flat, 0).unwrap();
     flat
 }
 
@@ -62,7 +61,7 @@ fn in_guest(copy: &WorkingCopy, edit: impl FnOnce(&Path)) {
     let raw = fs::canonicalize(view(copy)).unwrap();
     edit(&raw);
     fs::remove_file(&copy.image).unwrap();
-    host::make_overlay(Path::new("qemu-img"), "test", &raw, &copy.image).unwrap();
+    host::make_overlay(Path::new("qemu-img"), "test", &raw, "raw", &copy.image).unwrap();
     let rebase = ["rebase", "-q", "-f", "qcow2", "-F", "raw", "-b", &backing];
     qemu_img(&rebase, &copy.image);
     fs::remove_file(raw).unwrap();

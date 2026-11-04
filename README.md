@@ -426,7 +426,7 @@ identity rotation code of the [boot template](#boot-template).
   guest's caches and compacts its memory over the lease's ssh, then waits up to
   10 s for the guest's free pages to reach the host, so the snapshot holds less.
   If that fails, it is logged and the checkpoint goes ahead. It pauses the VM, writes its
-  snapshot, reflinks its disk (a copy when the filesystem cannot), keeps the
+  snapshot, reflinks its disks (copies when the filesystem cannot), keeps the
   lease's login key and a host key pin, and resumes the VM in place. Guest
   processes, open TCP connections and ssh sessions carry on after a short
   pause, also when the checkpoint fails. Stock cloud-hypervisor v52.0 stops
@@ -434,50 +434,59 @@ identity rotation code of the [boot template](#boot-template).
   network stays dead. v52.0-moor.1 restarts them on resume. A second create
   under the same id replaces the first, unless other checkpoints are deltas
   over it.
-- A lease's cache disks are kept too, while it is paused, in `cache/` of the
-  checkpoint dir, and `cache.json` records which group each disk holds. An
-  overlay is copied as `<group>.qcow2` beside `<group>.base.img`, a hard link to
-  its generation, so store GC of that generation never breaks the checkpoint.
-  A raw cache disk is copied whole as `<group>.img`. When the store is on
+- While the lease is paused, each of its disks is copied: the root disk first,
+  then each cache disk. Beside each copy goes a hard link to what the disk
+  started from: the base image for the root, the generation for a cache
+  overlay. A raw cache disk with no generation has none. Store GC of a
+  generation never breaks a checkpoint that links it. When the store is on
   another filesystem, the generation is copied instead of linked.
-- After the lease resumes, the copied disk is stored as a qcow2 delta that
-  holds only the clusters that differ from its parent (`qemu-img rebase`, about
-  10 s for a 20 GiB disk). The parent is the lease's last checkpoint, or the
+- After the lease resumes, every copy is stored the same way: as a qcow2 delta
+  that holds only the clusters that differ from the parent checkpoint's copy
+  of the same disk (`qemu-img rebase`, about 10 s for a 20 GiB disk). The
+  first checkpoint of a chain holds a delta over the disk's base, or the whole
+  disk when it has none. The parent is the lease's last checkpoint, or the
   checkpoint it was forked from. Without one, or when that checkpoint is gone,
-  the parent is the base image. `parentCheckpointId` names the parent
-  checkpoint and is absent over the base image. `uniqueBytes` is the space only
-  this checkpoint allocates on disk, which deleting it frees. It counts the
-  cache copies but not a generation the store or a lease still links. `bytes` repeats
-  it. `apparentBytes` is the sum of its files' lengths, holes included. The
-  checkpoint is published only once its delta is complete.
+  there is no parent. `parentCheckpointId` names the parent and is absent
+  without one. `uniqueBytes` is the space only this checkpoint allocates on
+  disk, which deleting it frees. It does not count a base that the store, a
+  lease or another checkpoint still links. `bytes` repeats it.
+  `apparentBytes` is the sum of its files' lengths, holes included. The
+  checkpoint is published only once every delta is complete.
 - The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
-  a template: `snap/`, `disk.qcow2`, `bootstrap`, `known_hosts` and
-  `checkpoint.json`, which names the parent. `disk.qcow2` refers to
-  `../checkpoint-<parent>/disk.qcow2` or to the base image `../image-<sha>.raw`,
-  so neither may be removed by hand while it is in use. While a checkpoint is
-  written the dir is `checkpoint-<id>.tmp`. The `bootstrap` file is the source
-  lease's private login key.
-- `checkpointFork` starts a new lease from it. It flattens the chain into a
-  sparse raw disk for the new lease (`qemu-img convert`), restores the
-  snapshot onto the new lease's files, and rotates identity through one ssh call
-  made with the source lease's key. The new lease gets its own keys, host key,
-  machine id and hostname. The adapter then checks that the source key is
-  refused. A fork never cold boots. It fails if the checkpoint is missing
-  (`checkpoint not found: <id>`), incomplete, taken by another
-  `cloud-hypervisor --version`, or taken at another size than the request's
-  class gives.
+  a template: `snap/`, `disks/`, `bootstrap`, `known_hosts` and
+  `checkpoint.json`. That file names the parent, lists the disks (root first,
+  each with the format the lease ran it in) and records the lease's cache
+  groups and scope. `disks/root.qcow2` and `disks/cache-<group>.qcow2` refer to
+  the same file in `../../checkpoint-<parent>/disks/`, or to
+  `<name>.base.img` beside them, so no checkpoint may be removed by hand while
+  others are deltas over it. While a checkpoint is written the dir is
+  `checkpoint-<id>.tmp`. The `bootstrap` file is the source lease's private
+  login key. A checkpoint written before `disks/` existed is refused as
+  unreadable, so its caller starts cold.
+- `checkpointFork` starts a new lease from it. Every disk is copied out the
+  same way, into one image that refers to no checkpoint file. A raw disk (the
+  root, or a raw cache disk) is flattened into a sparse raw disk
+  (`qemu-img convert`). A cache overlay becomes one overlay that holds
+  everything the chain changed, over the fork's own hard link of the
+  generation (`qemu-img rebase`). The fork restores the snapshot onto its
+  files, pointing the cache disks the snapshot names at its copies, and
+  rotates identity through one ssh call made with the source lease's key. The
+  new lease gets its own keys, host key, machine id and hostname. The adapter
+  then checks that the source key is refused. A fork never cold boots. It
+  fails if the checkpoint is missing (`checkpoint not found: <id>`),
+  incomplete, taken by another `cloud-hypervisor --version`, or taken at
+  another size than the request's class gives.
 - A fork's cache volumes must plan to the same groups and scope as the
   checkpoint's lease had, because its snapshot names those disks and its guest
   has them mounted. Otherwise the fork is refused before anything is made, as
   in `checkpoint <id> holds cache groups [g1]; this lease asks for no cache disks`.
-  A fork gets its own copy of each held disk in the store's working dir, the
-  same overlay over a hard link of the generation that a restore gives, and the
-  snapshot is pointed at those copies. It publishes at release like any lease.
+  The fork's cache copies live in the store's working dir and publish at
+  release like any lease's.
 - `checkpointDelete` removes the dir and any half-written copy. An unknown id
   succeeds. A checkpoint that others are deltas over is refused with
   `cannot delete checkpoint <id>: checkpoints <ids> are deltas over it; delete them first`,
-  so delete leaves first. A fork already running is not affected, because it
-  runs on its own raw disk and its own cache copies.
+  so delete leaves first. A fork already running is not affected, because its
+  disks refer to no checkpoint file.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 

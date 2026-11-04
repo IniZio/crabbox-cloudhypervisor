@@ -9,7 +9,7 @@ use super::{
     check_sealed, ext4, mkdir_private, unix_ns, Format, Publish, Store, WorkingCopy, FULL_PERCENT,
     LEASE_TAG, MIN_GROWTH,
 };
-use crate::host::{self, DiskSource};
+use crate::host;
 use crate::volumes::Group;
 
 /// Suffix of the flattened copy of an overlay, beside it in the work dir.
@@ -67,8 +67,7 @@ impl Store {
             Format::Raw => copy.image.clone(),
             Format::Qcow2 => {
                 let flat = copy.image.with_extension(FLAT_EXTENSION);
-                let source = DiskSource::Qcow2(copy.image.clone());
-                host::make_disk(&self.qemu_img, &source, &flat, 0)?;
+                host::flatten(&self.qemu_img, &copy.image, &flat, 0)?;
                 flat
             }
         };

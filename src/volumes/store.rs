@@ -83,6 +83,15 @@ impl Format {
             Self::Qcow2 => "Qcow2",
         }
     }
+
+    /// qemu-img's name for this format.
+    #[must_use]
+    pub const fn qemu_format(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Qcow2 => "qcow2",
+        }
+    }
 }
 
 /// A lease's writable disk for one group.
@@ -301,6 +310,25 @@ impl Store {
         self.root.join(LEASES_DIR).join(lease_id)
     }
 
+    /// Where lease `lease_id`'s working copy of `group` in `format` lives, and
+    /// for an overlay the link to its generation beside it.
+    #[must_use]
+    pub fn work_paths(
+        &self,
+        lease_id: &str,
+        group: &Token,
+        format: Format,
+    ) -> (PathBuf, Option<PathBuf>) {
+        let file = |suffix: &str| {
+            self.work_dir(lease_id)
+                .join(format!("{}{suffix}", group.as_str()))
+        };
+        match format {
+            Format::Raw => (file(RAW_SUFFIX), None),
+            Format::Qcow2 => (file(OVERLAY_SUFFIX), Some(file(BASE_SUFFIX))),
+        }
+    }
+
     /// Marks a group used now.
     fn touch(dir: &Path) {
         let _ = fs::File::create(dir.join(USED_FILE));
@@ -312,11 +340,8 @@ impl Store {
     }
 }
 
-mod copy;
 mod gc;
 mod publish;
 mod restore;
 #[cfg(test)]
 mod tests;
-
-pub use copy::{copy_working, BackingName};
