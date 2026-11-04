@@ -20,7 +20,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cache::CacheFrom;
+use checkpoint::DisksFrom;
 use util::{serial_tail, wait_until};
 
 use crate::assets;
@@ -109,24 +109,25 @@ impl RealBackend {
         &self,
         record: &LeaseRecord,
         desired: &Desired,
-        disk: &host::DiskSource,
-        cache: CacheFrom<'_>,
+        from: DisksFrom<'_>,
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.as_str();
         let comment = format!("crabbox-{id}");
         let pubkey = host::ssh_keygen(&self.config.ssh_keygen, &self.store.key_path(id), &comment)?;
         let (host_private_key, host_public_key) = self.make_host_key(id)?;
-        let size = self.config.disk_gib * 1024 * 1024 * 1024;
-        host::make_disk(&self.config.qemu_img, disk, &self.store.disk_path(id), size)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
         self.collect_cache_garbage(diag);
-        let cache = match cache {
-            CacheFrom::Store => {
+        let cache = match from {
+            DisksFrom::Image(base) => {
+                let size = self.config.disk_gib * 1024 * 1024 * 1024;
+                host::clone_disk(base, &self.store.disk_path(id), size)?;
                 self.restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
             }
-            CacheFrom::Checkpoint(dir) => self.adopt_cache(id, dir, desired)?,
+            DisksFrom::Checkpoint(dir, meta) => self
+                .fork_disks(id, dir, meta, desired)
+                .map_err(|e| format!("checkpoint {}: {e}", meta.checkpoint_id))?,
         };
         let mut guest = cache.guest_setup();
         crate::reclaim::add_to(&mut guest, &self.config.reclaim);
@@ -223,8 +224,7 @@ impl RealBackend {
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
-        let disk = host::DiskSource::Raw(assets.base_raw.clone());
-        self.prepare_guest(&record, desired, &disk, CacheFrom::Store, diag)?;
+        self.prepare_guest(&record, desired, DisksFrom::Image(&assets.base_raw), diag)?;
         let _ = writeln!(diag, "guest files ready");
         self.start_processes(&mut record, size, None, diag)?;
         self.boot_vm(&record, size, &assets.firmware, diag)?;

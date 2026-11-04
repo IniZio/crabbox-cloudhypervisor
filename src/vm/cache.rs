@@ -52,11 +52,6 @@ pub(super) struct LeaseCache {
 }
 
 impl LeaseCache {
-    /// True when the lease has a cache disk attached.
-    pub(super) fn has_disks(&self) -> bool {
-        self.attached().next().is_some()
-    }
-
     /// Groups that have a disk, with their disk index.
     fn attached(&self) -> impl Iterator<Item = (usize, &RecordedGroup)> {
         self.groups
@@ -169,7 +164,7 @@ impl RealBackend {
     }
 
     /// Records `cache` as lease `id`'s cache disks.
-    fn write_cache(&self, id: &str, cache: &LeaseCache) -> Result<(), String> {
+    pub(super) fn write_cache(&self, id: &str, cache: &LeaseCache) -> Result<(), String> {
         let json = serde_json::to_vec_pretty(cache).map_err(|e| format!("encode cache: {e}"))?;
         fs::OpenOptions::new()
             .write(true)
@@ -274,5 +269,3 @@ impl RealBackend {
 mod held;
 #[cfg(test)]
 mod tests;
-
-pub(super) use held::CacheFrom;

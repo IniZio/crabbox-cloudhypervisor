@@ -33,27 +33,18 @@ pub fn clone_disk(base: &Path, dest: &Path, size_bytes: u64) -> Result<(), Strin
     grow(dest, size_bytes).map_err(|e| format!("disk clone: {e}"))
 }
 
-/// Where a new lease's root disk comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiskSource {
-    /// A raw image, copied.
-    Raw(PathBuf),
-    /// A qcow2 image whose backing chain is flattened into a raw copy.
-    Qcow2(PathBuf),
+/// Hard-links `from` to `to`, or copies it when they are on different filesystems.
+pub fn link_or_copy(from: &Path, to: &Path) -> Result<(), String> {
+    match fs::hard_link(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) => clone_disk(from, to, 0),
+    }
 }
 
-/// Writes the raw root disk of a new lease at `dest` from `source`, sparse and
-/// grown to `size_bytes` (never shrunk). The disk refers to no other file.
-pub fn make_disk(
-    qemu_img: &Path,
-    source: &DiskSource,
-    dest: &Path,
-    size_bytes: u64,
-) -> Result<(), String> {
-    let top = match source {
-        DiskSource::Raw(base) => return clone_disk(base, dest, size_bytes),
-        DiskSource::Qcow2(top) => top,
-    };
+/// Writes `dest`, a sparse raw copy of what qcow2 image `top` reads as through
+/// its backing chain, grown to `size_bytes` (never shrunk). It refers to no
+/// other file.
+pub fn flatten(qemu_img: &Path, top: &Path, dest: &Path, size_bytes: u64) -> Result<(), String> {
     let output = Command::new(qemu_img)
         .args(["convert", "-q", "-f", "qcow2", "-O", "raw", "-S", "4k"])
         .arg(top)
@@ -87,14 +78,21 @@ pub fn qemu_img(program: &Path, what: &str, cmd: &mut Command) -> Result<(), Str
     ))
 }
 
-/// Creates the empty qcow2 overlay `dest` over the raw image at absolute
-/// path `backing`; it reads as `backing` and stores only what is written to it.
-pub fn make_overlay(program: &Path, what: &str, backing: &Path, dest: &Path) -> Result<(), String> {
+/// Creates the empty qcow2 overlay `dest` over the image at absolute path
+/// `backing`, of qemu-img format `format`; it reads as `backing` and stores
+/// only what is written to it.
+pub fn make_overlay(
+    program: &Path,
+    what: &str,
+    backing: &Path,
+    format: &str,
+    dest: &Path,
+) -> Result<(), String> {
     qemu_img(
         program,
         what,
         Command::new(program)
-            .args(["create", "-q", "-f", "qcow2", "-F", "raw", "-b"])
+            .args(["create", "-q", "-f", "qcow2", "-F", format, "-b"])
             .arg(backing)
             .arg(dest),
     )

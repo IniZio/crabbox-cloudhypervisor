@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::host::{make_disk, DiskSource};
+use crate::host::flatten;
 use crate::protocol::CheckpointMade;
 use crate::state::LeaseRecord;
 use crate::vm::checkpoint::tests::{
@@ -49,16 +49,13 @@ fn lease_on_base(root: &Path) -> (RealBackend, LeaseRecord, FakeCh) {
     (b, rec, ch)
 }
 
-/// The disk file of checkpoint `id`.
+/// The root disk layer of checkpoint `id`.
 fn delta(b: &RealBackend, id: &str) -> PathBuf {
-    b.checkpoint_dir(id).join("disk.qcow2")
+    b.checkpoint_dir(id).join("disks/root.qcow2")
 }
 
-/// The base image's name as a checkpoint dir refers to it.
-fn base_ref(b: &RealBackend) -> String {
-    let name = base_raw_path(&b.config);
-    format!("../{}", name.file_name().unwrap().to_string_lossy())
-}
+/// The base image as a root layer over it names it: its link beside the layer.
+const BASE_REF: &str = "root.base.img";
 
 #[test]
 fn each_checkpoint_of_a_lease_is_a_delta_over_its_last_and_the_first_over_the_base() {
@@ -70,16 +67,13 @@ fn each_checkpoint_of_a_lease_is_a_delta_over_its_last_and_the_first_over_the_ba
     write_disk(&b, MIB / 2, 1);
     let first = take(&b, &rec, "ck1").unwrap();
     assert_eq!(first.parent_checkpoint_id, None);
-    assert_eq!(
-        image_info(&delta(&b, "ck1"))["backing-filename"],
-        base_ref(&b)
-    );
+    assert_eq!(image_info(&delta(&b, "ck1"))["backing-filename"], BASE_REF);
     let disk = write_disk(&b, MIB + MIB / 2, 2);
     let second = take(&b, &rec, "ck2").unwrap();
     assert_eq!(second.parent_checkpoint_id.as_deref(), Some("ck1"));
     assert_eq!(
         image_info(&delta(&b, "ck2"))["backing-filename"],
-        "../checkpoint-ck1/disk.qcow2"
+        "../../checkpoint-ck1/disks/root.qcow2"
     );
     assert!(
         read_image(&delta(&b, "ck2")) == disk,
@@ -103,8 +97,13 @@ fn a_disk_made_from_a_chain_is_raw_and_outlives_every_checkpoint_in_it() {
     let disk = write_disk(&b, MIB + MIB / 2, 2);
     take(&b, &rec, "ck2").unwrap();
     let fork = root.path().join("fork.raw");
-    let source = DiskSource::Qcow2(delta(&b, "ck2"));
-    make_disk(Path::new("qemu-img"), &source, &fork, 4 * MIB as u64).unwrap();
+    flatten(
+        Path::new("qemu-img"),
+        &delta(&b, "ck2"),
+        &fork,
+        4 * MIB as u64,
+    )
+    .unwrap();
     b.remove_checkpoint("ck2").unwrap();
     b.remove_checkpoint("ck1").unwrap();
     fs::remove_file(base_raw_path(&b.config)).unwrap();
@@ -183,10 +182,7 @@ fn a_lease_whose_last_checkpoint_is_gone_checkpoints_over_the_base() {
     let disk = write_disk(&b, MIB / 2, 1);
     let made = take(&b, &rec, "ck2").unwrap();
     assert_eq!(made.parent_checkpoint_id, None);
-    assert_eq!(
-        image_info(&delta(&b, "ck2"))["backing-filename"],
-        base_ref(&b)
-    );
+    assert_eq!(image_info(&delta(&b, "ck2"))["backing-filename"], BASE_REF);
     assert!(
         read_image(&delta(&b, "ck2")) == disk,
         "ck2 reads as the disk"
