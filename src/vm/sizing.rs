@@ -1,29 +1,24 @@
-//! Sizing a lease from its class.
+//! Sizing a lease from its class or, with none, from the host.
 
 use super::RealBackend;
 use crate::size::{self, Size};
+use crate::state::LeaseRecord;
 
 impl RealBackend {
-    /// The size of a lease with no class.
-    pub(super) const fn default_size(&self) -> Size {
-        Size {
-            cpus: self.config.cpus,
-            memory_mib: self.config.memory_mib,
-        }
-    }
-
-    /// Sizes a lease from its class before any download or state exists.
+    /// Sizes a lease before any download or state exists. The host is read
+    /// here, once per boot, so a resized host sizes the next VM.
     pub(super) fn lease_size(&self, class: Option<&str>) -> Result<Size, String> {
         let c = &self.config;
-        let default = self.default_size();
-        let host = if class.is_some() {
-            size::host()?
-        } else {
-            size::Host {
-                total_cpus: c.cpus,
-                total_memory_mib: c.memory_mib,
-            }
-        };
-        size::resolve(&c.classes, default, class, &host)
+        let host = size::host()?;
+        class.map_or_else(
+            || size::no_class_size(&host, c.cpus, c.memory_mib),
+            |name| size::resolve(&c.classes, name, &host),
+        )
+    }
+
+    /// The size a lease boots or restores at: the one it was created with.
+    /// A record from before sizes were stored is sized like a new no-class lease.
+    pub(super) fn record_size(&self, record: &LeaseRecord) -> Result<Size, String> {
+        record.size.map_or_else(|| self.lease_size(None), Ok)
     }
 }

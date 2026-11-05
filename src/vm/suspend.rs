@@ -90,7 +90,7 @@ impl RealBackend {
     /// On failure the snapshot is removed and the VM is still alive.
     fn snapshot_and_stop(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
         let id = &record.lease_id;
-        let size = record.size.unwrap_or_else(|| self.default_size());
+        let size = self.record_size(record)?;
         let lease_dir = self.store.lease_dir(id);
         check_room(free_bytes(&lease_dir)?, size.memory_mib)?;
         let tmp = lease_dir.join(SNAPSHOT_TMP);
@@ -130,7 +130,7 @@ impl RealBackend {
         let id = record.lease_id.clone();
         let snap = self.snapshot_dir(&id);
         let mut record = self.relaunch_prep(record, diag)?;
-        let size = record.size.unwrap_or_else(|| self.default_size());
+        let size = self.record_size(&record)?;
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let started = Instant::now();
         // Once the guest runs its disk moves past the snapshot, so the snapshot

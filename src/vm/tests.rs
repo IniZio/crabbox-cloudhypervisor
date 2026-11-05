@@ -22,8 +22,8 @@ pub(super) fn config(root: &Path) -> Config {
         state_dir: root.join("state"),
         runtime_dir: root.join("run"),
         cache_dir: root.join("cache"),
-        cpus: 2,
-        memory_mib: 4096,
+        cpus: Some(2),
+        memory_mib: Some(4096),
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {

@@ -1,7 +1,8 @@
 //! Lease sizing: maps a crabbox class to guest vCPUs and memory.
 //!
 //! A class is admitted against the host's totals: a guest is backed lazily, so
-//! only the memory it touches is claimed on the host.
+//! only the memory it touches is claimed on the host. A lease with no class
+//! gets the host's ceiling.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -84,19 +85,48 @@ fn entry_size(name: &str, entry: &Value) -> Result<Size, String> {
     Ok(Size { cpus, memory_mib })
 }
 
-/// The size for `class`: `default` when absent, else the class checked against `host`.
+/// MiB the host keeps from a no-class VM, before the share of its total.
+const RESERVE_BASE_MIB: u64 = 4096;
+
+/// The size of a lease with no class: the host's cores and its memory less a reserve.
+///
+/// The reserve is 4 GiB plus 10 percent of `MemTotal`, so the guest's ceiling
+/// leaves room for the host and the VMM. Guest memory is backed lazily and
+/// the balloon hands unused pages back, so the ceiling is not a claim.
+/// `cpus` and `memory_mib` are operator overrides of one field each.
+pub fn no_class_size(
+    host: &Host,
+    cpus: Option<u32>,
+    memory_mib: Option<u64>,
+) -> Result<Size, String> {
+    let memory_mib = if let Some(m) = memory_mib {
+        m
+    } else {
+        let reserve = RESERVE_BASE_MIB + host.total_memory_mib / 10;
+        host.total_memory_mib
+            .checked_sub(reserve)
+            .filter(|m| *m >= MIN_MEMORY_MIB)
+            .ok_or_else(|| {
+                format!(
+                    "this host has {} MiB of memory, too little for a VM after the {reserve} MiB \
+                     reserve (4096 MiB plus 10 percent) kept for the host; the VM needs at least \
+                     {MIN_MEMORY_MIB} MiB",
+                    host.total_memory_mib
+                )
+            })?
+    };
+    Ok(Size {
+        cpus: cpus.unwrap_or(host.total_cpus).max(1),
+        memory_mib,
+    })
+}
+
+/// The size for `class`, checked against `host`.
 ///
 /// A class the host cannot hold fails the lease; shrinking it would hand the
 /// caller a smaller machine than it asked for.
-pub fn resolve(
-    classes: &BTreeMap<String, Size>,
-    default: Size,
-    class: Option<&str>,
-    host: &Host,
-) -> Result<Size, String> {
-    let Some(name) = class else {
-        return Ok(default);
-    };
+pub fn resolve(classes: &BTreeMap<String, Size>, class: &str, host: &Host) -> Result<Size, String> {
+    let name = class;
     let Some(&size) = classes.get(name) else {
         let known: Vec<&str> = classes.keys().map(String::as_str).collect();
         return Err(format!(

@@ -30,10 +30,7 @@ impl RealBackend {
             growth: self.config.growth,
             ssh: self.config.ssh.clone(),
             balloon: self.config.balloon.clone(),
-            memory_mib: record
-                .size
-                .unwrap_or_else(|| self.default_size())
-                .memory_mib,
+            memory_mib: self.record_size(record)?.memory_mib,
         };
         let json = serde_json::to_vec(&watch).map_err(|e| format!("encode watch spec: {e}"))?;
         fs::OpenOptions::new()

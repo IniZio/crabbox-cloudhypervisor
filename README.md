@@ -72,9 +72,9 @@ All keys go under `external.config`. All are optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `cpus` | `2` | vCPUs the guest boots with (1-64) |
-| `memoryMiB` | `4096` | memory the guest boots with, at least 512 |
-| `classes` | the ladder below | per-class `{cpus, memoryMiB}` that replaces a built-in class or adds one; a lease with a class boots at its size instead of `cpus`/`memoryMiB` |
+| `cpus` | host cores | vCPUs a no-class guest boots with (1-64); see [Lease classes](#lease-classes) |
+| `memoryMiB` | host memory less reserve | memory a no-class guest boots with, at least 512 |
+| `classes` | the ladder below | per-class `{cpus, memoryMiB}` that replaces a built-in class or adds one; a lease with a class boots at its size instead of the host ceiling |
 | `diskGiB` | `20` | guest disk size at create, at least 8 |
 | `diskMaxGiB` | `100`, or `diskGiB` if larger | largest the disk grows to (at least `diskGiB`) |
 | `diskGrowStepGiB` | `10` | GiB added per disk grow (at least 1) |
@@ -92,7 +92,7 @@ All keys go under `external.config`. All are optional.
 | `cacheMaxVolumeGB` | `40` | largest group filesystem in GiB |
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 | `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
-| `vmmOverheadMiB` | `512` | MiB a VM scope may use above the class memory, for cloud-hypervisor itself (at least 64) |
+| `vmmOverheadMiB` | `512` | MiB a VM scope may use above the VM memory, for cloud-hypervisor itself (at least 64) |
 | `guestReclaimIntervalSecs` | `60` | seconds between guest file cache trims (at least 1) |
 | `guestReclaimFloorMiB` | `512` | file cache a guest keeps; each trim asks for the rest back |
 | `guestReclaimRefaultMiB` | `16` | file re-read from disk between trims, in MiB, above which... |
@@ -106,7 +106,11 @@ Without the `XDG_*` variables, state and cache fall back to
 ### Lease classes
 
 `crabbox warmup --class <name>` sizes the VM from the class. Without a class the VM
-boots at `cpus` and `memoryMiB`.
+boots at the host's ceiling: every logical CPU and `MemTotal` less a reserve of
+4 GiB plus 10 percent. The host is read at each boot. A host too small to leave
+a VM 512 MiB after the reserve fails the lease with a message saying so.
+Setting `cpus` or `memoryMiB` overrides that field of the ceiling for no-class
+VMs. A VM keeps the size it booted with through suspend and restore.
 
 | Class | vCPUs | Memory |
 | --- | --- | --- |
@@ -158,7 +162,7 @@ With `cgroup: systemd`, each lease runs in three systemd user scopes:
 
 | Scope | Holds | Limits |
 | --- | --- | --- |
-| `crabbox-<leaseId>.scope` | cloud-hypervisor | `CPUQuota=<cpus*100>%`, `MemoryMax=<class memory + vmmOverheadMiB>`, `MemorySwapMax=0` |
+| `crabbox-<leaseId>.scope` | cloud-hypervisor | `CPUQuota=<cpus*100>%`, `MemoryMax=<VM memory + vmmOverheadMiB>`, `MemorySwapMax=0` |
 | `crabbox-<leaseId>-passt.scope` | passt | none |
 | `crabbox-<leaseId>-watch.scope` | the growth watcher | none |
 
@@ -200,7 +204,7 @@ short, without a reboot:
 
 ## Memory while a Box runs
 
-The VM boots at its full class size with a balloon at 0. The watcher registers a
+The VM boots at its full size with a balloon at 0. The watcher registers a
 pressure trigger on the host's `/proc/pressure/memory` and waits on it, so
 there is no polling for memory. Each time it fires the watcher inflates the
 balloon by `balloonStepPercent` of the class memory (`vm.resize`), never past

@@ -14,11 +14,11 @@ use crate::config::Config;
 use crate::protocol::Desired;
 use crate::size::Size;
 
-/// The size a lease with no class boots at.
+/// The size a fixture config's operator override gives.
 pub(super) fn size_of(cfg: &Config) -> Size {
     Size {
-        cpus: cfg.cpus,
-        memory_mib: cfg.memory_mib,
+        cpus: cfg.cpus.unwrap(),
+        memory_mib: cfg.memory_mib.unwrap(),
     }
 }
 
