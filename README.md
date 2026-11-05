@@ -198,9 +198,11 @@ short, without a reboot:
   the image by enough to leave `diskGrowFreeGiB` free, and at least
   `diskGrowStepGiB`, in one resize (never past `diskMaxGiB` when set). Then the
   guest runs `growpart` and `resize2fs` on the root partition. If that guest step fails, the
-  watcher retries it before it grows the image again. A grow needs the host
-  filesystem holding the image to have room for the whole step; otherwise the
-  disk stays as it is, and `list` and `resolve` report why in the lease's
+  watcher retries it before it grows the image again. A grow is allowed only when
+  the host filesystem holding the image would still have at least 10 percent of
+  its size free, and at least 20 GiB, after the whole step. The watcher reads
+  host free space at every grow, since images are sparse. Otherwise the disk
+  stays as it is, and `list` and `resolve` report why in the lease's
   `growthBlocked` field.
 
 ## Memory while a Box runs

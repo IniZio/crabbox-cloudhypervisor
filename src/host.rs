@@ -118,15 +118,27 @@ fn grow(disk: &Path, size_bytes: u64) -> Result<(), String> {
 /// Bytes available to unprivileged users on the filesystem holding `path`:
 /// statvfs `f_bavail * f_frsize`, read through `stat -f`.
 pub fn free_bytes(path: &Path) -> Result<u64, String> {
+    space(path).map(|(free, _)| free)
+}
+
+/// Free and total bytes of the filesystem holding `path`, read now.
+pub fn space(path: &Path) -> Result<(u64, u64), String> {
     let output = Command::new("stat")
-        .args(["-f", "-c", "%a %S", "--"])
+        .args(["-f", "-c", "%a %b %S", "--"])
         .arg(path)
         .output()
         .map_err(|e| format!("host free space: cannot run stat: {e}"))?;
     let text = String::from_utf8_lossy(&output.stdout);
     let mut fields = text.split_whitespace().map(str::parse::<u64>);
-    match (output.status.success(), fields.next(), fields.next()) {
-        (true, Some(Ok(blocks)), Some(Ok(size))) => Ok(blocks.saturating_mul(size)),
+    match (
+        output.status.success(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) {
+        (true, Some(Ok(avail)), Some(Ok(total)), Some(Ok(size))) => {
+            Ok((avail.saturating_mul(size), total.saturating_mul(size)))
+        }
         _ => Err(format!(
             "host free space: stat failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
