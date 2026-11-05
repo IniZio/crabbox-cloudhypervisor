@@ -21,7 +21,7 @@ fn config(root: &Path) -> Config {
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
-            disk_max_gib: 100,
+            disk_max_gib: None,
             disk_step_gib: 10,
             disk_free_percent: 15,
             disk_free_gib: 4,

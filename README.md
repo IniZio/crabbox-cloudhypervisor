@@ -75,11 +75,11 @@ All keys go under `external.config`. All are optional.
 | `cpus` | host cores | vCPUs a no-class guest boots with (1-64); see [Lease classes](#lease-classes) |
 | `memoryMiB` | host memory less reserve | memory a no-class guest boots with, at least 512 |
 | `classes` | the ladder below | per-class `{cpus, memoryMiB}` that replaces a built-in class or adds one; a lease with a class boots at its size instead of the host ceiling |
-| `diskGiB` | `20` | guest disk size at create, at least 8 |
-| `diskMaxGiB` | `100`, or `diskGiB` if larger | largest the disk grows to (at least `diskGiB`) |
-| `diskGrowStepGiB` | `10` | GiB added per disk grow (at least 1) |
-| `diskGrowFreePercent` | `15` | grow when free space on `/` falls below this percent of its size (1-90)... |
-| `diskGrowFreeGiB` | `4` | ...or below this many GiB, whichever is larger |
+| `diskGiB` | `30` | guest disk size at create, at least 8; leaves a fresh Box about 20 GiB free |
+| `diskMaxGiB` | unset | operator ceiling on the disk (at least `diskGiB`); unset leaves only the host's free space to limit growth |
+| `diskGrowStepGiB` | `10` | smallest GiB added per disk grow (at least 1) |
+| `diskGrowFreePercent` | `0` | grow when free space on `/` falls below this percent of its size (0-90, 0 is off)... |
+| `diskGrowFreeGiB` | `20` | ...or below this many GiB, whichever is larger |
 | `readyTimeoutSeconds` | `300` | wait for the guest to become ready (1-3600) |
 | `stateDir` | `$XDG_STATE_HOME/crabbox-cloudhypervisor` | per-lease state (absolute path) |
 | `runtimeDir` | `$XDG_RUNTIME_DIR/crabbox-cloudhypervisor`, else `<stateDir>/run` | unix sockets (absolute path, at most 85 bytes) |
@@ -195,8 +195,9 @@ guest over ssh (root fs size and free space) and grows the disk when it is
 short, without a reboot:
 
 - **Disk.** When free space on `/` falls below the floor, `vm.resize-disk` grows
-  the image by `diskGrowStepGiB` (never past `diskMaxGiB`), then the guest runs
-  `growpart` and `resize2fs` on the root partition. If that guest step fails, the
+  the image by enough to leave `diskGrowFreeGiB` free, and at least
+  `diskGrowStepGiB`, in one resize (never past `diskMaxGiB` when set). Then the
+  guest runs `growpart` and `resize2fs` on the root partition. If that guest step fails, the
   watcher retries it before it grows the image again. A grow needs the host
   filesystem holding the image to have room for the whole step; otherwise the
   disk stays as it is, and `list` and `resolve` report why in the lease's

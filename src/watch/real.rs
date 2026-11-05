@@ -123,8 +123,11 @@ pub fn run(lease_id: &str, state_dir: &Path, out: &mut dyn Write) -> Result<(), 
     };
     let g = watch.growth;
     log.note(&format!(
-        "watching {lease_id}: disk up to {} GiB",
-        g.disk_max_gib
+        "watching {lease_id}: disk up to {}",
+        g.disk_max_gib.map_or_else(
+            || "what the host has room for".to_owned(),
+            |m| format!("{m} GiB")
+        )
     ));
     watch_loop(&machine, &mut Planner::new(g), balloon, INTERVAL, &mut log);
     Ok(())

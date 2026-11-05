@@ -42,11 +42,11 @@ pub struct Asset {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Growth {
-    /// Largest root disk, in GiB.
-    pub disk_max_gib: u64,
+    /// Operator ceiling on the root disk, GiB; `None` leaves the host to limit it.
+    pub disk_max_gib: Option<u64>,
     /// GiB added to the disk per grow.
     pub disk_step_gib: u64,
-    /// The disk grows when free space falls below this percent of the root fs...
+    /// The disk grows when free space falls below this percent of the root fs (0 is off)...
     pub disk_free_percent: u64,
     /// ...or below this many GiB, whichever is larger.
     pub disk_free_gib: u64,
@@ -143,7 +143,7 @@ impl Config {
             .transpose()
             .map_err(|_| "config.cpus must be an integer between 1 and 64".to_owned())?;
         let memory_mib = opt_int_key(config, "memoryMiB", 512, u64::MAX)?;
-        let disk_gib = int_key(config, "diskGiB", 20, 8, u64::MAX)?;
+        let disk_gib = int_key(config, "diskGiB", 30, 8, u64::MAX)?;
         Ok(Self {
             runtime_dir,
             cache_dir,
@@ -269,10 +269,12 @@ fn bool_key(config: &Value, key: &str) -> Result<bool, String> {
 /// Reads the disk growth keys.
 fn growth(config: &Value, disk_gib: u64) -> Result<Growth, String> {
     Ok(Growth {
-        disk_max_gib: int_key(config, "diskMaxGiB", disk_gib.max(100), disk_gib, u64::MAX)?,
+        disk_max_gib: get(config, "diskMaxGiB")
+            .map(|_| int_key(config, "diskMaxGiB", disk_gib, disk_gib, u64::MAX))
+            .transpose()?,
         disk_step_gib: int_key(config, "diskGrowStepGiB", 10, 1, u64::MAX)?,
-        disk_free_percent: int_key(config, "diskGrowFreePercent", 15, 1, 90)?,
-        disk_free_gib: int_key(config, "diskGrowFreeGiB", 4, 0, u64::MAX)?,
+        disk_free_percent: int_key(config, "diskGrowFreePercent", 0, 0, 90)?,
+        disk_free_gib: int_key(config, "diskGrowFreeGiB", 20, 0, u64::MAX)?,
     })
 }
 
