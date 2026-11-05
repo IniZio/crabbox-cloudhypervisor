@@ -4,7 +4,7 @@ use super::*;
 
 /// The owner's defaults for a 10 GiB guest disk.
 const GROWTH: Growth = Growth {
-    disk_max_gib: 30,
+    disk_max_gib: Some(30),
     disk_step_gib: 10,
     disk_free_percent: 15,
     disk_free_gib: 4,
@@ -125,4 +125,117 @@ fn the_disk_stops_at_its_cap_and_says_so_once() {
         vec![Action::DiskAtMax { max: 30 * GIB }]
     );
     assert!(p.plan(&low, full).is_empty());
+}
+
+/// The shipped defaults: keep 20 GiB free, no ceiling.
+const DEFAULT: Growth = Growth {
+    disk_max_gib: None,
+    disk_step_gib: 10,
+    disk_free_percent: 0,
+    disk_free_gib: 20,
+};
+
+fn settled_with(growth: Growth) -> Planner {
+    let mut p = Planner::new(growth);
+    let _ = p.plan(&calm(0), NOW);
+    p.fs_grown(true);
+    p
+}
+
+#[test]
+fn a_disk_with_18_percent_free_still_grows_to_keep_20_gib_free() {
+    let mut p = settled_with(DEFAULT);
+    let sample = Sample {
+        fs_size: 29 * GIB,
+        fs_avail: 5 * GIB + GIB / 5,
+    };
+    let now = Current {
+        disk_bytes: 29 * GIB,
+    };
+    let plan = p.plan(&sample, now);
+    assert_eq!(plan.len(), 2, "one disk grow then a filesystem grow");
+    assert_eq!(plan[1], Action::GrowFs);
+    let Action::GrowDisk { from, to } = plan[0] else {
+        unreachable!("asserted below")
+    };
+    assert_eq!(from, 29 * GIB);
+    assert!(
+        to - from >= 20 * GIB - sample.fs_avail,
+        "one resize reaches 20 GiB free"
+    );
+}
+
+#[test]
+fn a_disk_with_20_gib_free_does_not_grow() {
+    let mut p = settled_with(DEFAULT);
+    let sample = Sample {
+        fs_size: 29 * GIB,
+        fs_avail: 20 * GIB,
+    };
+    let now = Current {
+        disk_bytes: 29 * GIB,
+    };
+    assert!(p.plan(&sample, now).is_empty());
+}
+
+#[test]
+fn a_deep_shortfall_is_covered_in_one_resize_not_several_steps() {
+    let mut p = settled_with(DEFAULT);
+    let sample = Sample {
+        fs_size: 30 * GIB,
+        fs_avail: GIB,
+    };
+    let now = Current {
+        disk_bytes: 30 * GIB,
+    };
+    assert_eq!(
+        p.plan(&sample, now)[0],
+        Action::GrowDisk {
+            from: 30 * GIB,
+            to: 49 * GIB
+        }
+    );
+}
+
+#[test]
+fn without_a_ceiling_a_huge_disk_keeps_growing() {
+    let mut p = settled_with(DEFAULT);
+    let sample = Sample {
+        fs_size: 900 * GIB,
+        fs_avail: GIB,
+    };
+    let now = Current {
+        disk_bytes: 900 * GIB,
+    };
+    assert!(matches!(p.plan(&sample, now)[0], Action::GrowDisk { .. }));
+}
+
+#[test]
+fn an_operator_ceiling_still_caps_the_grow() {
+    let mut p = settled_with(Growth {
+        disk_max_gib: Some(40),
+        ..DEFAULT
+    });
+    let sample = Sample {
+        fs_size: 30 * GIB,
+        fs_avail: GIB,
+    };
+    let now = Current {
+        disk_bytes: 30 * GIB,
+    };
+    assert_eq!(
+        p.plan(&sample, now)[0],
+        Action::GrowDisk {
+            from: 30 * GIB,
+            to: 40 * GIB
+        }
+    );
+    p.fs_grown(true);
+    let full = Current {
+        disk_bytes: 40 * GIB,
+    };
+    assert_eq!(
+        p.plan(&sample, full),
+        vec![Action::DiskAtMax { max: 40 * GIB }]
+    );
 }

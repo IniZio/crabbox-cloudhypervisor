@@ -84,16 +84,26 @@ impl Planner {
             self.max_noted = false;
             return Vec::new();
         }
-        let max = self.growth.disk_max_gib.saturating_mul(GIB);
-        if current.disk_bytes >= max {
+        let max = self.growth.disk_max_gib.map(|g| g.saturating_mul(GIB));
+        if let Some(max) = max.filter(|m| current.disk_bytes >= *m) {
             if self.max_noted {
                 return Vec::new();
             }
             self.max_noted = true;
             return vec![Action::DiskAtMax { max }];
         }
-        let step = self.growth.disk_step_gib.saturating_mul(GIB);
-        let to = current.disk_bytes.saturating_add(step).min(max);
+        // Free space is checked up front by tools such as emulators, so one
+        // resize must reach the floor instead of creeping up a step per tick.
+        let shortfall = floor - sample.fs_avail;
+        let step = self
+            .growth
+            .disk_step_gib
+            .saturating_mul(GIB)
+            .max(shortfall.div_ceil(GIB).saturating_mul(GIB));
+        let to = current
+            .disk_bytes
+            .saturating_add(step)
+            .min(max.unwrap_or(u64::MAX));
         self.fs_pending = true;
         vec![
             Action::GrowDisk {

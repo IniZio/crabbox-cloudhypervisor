@@ -25,12 +25,12 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         cpus: None,
         memory_mib: None,
         classes: crate::size::default_classes(),
-        disk_gib: 20,
+        disk_gib: 30,
         growth: crate::config::Growth {
-            disk_max_gib: 100,
+            disk_max_gib: None,
             disk_step_gib: 10,
-            disk_free_percent: 15,
-            disk_free_gib: 4,
+            disk_free_percent: 0,
+            disk_free_gib: 20,
         },
         image: Asset {
             url: IMAGE_URL.to_owned(),
@@ -173,19 +173,24 @@ fn overrides_apply() {
 }
 
 #[test]
-fn the_disk_cap_defaults_to_100_gib_or_the_disk_size() {
+fn the_disk_has_no_default_ceiling_and_keeps_20_gib_free() {
     let c = parse(&json!({"cpus": 3, "memoryMiB": 1024, "diskGiB": 10}), HOME).unwrap();
     assert_eq!(
         c.growth,
         Growth {
-            disk_max_gib: 100,
+            disk_max_gib: None,
             disk_step_gib: 10,
-            disk_free_percent: 15,
-            disk_free_gib: 4,
+            disk_free_percent: 0,
+            disk_free_gib: 20,
         }
     );
     let big = parse(&json!({"diskGiB": 200}), HOME).unwrap();
-    assert_eq!(big.growth.disk_max_gib, 200);
+    assert_eq!(big.growth.disk_max_gib, None);
+}
+
+#[test]
+fn a_fresh_disk_defaults_to_30_gib() {
+    assert_eq!(parse(&json!({}), HOME).unwrap().disk_gib, 30);
 }
 
 #[test]
@@ -195,7 +200,7 @@ fn growth_keys_override_the_defaults() {
         "diskGrowStepGiB": 25, "diskGrowFreePercent": 5, "diskGrowFreeGiB": 0
     });
     let want = Growth {
-        disk_max_gib: 500,
+        disk_max_gib: Some(500),
         disk_step_gib: 25,
         disk_free_percent: 5,
         disk_free_gib: 0,

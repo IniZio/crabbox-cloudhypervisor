@@ -10,7 +10,7 @@ use crate::grow::GIB;
 
 /// Growth limits for a 10 GiB, 2 vCPU, 2 GiB guest.
 const GROWTH: Growth = Growth {
-    disk_max_gib: 30,
+    disk_max_gib: Some(30),
     disk_step_gib: 10,
     disk_free_percent: 15,
     disk_free_gib: 4,
@@ -345,6 +345,24 @@ fn a_host_without_room_for_the_step_blocks_the_grow_and_says_why_once() {
     let why = "host filesystem holding the disk has under 10.0 GiB free; disk stays at 10.0 GiB";
     assert_eq!(fake.blocked.borrow().as_deref(), Some(why));
     assert_eq!(log.matches(why).count(), 1, "{log}");
+}
+
+#[test]
+fn a_host_short_of_the_whole_shortfall_stays_blocked_and_names_the_size() {
+    let growth = Growth {
+        disk_max_gib: None,
+        disk_free_percent: 0,
+        disk_free_gib: 20,
+        ..GROWTH
+    };
+    let fake = Fake {
+        host_free: 15 * GIB,
+        ..Fake::new(low_space())
+    };
+    let log = ticks(&mut Planner::new(growth), &fake, 3);
+    assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
+    let why = "host filesystem holding the disk has under 19.0 GiB free; disk stays at 10.0 GiB";
+    assert_eq!(fake.blocked.borrow().as_deref(), Some(why), "{log}");
 }
 
 #[test]
