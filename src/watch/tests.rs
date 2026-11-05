@@ -32,6 +32,8 @@ struct Fake {
     fs_results: RefCell<Vec<Result<u64, String>>>,
     /// Free bytes on the host filesystem.
     host_free: u64,
+    /// Total bytes of the host filesystem.
+    host_total: u64,
     /// Last blocked reason recorded.
     blocked: RefCell<Option<String>>,
     /// `alive` answers true this many more times.
@@ -56,6 +58,7 @@ impl Fake {
             disk_error: None,
             fs_results: RefCell::new(vec![Ok(9 * GIB)]),
             host_free: 500 * GIB,
+            host_total: 1000 * GIB,
             blocked: RefCell::new(None),
             lives: Cell::new(0),
             running: true,
@@ -81,8 +84,8 @@ impl Machine for Fake {
         self.running
     }
 
-    fn host_free(&self) -> Result<u64, String> {
-        Ok(self.host_free)
+    fn host_space(&self) -> Result<(u64, u64), String> {
+        Ok((self.host_free, self.host_total))
     }
 
     fn set_blocked(&self, reason: Option<&str>) {
@@ -334,35 +337,69 @@ fn the_watcher_does_not_tick_while_the_vm_is_paused() {
     assert!(running.calls().contains(&"grow_disk 20".to_owned()));
 }
 
+const DEFAULT_GROWTH: Growth = Growth {
+    disk_max_gib: None,
+    disk_free_percent: 0,
+    disk_free_gib: 20,
+    ..GROWTH
+};
+
 #[test]
-fn a_host_without_room_for_the_step_blocks_the_grow_and_says_why_once() {
+fn a_host_above_its_floor_after_the_grow_lets_it_grow() {
     let fake = Fake {
-        host_free: 5 * GIB,
+        host_free: 120 * GIB,
+        host_total: 1000 * GIB,
         ..Fake::new(low_space())
     };
-    let log = ticks(&mut Planner::new(GROWTH), &fake, 5);
+    ticks(&mut Planner::new(DEFAULT_GROWTH), &fake, 2);
+    assert!(fake.calls().contains(&"grow_disk 29".to_owned()));
+    assert_eq!(*fake.blocked.borrow(), None);
+}
+
+#[test]
+fn a_host_under_its_floor_blocks_the_grow_and_states_floor_and_free_once() {
+    let fake = Fake {
+        host_free: 90 * GIB,
+        host_total: 1000 * GIB,
+        ..Fake::new(low_space())
+    };
+    let log = ticks(&mut Planner::new(DEFAULT_GROWTH), &fake, 5);
     assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
-    let why = "host filesystem holding the disk has under 10.0 GiB free; disk stays at 10.0 GiB";
+    let why = "host filesystem holding the disk has 90.0 GiB free; a 19.0 GiB grow must leave its floor of 100.0 GiB; disk stays at 10.0 GiB";
     assert_eq!(fake.blocked.borrow().as_deref(), Some(why));
     assert_eq!(log.matches(why).count(), 1, "{log}");
 }
 
 #[test]
-fn a_host_short_of_the_whole_shortfall_stays_blocked_and_names_the_size() {
-    let growth = Growth {
-        disk_max_gib: None,
-        disk_free_percent: 0,
-        disk_free_gib: 20,
-        ..GROWTH
-    };
+fn a_shortfall_that_would_cross_the_floor_blocks_the_grow() {
     let fake = Fake {
-        host_free: 15 * GIB,
+        host_free: 110 * GIB,
+        host_total: 1000 * GIB,
         ..Fake::new(low_space())
     };
-    let log = ticks(&mut Planner::new(growth), &fake, 3);
+    ticks(&mut Planner::new(DEFAULT_GROWTH), &fake, 3);
     assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
-    let why = "host filesystem holding the disk has under 19.0 GiB free; disk stays at 10.0 GiB";
-    assert_eq!(fake.blocked.borrow().as_deref(), Some(why), "{log}");
+    assert!(fake
+        .blocked
+        .borrow()
+        .as_deref()
+        .is_some_and(|w| w.contains("110.0 GiB free") && w.contains("floor of 100.0 GiB")));
+}
+
+#[test]
+fn a_small_host_keeps_a_20_gib_floor() {
+    let fake = Fake {
+        host_free: 35 * GIB,
+        host_total: 100 * GIB,
+        ..Fake::new(low_space())
+    };
+    ticks(&mut Planner::new(DEFAULT_GROWTH), &fake, 2);
+    assert!(!fake.calls().iter().any(|c| c.starts_with("grow_disk")));
+    assert!(fake
+        .blocked
+        .borrow()
+        .as_deref()
+        .is_some_and(|w| w.contains("floor of 20.0 GiB")));
 }
 
 #[test]

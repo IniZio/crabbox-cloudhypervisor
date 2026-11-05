@@ -63,8 +63,9 @@ pub trait Machine {
     fn current(&self) -> Result<Current, String>;
     /// One reading of the guest.
     fn sample(&self) -> Result<Sample, String>;
-    /// Bytes free on the host filesystem that holds the disk image.
-    fn host_free(&self) -> Result<u64, String>;
+    /// Free and total bytes of the host filesystem that holds the disk image,
+    /// read now.
+    fn host_space(&self) -> Result<(u64, u64), String>;
     /// Records why the disk cannot grow (`None` clears it) for the lease status.
     fn set_blocked(&self, reason: Option<&str>);
     /// Grows the root disk image to `bytes` while the VM runs.
@@ -115,21 +116,34 @@ pub fn tick(planner: &mut Planner, machine: &dyn Machine, log: &mut Log<'_>) -> 
     Ok(())
 }
 
-/// Grows the disk image when the host filesystem has room for the whole step;
-/// a sparse grow past the host's free space would fail later as guest I/O errors.
+/// The host filesystem keeps this percent of its size free, and at least
+/// [`HOST_FLOOR_GIB`], so snapshots and other Boxes still fit.
+const HOST_FLOOR_PERCENT: u64 = 10;
+/// Smallest host free-space floor, GiB.
+const HOST_FLOOR_GIB: u64 = 20;
+
+/// Grows the disk image only when the host filesystem would still hold its free
+/// floor after the whole step is written. Free space is read now because the
+/// image is sparse and other Boxes may have filled the host since the last tick.
 fn grow_disk(machine: &dyn Machine, from: u64, to: u64, log: &mut Log<'_>) {
     let need = to.saturating_sub(from);
-    match machine.host_free() {
-        Ok(free) if free >= need => machine.set_blocked(None),
-        Ok(_) => {
-            let reason = format!(
-                "host filesystem holding the disk has under {} free; disk stays at {}",
-                gib(need),
-                gib(from)
-            );
-            machine.set_blocked(Some(&reason));
-            log.fail(format!("grow failed: {reason}"));
-            return;
+    match machine.host_space() {
+        Ok((free, total)) => {
+            let floor = (total / 100 * HOST_FLOOR_PERCENT).max(HOST_FLOOR_GIB * GIB);
+            if free.saturating_sub(need) >= floor {
+                machine.set_blocked(None);
+            } else {
+                let reason = format!(
+                    "host filesystem holding the disk has {} free; a {} grow must leave its floor of {}; disk stays at {}",
+                    gib(free),
+                    gib(need),
+                    gib(floor),
+                    gib(from)
+                );
+                machine.set_blocked(Some(&reason));
+                log.fail(format!("grow failed: {reason}"));
+                return;
+            }
         }
         Err(e) => {
             log.fail(format!("grow failed: cannot read host free space: {e}"));

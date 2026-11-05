@@ -58,9 +58,9 @@ impl Machine for RealMachine {
         parse_sample(&self.ssh.output(SAMPLE_SCRIPT, SAMPLE_LIMIT)?)
     }
 
-    fn host_free(&self) -> Result<u64, String> {
+    fn host_space(&self) -> Result<(u64, u64), String> {
         let dir = self.disk.parent().unwrap_or_else(|| Path::new("/"));
-        crate::host::free_bytes(dir)
+        crate::host::space(dir)
     }
 
     fn set_blocked(&self, reason: Option<&str>) {
