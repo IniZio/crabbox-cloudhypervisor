@@ -147,7 +147,7 @@ impl RealBackend {
     ) -> Result<CheckpointMade, String> {
         check_id(id)?;
         let lease = record.lease_id.as_str();
-        let size = record.size.unwrap_or_else(|| self.default_size());
+        let size = self.record_size(record)?;
         let cache = &self.config.cache_dir;
         mkdir_private(cache)?;
         suspend::check_room(suspend::free_bytes(cache)?, size.memory_mib)?;

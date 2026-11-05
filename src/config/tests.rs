@@ -22,8 +22,8 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         state_dir: PathBuf::from(state),
         runtime_dir: PathBuf::from(runtime),
         cache_dir: PathBuf::from(cache),
-        cpus: 2,
-        memory_mib: 4096,
+        cpus: None,
+        memory_mib: None,
         classes: crate::size::default_classes(),
         disk_gib: 20,
         growth: crate::config::Growth {
@@ -151,8 +151,8 @@ fn overrides_apply() {
         sha256: sha.clone(),
     };
     let want = Config {
-        cpus: 8,
-        memory_mib: 1024,
+        cpus: Some(8),
+        memory_mib: Some(1024),
         classes: crate::size::default_classes(),
         disk_gib: 40,
         image: asset("https://i/x"),
@@ -343,7 +343,7 @@ fn errors_do_not_echo_values() {
 #[test]
 fn null_key_uses_default() {
     let c = parse(&json!({"cpus": null, "stateDir": null}), HOME).unwrap();
-    assert_eq!(c.cpus, 2);
+    assert_eq!(c.cpus, None);
 }
 
 #[test]

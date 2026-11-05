@@ -326,7 +326,7 @@ impl RealBackend {
     ) -> Result<(), String> {
         let mut record = self.relaunch_prep(record, diag)?;
         let firmware = spec::firmware_cache_path(&self.config);
-        let size = record.size.unwrap_or_else(|| self.default_size());
+        let size = self.record_size(&record)?;
         let started = self
             .start_processes(&mut record, size, None, diag)
             .and_then(|()| self.boot_vm(&record, size, &firmware, diag))

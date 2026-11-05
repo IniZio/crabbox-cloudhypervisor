@@ -341,7 +341,7 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<(), String> {
         let id = record.lease_id.clone();
-        let size = record.size.unwrap_or_else(|| self.default_size());
+        let size = self.record_size(record)?;
         remove_tree(&record.run_dir)?;
         self.store.write(record)?;
         mkdir_private(&record.run_dir)?;

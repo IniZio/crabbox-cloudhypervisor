@@ -4,12 +4,8 @@
 
 use serde_json::json;
 
-use super::{classes, default_classes, resolve, total_mib, Host, Size};
+use super::{classes, default_classes, no_class_size, resolve, total_mib, Host, Size};
 
-const DEFAULT: Size = Size {
-    cpus: 2,
-    memory_mib: 4096,
-};
 const BIG_HOST: Host = Host {
     total_cpus: 64,
     total_memory_mib: 1 << 20,
@@ -28,20 +24,8 @@ fn ladder_maps_each_class() {
         ("large", size(8, 16384)),
         ("beast", size(16, 32768)),
     ] {
-        assert_eq!(resolve(&table, DEFAULT, Some(class), &BIG_HOST), Ok(want));
+        assert_eq!(resolve(&table, class, &BIG_HOST), Ok(want));
     }
-}
-
-#[test]
-fn no_class_uses_the_default_even_on_a_tiny_host() {
-    let tiny = Host {
-        total_cpus: 1,
-        total_memory_mib: 100,
-    };
-    assert_eq!(
-        resolve(&default_classes(), DEFAULT, None, &tiny),
-        Ok(DEFAULT)
-    );
 }
 
 #[test]
@@ -54,10 +38,7 @@ fn config_overrides_one_class_and_keeps_the_rest() {
 #[test]
 fn config_can_add_a_class() {
     let table = classes(&json!({"classes": {"tiny": {"cpus": 1, "memoryMiB": 1024}}})).unwrap();
-    assert_eq!(
-        resolve(&table, DEFAULT, Some("tiny"), &BIG_HOST),
-        Ok(size(1, 1024))
-    );
+    assert_eq!(resolve(&table, "tiny", &BIG_HOST), Ok(size(1, 1024)));
 }
 
 #[test]
@@ -102,7 +83,7 @@ fn too_many_vcpus_is_refused_not_shrunk() {
         total_memory_mib: 1 << 20,
     };
     assert_eq!(
-        resolve(&default_classes(), DEFAULT, Some("beast"), &host),
+        resolve(&default_classes(), "beast", &host),
         Err("class beast needs 16 vCPUs; this host has 8".to_owned())
     );
 }
@@ -114,14 +95,14 @@ fn too_much_memory_is_refused_not_shrunk() {
         total_memory_mib: 10_000,
     };
     assert_eq!(
-        resolve(&default_classes(), DEFAULT, Some("large"), &host),
+        resolve(&default_classes(), "large", &host),
         Err("class large needs 16384 MiB of memory; this host has 10000 MiB".to_owned())
     );
 }
 
 #[test]
 fn unknown_class_lists_the_known_ones() {
-    let err = resolve(&default_classes(), DEFAULT, Some("huge"), &BIG_HOST).unwrap_err();
+    let err = resolve(&default_classes(), "huge", &BIG_HOST).unwrap_err();
     assert_eq!(
         err,
         "unknown class huge; known classes: beast, fast, large, standard"
@@ -142,7 +123,61 @@ fn admission_uses_host_totals_so_a_busy_host_still_admits() {
         total_memory_mib: 16384,
     };
     assert_eq!(
-        resolve(&default_classes(), DEFAULT, Some("large"), &host),
+        resolve(&default_classes(), "large", &host),
         Ok(size(8, 16384))
+    );
+}
+
+fn host(cpus: u32, total_memory_mib: u64) -> Host {
+    Host {
+        total_cpus: cpus,
+        total_memory_mib,
+    }
+}
+
+#[test]
+fn no_class_takes_host_cores_and_memory_less_the_reserve() {
+    // 64 GiB host: reserve is 4 GiB plus 6553 MiB.
+    let got = no_class_size(&host(16, 65536), None, None).unwrap();
+    assert_eq!(got, size(16, 65536 - 4096 - 6553));
+}
+
+#[test]
+fn no_class_refuses_a_host_too_small_to_hold_a_vm() {
+    let err = no_class_size(&host(4, 4096), None, None).unwrap_err();
+    assert!(err.contains("4096 MiB") && err.contains("reserve"), "{err}");
+    let err = no_class_size(&host(4, 5000), None, None).unwrap_err();
+    assert!(err.contains("5000 MiB"), "{err}");
+}
+
+#[test]
+fn no_class_operator_override_wins_per_field() {
+    let h = host(16, 65536);
+    assert_eq!(
+        no_class_size(&h, Some(3), None),
+        Ok(size(3, 65536 - 4096 - 6553))
+    );
+    assert_eq!(no_class_size(&h, None, Some(2048)), Ok(size(16, 2048)));
+    let tiny = host(1, 100);
+    assert_eq!(no_class_size(&tiny, Some(2), Some(4096)), Ok(size(2, 4096)));
+}
+
+#[test]
+fn a_class_ignores_the_host_ceiling() {
+    let table = default_classes();
+    assert_eq!(
+        resolve(&table, "standard", &host(16, 65536)),
+        Ok(size(2, 4096))
+    );
+}
+
+#[test]
+fn scope_limit_follows_the_ceiling() {
+    let ceiling = no_class_size(&host(8, 32768), None, None).unwrap();
+    let limits = crate::scope::Limits::for_vm(ceiling, 512);
+    assert_eq!(limits.cpus, 8);
+    assert_eq!(
+        limits.memory_bytes,
+        (32768 - 4096 - 3276 + 512) * 1024 * 1024
     );
 }

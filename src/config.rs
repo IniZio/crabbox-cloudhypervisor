@@ -74,10 +74,10 @@ pub struct Config {
     pub runtime_dir: PathBuf,
     /// Directory holding downloaded assets.
     pub cache_dir: PathBuf,
-    /// Guest vCPU count.
-    pub cpus: u32,
-    /// Guest memory in MiB.
-    pub memory_mib: u64,
+    /// Operator override of the guest vCPU count; unset means the host's cores.
+    pub cpus: Option<u32>,
+    /// Operator override of guest memory in MiB; unset means the host's memory less a reserve.
+    pub memory_mib: Option<u64>,
     /// Size per class name; a lease with a class boots at its size, not `cpus`/`memory_mib`.
     pub classes: BTreeMap<String, Size>,
     /// Guest disk size in GiB.
@@ -138,9 +138,11 @@ impl Config {
             Some(p) => p,
             None => default_cache_dir(env)?,
         };
-        let cpus = u32::try_from(int_key(config, "cpus", 2, 1, 64)?)
+        let cpus = opt_int_key(config, "cpus", 1, 64)?
+            .map(u32::try_from)
+            .transpose()
             .map_err(|_| "config.cpus must be an integer between 1 and 64".to_owned())?;
-        let memory_mib = int_key(config, "memoryMiB", 4096, 512, u64::MAX)?;
+        let memory_mib = opt_int_key(config, "memoryMiB", 512, u64::MAX)?;
         let disk_gib = int_key(config, "diskGiB", 20, 8, u64::MAX)?;
         Ok(Self {
             runtime_dir,
@@ -321,6 +323,11 @@ fn int_key(config: &Value, key: &str, default: u64, min: u64, max: u64) -> Resul
             "config.{key} must be an integer between {min} and {max}"
         )),
     }
+}
+
+/// Reads an integer key that has no default; absent means the caller derives it.
+fn opt_int_key(config: &Value, key: &str, min: u64, max: u64) -> Result<Option<u64>, String> {
+    get(config, key).map_or(Ok(None), |_| int_key(config, key, min, min, max).map(Some))
 }
 
 /// Reads an optional `{url, sha256}` asset.
