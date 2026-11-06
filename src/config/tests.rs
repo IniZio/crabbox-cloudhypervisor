@@ -58,7 +58,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
-        boot_template: false,
+        boot_template: true,
     }
 }
 
@@ -524,10 +524,10 @@ fn guest_reclaim_keys_reject_bad_values_naming_the_key() {
 }
 
 #[test]
-fn boot_template_is_off_unless_set_true() {
-    assert!(!parse(&json!({}), HOME).unwrap().boot_template);
+fn boot_template_is_on_unless_set_false() {
+    assert!(parse(&json!({}), HOME).unwrap().boot_template);
     assert!(
-        parse(&json!({"bootTemplate": true}), HOME)
+        !parse(&json!({"bootTemplate": false}), HOME)
             .unwrap()
             .boot_template
     );

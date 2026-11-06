@@ -98,7 +98,7 @@ All keys go under `external.config`. All are optional.
 | `guestReclaimRefaultMiB` | `16` | file re-read from disk between trims, in MiB, above which... |
 | `guestReclaimSkipRuns` | `10` | ...the next this many trims are skipped |
 | `pageReportingOrder` | `2` | smallest free block, 2^order pages, the guest reports to the host (0-10) |
-| `bootTemplate` | `false` | `true` restores new leases from a boot template snapshot instead of cold booting them; see [Boot template](#boot-template) |
+| `bootTemplate` | `true` | restores new leases from a boot template snapshot instead of cold booting them; `false` always cold boots; see [Boot template](#boot-template) |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
@@ -383,7 +383,7 @@ holds, so a create or resume in flight keeps its passt.
 
 ## Boot template
 
-With `bootTemplate: true`, a new lease restores a snapshot of an already
+Unless `bootTemplate` is `false`, a new lease restores a snapshot of an already
 provisioned guest instead of cold booting through cloud-init.
 
 - The first lease of a size boots a template guest from the base image with
@@ -416,7 +416,7 @@ Measured on one host with a 2 vCPU, 4 GiB, 20 GiB lease, `acquire` until ready:
 
 | Path | Seconds |
 | --- | --- |
-| Cold boot, `bootTemplate` off | 40.8 |
+| Cold boot, `bootTemplate: false` | 40.8 |
 | First lease: template build, then restore | 45.2 |
 | Later lease: restore and identity rotation | 3.6 |
 

@@ -114,7 +114,7 @@ pub struct Config {
     pub vmm_overhead_mib: u64,
     /// Guest file cache reclaim, set up in new leases.
     pub reclaim: ReclaimConfig,
-    /// New leases restore a golden snapshot instead of cold booting.
+    /// New leases restore a boot template snapshot instead of cold booting; on unless `false`.
     pub boot_template: bool,
 }
 
@@ -179,7 +179,7 @@ impl Config {
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             reclaim: reclaim(config)?,
-            boot_template: bool_key(config, "bootTemplate")?,
+            boot_template: bool_key(config, "bootTemplate", true)?,
             state_dir,
         })
     }
@@ -259,8 +259,8 @@ fn reclaim(config: &Value) -> Result<ReclaimConfig, String> {
 }
 
 /// Reads an optional boolean key; absent is false.
-fn bool_key(config: &Value, key: &str) -> Result<bool, String> {
-    get(config, key).map_or(Ok(false), |v| {
+fn bool_key(config: &Value, key: &str, default: bool) -> Result<bool, String> {
+    get(config, key).map_or(Ok(default), |v| {
         v.as_bool()
             .ok_or_else(|| format!("config.{key} must be true or false"))
     })
