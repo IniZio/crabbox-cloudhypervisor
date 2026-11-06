@@ -16,12 +16,12 @@ mod watcher;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use cache::publisher::run_publisher;
 use checkpoint::DisksFrom;
-use util::{serial_tail, wait_until};
+use util::{mkdir_private, remove_tree, serial_tail, wait_until};
 
 use crate::assets;
 use crate::backend::{Backend, Power};
@@ -59,24 +59,6 @@ impl RealBackend {
     pub fn new(config: Config, exe: PathBuf) -> Self {
         let store = Store::new(&config.state_dir);
         Self { config, store, exe }
-    }
-}
-
-/// Creates `path` (and parents) private to the user.
-fn mkdir_private(path: &Path) -> Result<(), String> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
-        .map_err(|e| format!("create dir: {e}"))
-}
-
-/// Removes a directory tree; a missing one is fine.
-fn remove_tree(path: &Path) -> Result<(), String> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("remove run dir: {e}")),
     }
 }
 
@@ -258,6 +240,10 @@ impl Backend for RealBackend {
         self.suspend(record, diag)
     }
 
+    fn pause_and_publish(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        self.suspend_and_publish(record, diag)
+    }
+
     fn resume(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
         self.resume_vm(record, diag)
     }
@@ -357,6 +343,7 @@ impl Backend for RealBackend {
             Self::stop_processes(record, diag)?;
         }
         self.scopes().stop(lease_id, diag)?;
+        let _publisher = self.finish_publisher(lease_id, diag);
         self.settle_cache(lease_id, quiesced, diag);
         remove_tree(&run_dir)?;
         let removed = self.store.remove(lease_id);

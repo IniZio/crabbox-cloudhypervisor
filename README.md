@@ -17,7 +17,7 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
   (`cloud-hypervisor-static`). With stock v52.0 the guest network is dead after
   `checkpointCreate`.
 - `passt` with `--vhost-user` support (tested with 2026_06_11).
-- `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`.
+- `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`, `nice`, `ionice`.
 - For cache volumes: `mke2fs`, `e2fsck` and `resize2fs` (e2fsprogs). Without
   them every cache volume is skipped and the Box starts cold.
 - crabbox itself, with `rsync` and `git` for syncing.
@@ -274,8 +274,22 @@ acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
   0444, so a published generation is never written again. A publish skips when
   another lease published a generation at least as large since this lease last
   matched the newest, or when it would take the host below its free-space
-  floor. Anything else leaves the previous generation in place. A VM that is
-  stopped, paused or killed publishes nothing. A cache never fails a release.
+  floor. Anything else leaves the previous generation in place. A VM killed
+  outside a pause or a release publishes nothing. A cache never fails a release.
+- **Saving at a sleep.** `pause` publishes only when the request says
+  `publishCaches: true`; without it a pause adds nothing and a later `release`
+  of the sleeping lease publishes nothing. With it, `timeout 5 sync -f` runs in
+  the guest for each group, and a group whose sync failed or timed out does not
+  publish, because such an image can pass every check and still hold broken
+  files. None of this can fail the pause. Once the VM's memory is free, a
+  detached `publish` process under `nice -n19 ionice -c3` publishes each synced
+  group that grew by 256 MiB, reading `pause-publish.json` and holding
+  `publish.lock` in the lease dir. `resume` kills it and everything it started
+  and removes its files before the VM starts, so the wake loses only that
+  publish. `release` of a sleeping lease waits up to 120 seconds for it, then
+  publishes any synced group that grew by 32 MiB. `release` of a running lease
+  syncs first too, so a guest that does not power off in time still publishes
+  each group that synced.
 - **Echo.** The acquire response lists each name with its outcome:
   `restored` (detail `gen <unix seconds>`), `empty` or `skipped` (detail says
   why; the path is then a plain directory of the root disk).

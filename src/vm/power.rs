@@ -233,6 +233,7 @@ impl RealBackend {
     ) -> Result<(), String> {
         let current = self.store.read(&record.lease_id)?;
         let record = current.as_ref().unwrap_or(record);
+        self.cancel_publish(&record.lease_id)?;
         let cold = !Self::ch_alive(record) && !self.snapshot_dir(&record.lease_id).is_dir();
         let changed = self.bring_up(record, diag)?;
         let now = self.store.read(&record.lease_id)?;

@@ -252,6 +252,17 @@ fn parses_pause_and_resume_with_extra_lease_fields() {
 }
 
 #[test]
+fn publish_caches_is_false_unless_sent_true() {
+    let req = |tail: &str| {
+        parse_request(format!(r#"{{"protocolVersion":1,"operation":"pause"{tail}}}"#).as_bytes())
+    };
+    assert!(!req("").unwrap().publish_caches);
+    assert!(!req(r#","publishCaches":false"#).unwrap().publish_caches);
+    assert!(req(r#","publishCaches":true"#).unwrap().publish_caches);
+    assert!(req(r#","publishCaches":"yes""#).is_err());
+}
+
+#[test]
 fn operation_roundtrips_through_wire_name() {
     for op in [Operation::Pause, Operation::Resume, Operation::Touch] {
         assert_eq!(Operation::from_wire(op.as_str()), Some(op));

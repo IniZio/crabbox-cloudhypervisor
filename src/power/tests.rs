@@ -95,6 +95,19 @@ fn disk_pause_suspends_running_and_memory_paused_vms() {
 }
 
 #[test]
+fn only_a_pause_that_says_so_may_save_caches() {
+    let fake = disk_fake();
+    run_pause(&fake, "s1").unwrap();
+    assert!(!fake.called("publish at pause s1"));
+
+    let fake = disk_fake();
+    let mut request = lease_request(Operation::Pause, "s1");
+    request.publish_caches = true;
+    pause(&request, &fake, &mut Vec::new()).unwrap();
+    assert!(fake.called("publish at pause s1"));
+}
+
+#[test]
 fn pause_suspended_is_idempotent() {
     let fake = disk_fake();
     run_pause(&fake, "s1").unwrap();

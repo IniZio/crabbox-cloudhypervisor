@@ -169,6 +169,8 @@ pub struct Request {
     pub checkpoint_id: Option<String>,
     /// Caller's label for a checkpoint.
     pub name: Option<String>,
+    /// The agent went quiet first, so this pause may save the lease's caches.
+    pub publish_caches: bool,
 }
 
 /// Non-empty string field, else `None`.
@@ -308,6 +310,7 @@ pub fn parse_request(input: &[u8]) -> Result<Request, String> {
     };
     let lease_id = opt_str(object, "leaseId");
     let name = opt_str(object, "name");
+    let publish_caches = flag(object, "publishCaches")?;
 
     Ok(Request {
         operation,
@@ -327,6 +330,7 @@ pub fn parse_request(input: &[u8]) -> Result<Request, String> {
         lease_id,
         checkpoint_id,
         name,
+        publish_caches,
     })
 }
 
