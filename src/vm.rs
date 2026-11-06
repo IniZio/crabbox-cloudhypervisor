@@ -292,6 +292,10 @@ impl Backend for RealBackend {
         self.vm_memory_bytes(record).map(|b| b / (1024 * 1024))
     }
 
+    fn resume_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
+        self.snapshot_resume_mib(&record.lease_id)
+    }
+
     fn try_lock(&self, lease_id: &str) -> Result<Option<LeaseLock>, String> {
         self.store.try_lock(lease_id)
     }

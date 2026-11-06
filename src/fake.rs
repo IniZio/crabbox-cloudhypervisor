@@ -44,6 +44,8 @@ pub(crate) struct Fake {
     pub(crate) cache_gc_note: RefCell<String>,
     /// Lease id to the host memory its VM holds, in MiB.
     pub(crate) host_memory: RefCell<BTreeMap<String, u64>>,
+    /// Lease id to the host memory restoring its snapshot takes, in MiB.
+    pub(crate) resume_memory: RefCell<BTreeMap<String, u64>>,
     /// Checkpoint ids that exist.
     pub(crate) checkpoints: RefCell<BTreeSet<String>>,
     /// `checkpoint_create` fails.
@@ -310,6 +312,10 @@ impl Backend for Fake {
 
     fn host_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
         self.host_memory.borrow().get(&record.lease_id).copied()
+    }
+
+    fn resume_memory_mib(&self, record: &LeaseRecord) -> Option<u64> {
+        self.resume_memory.borrow().get(&record.lease_id).copied()
     }
 
     fn checkpoint_create(

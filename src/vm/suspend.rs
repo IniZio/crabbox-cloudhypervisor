@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,9 @@ const MIB: u64 = 1024 * 1024;
 const SPARE_BYTES: u64 = 1024 * MIB;
 /// File in a snapshot dir that holds guest RAM.
 const MEMORY_FILE: &str = "memory-ranges";
+/// Host memory a restored VM holds beyond its snapshot's allocated bytes, in
+/// MiB; 20 was measured for cloud-hypervisor, passt and page tables.
+const RESUME_OVERHEAD_MIB: u64 = 64;
 
 /// Makes the snapshot's memory file sparse so only non-zero pages stay on disk.
 /// A failure leaves the snapshot dense and is only noted: the snapshot is valid.
@@ -58,6 +62,13 @@ impl RealBackend {
     /// Where a suspended lease keeps its snapshot.
     pub(super) fn snapshot_dir(&self, lease_id: &str) -> PathBuf {
         self.store.lease_dir(lease_id).join(SNAPSHOT_DIR)
+    }
+
+    /// Allocated bytes count because restore loads only those, not the holes.
+    pub(super) fn snapshot_resume_mib(&self, lease_id: &str) -> Option<u64> {
+        let memory = fs::metadata(self.snapshot_dir(lease_id).join(MEMORY_FILE)).ok()?;
+        let allocated = memory.blocks().saturating_mul(512);
+        Some(allocated.div_ceil(MIB).saturating_add(RESUME_OVERHEAD_MIB))
     }
 
     /// Live power, with a dead VM that left a snapshot reported as suspended.
