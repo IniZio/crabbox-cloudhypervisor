@@ -369,11 +369,12 @@ fn stock_cloud_hypervisor_fails_the_checkpoint_check_naming_the_patched_version(
     assert!(!ok, "{r}");
     assert!(r.contains("FAIL checkpoints: "), "{r}");
     assert!(r.contains("v52.0-moor.1"), "{r}");
+    assert!(r.contains("found cloud-hypervisor v52.0)"), "{r}");
 }
 
 #[test]
 fn patched_cloud_hypervisor_passes_the_checkpoint_check() {
-    let (ok, r) = checkpoint_report("cloud-hypervisor v52.0-moor.1", true);
+    let (ok, r) = checkpoint_report("cloud-hypervisor v52.0-1-g5a781e3", true);
     assert!(ok, "{r}");
     assert!(r.contains("ok checkpoints: "), "{r}");
 }
