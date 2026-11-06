@@ -53,6 +53,7 @@ fn config(root: &Path) -> Config {
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
         boot_template: false,
+        checkpoints: false,
     }
 }
 
@@ -343,4 +344,50 @@ fn dig_holes_is_reported_and_never_fails() {
     let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
     assert!(ok, "{r}");
     assert!(r.contains(" dig_holes: "), "{r}");
+}
+
+/// A `cloud-hypervisor` stand-in that prints `banner` for `--version`.
+fn fake_ch(dir: &Path, banner: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-ch");
+    fs::write(&path, format!("#!/bin/sh\necho '{banner}'\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn checkpoint_report(banner: &str, checkpoints: bool) -> (bool, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = config(dir.path());
+    c.cloud_hypervisor = fake_ch(dir.path(), banner);
+    c.checkpoints = checkpoints;
+    report(&c, &probes(dir.path()))
+}
+
+#[test]
+fn stock_cloud_hypervisor_fails_the_checkpoint_check_naming_the_patched_version() {
+    let (ok, r) = checkpoint_report("cloud-hypervisor v52.0", true);
+    assert!(!ok, "{r}");
+    assert!(r.contains("FAIL checkpoints: "), "{r}");
+    assert!(r.contains("v52.0-moor.1"), "{r}");
+}
+
+#[test]
+fn patched_cloud_hypervisor_passes_the_checkpoint_check() {
+    let (ok, r) = checkpoint_report("cloud-hypervisor v52.0-moor.1", true);
+    assert!(ok, "{r}");
+    assert!(r.contains("ok checkpoints: "), "{r}");
+}
+
+#[test]
+fn a_host_without_checkpoints_is_unaffected_by_stock_cloud_hypervisor() {
+    let (ok, r) = checkpoint_report("cloud-hypervisor v52.0", false);
+    assert!(ok, "{r}");
+    assert!(!r.contains(" checkpoints: "), "{r}");
+}
+
+#[test]
+fn an_unreadable_version_fails_the_checkpoint_check() {
+    let (ok, r) = checkpoint_report("", true);
+    assert!(!ok, "{r}");
+    assert!(r.contains("FAIL checkpoints: "), "{r}");
 }

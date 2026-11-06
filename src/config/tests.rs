@@ -59,6 +59,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
         boot_template: true,
+        checkpoints: false,
     }
 }
 
@@ -533,4 +534,16 @@ fn boot_template_is_on_unless_set_false() {
     );
     let e = parse(&json!({"bootTemplate": "yes"}), HOME).unwrap_err();
     assert_eq!(e, "config.bootTemplate must be true or false");
+}
+
+#[test]
+fn checkpoints_are_off_unless_set_true() {
+    assert!(!parse(&json!({}), HOME).unwrap().checkpoints);
+    assert!(
+        parse(&json!({"checkpoints": true}), HOME)
+            .unwrap()
+            .checkpoints
+    );
+    let e = parse(&json!({"checkpoints": 1}), HOME).unwrap_err();
+    assert_eq!(e, "config.checkpoints must be true or false");
 }
