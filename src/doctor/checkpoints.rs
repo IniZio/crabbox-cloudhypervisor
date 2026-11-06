@@ -5,8 +5,9 @@ use std::process::{Command, Stdio};
 
 use super::{first_line, Check, Level};
 
-/// Marker the patched build carries in its version.
-const PATCHED_MARKER: &str = "-moor.";
+/// Commit of the vhost-user resume patch; the `v52.0-moor.1` build prints it in
+/// its version (`v52.0-1-g5a781e3`).
+const PATCHED_COMMIT: &str = "g5a781e3";
 
 /// Patched cloud-hypervisor a checkpointing host needs.
 const PATCHED_VERSION: &str = "v52.0-moor.1";
@@ -21,7 +22,7 @@ pub(super) fn hypervisor(bin: &Path) -> Check {
     let version = out
         .map(|o| first_line(&o.stdout, &o.stderr))
         .unwrap_or_default();
-    if version.contains(PATCHED_MARKER) {
+    if version.contains(PATCHED_COMMIT) {
         Check::new(Level::Ok, "checkpoints", version)
     } else {
         let seen = if version.is_empty() {
