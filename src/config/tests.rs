@@ -53,6 +53,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             store_max_gib: 200,
             max_volume_gib: 40,
             key_ttl_days: 30,
+            host_floor_gib: 20,
         },
         cgroup: crate::scope::Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
@@ -382,6 +383,7 @@ fn cache_keys_are_read_and_checked() {
             store_max_gib: 50,
             max_volume_gib: 8,
             key_ttl_days: 3,
+            host_floor_gib: 20,
         }
     );
     for (key, bad) in [

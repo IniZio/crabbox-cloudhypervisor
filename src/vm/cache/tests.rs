@@ -306,3 +306,26 @@ fn a_cache_record_from_before_overlays_reads_as_raw() {
     assert_eq!(g.copy.format, Format::Raw);
     assert_eq!(g.copy.baseline, 7);
 }
+
+#[test]
+fn a_cache_record_from_before_markers_went_reads_and_still_matches_its_plan() {
+    let old = json!({
+        "groups": [{
+            "group": {
+                "id": "g1",
+                "volumes": [{"name": "npm", "paths": [{"Home": ".npm"}], "sealed": true}],
+                "capacity": 21_474_836_480_u64,
+            },
+            "outcome": {"outcome": "empty"},
+            "image": "/w/g1.img",
+            "baseline": 7,
+        }],
+        "refused": [],
+    });
+    let cache: LeaseCache = serde_json::from_value(old).unwrap();
+    let plan = volumes::plan(
+        &[req("g1", "npm", &["~/.npm"], 0)],
+        &crate::volumes::tests::limits(40),
+    );
+    assert_eq!(cache.groups[0].group, plan.groups[0]);
+}

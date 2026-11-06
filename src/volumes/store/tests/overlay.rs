@@ -122,7 +122,7 @@ fn an_overlay_still_reads_its_generation_after_gc_drops_it_from_the_store() {
     assert!(!old.path.exists());
     assert_eq!(guest_size(&reader.copy, "pkg"), Some(40 * MIB));
 
-    guest_writes(&reader.copy, "late", 40 * MIB);
+    guest_writes(&reader.copy, "late", 80 * MIB);
     let got = s.publish(&g, &reader.copy, "reader", at(30));
     assert!(matches!(got, Publish::Published { .. }), "{got:?}");
 }

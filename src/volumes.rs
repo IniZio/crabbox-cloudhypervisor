@@ -25,8 +25,6 @@ pub const LOGIN_HOME: &str = "/home/crabbox";
 pub const LOGIN_UID: u32 = 1000;
 /// Gid of the login user.
 pub const LOGIN_GID: u32 = 1000;
-/// File the guest leaves in each path of a sealed volume once it sealed it.
-pub const SEAL_MARKER: &str = ".crabbox-sealed";
 /// Bytes per GiB.
 pub const GIB: u64 = 1024 * 1024 * 1024;
 /// Group size when no volume of the group declares one.
@@ -134,8 +132,6 @@ pub struct Volume {
     pub name: Token,
     /// Guest paths bound to it, at least one.
     pub paths: Vec<GuestPath>,
-    /// The guest seals it at close and leaves a marker in each path.
-    pub sealed: bool,
 }
 
 impl Volume {
@@ -186,22 +182,6 @@ pub struct Group {
     pub volumes: Vec<Volume>,
     /// Filesystem size in bytes.
     pub capacity: u64,
-}
-
-impl Group {
-    /// `(volume name, marker path in the image)` for each path of each sealed volume.
-    #[must_use]
-    pub fn seal_markers(&self) -> Vec<(&str, String)> {
-        self.volumes
-            .iter()
-            .filter(|v| v.sealed)
-            .flat_map(|v| {
-                v.image_dirs()
-                    .into_iter()
-                    .map(|d| (v.name.as_str(), format!("{d}/{SEAL_MARKER}")))
-            })
-            .collect()
-    }
 }
 
 /// What acquire did for a group; every name of the group shares it.
@@ -270,14 +250,7 @@ fn parse_entry(req: &CacheVolumeRequest) -> Result<(Token, Volume), String> {
         .iter()
         .map(|p| GuestPath::parse(p).map_err(|e| format!("path {e}")))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((
-        group,
-        Volume {
-            name,
-            paths,
-            sealed: req.sealed,
-        },
-    ))
+    Ok((group, Volume { name, paths }))
 }
 
 /// Groups the request's volumes; a bad or duplicate entry is skipped, never an error.

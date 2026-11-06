@@ -291,7 +291,6 @@ fn parses_cache_volumes_from_desired() {
                 key: "7f3a-gradle".into(),
                 paths: vec!["~/.gradle/caches".into(), "~/.gradle/wrapper".into()],
                 size_gb: 0,
-                sealed: false,
             },
             CacheVolumeRequest {
                 group: "7f3a".into(),
@@ -299,9 +298,19 @@ fn parses_cache_volumes_from_desired() {
                 key: "7f3a-sdk".into(),
                 paths: vec!["/opt/sdk".into()],
                 size_gb: 12,
-                sealed: true,
             },
         ]
+    );
+}
+
+#[test]
+fn a_sealed_field_from_an_older_caller_is_ignored() {
+    let d = r#""desired":{"leaseId":"l1","slug":"s","name":"n","cacheVolumes":[
+        {"group":"g","name":"n","key":"g-n","paths":["/opt/sdk"],"sealed":"anything"}]}}"#;
+    let vols = parse(d).unwrap().desired.unwrap().cache_volumes;
+    assert_eq!(
+        vols.first().map(|v| v.paths.clone()),
+        Some(vec!["/opt/sdk".to_owned()])
     );
 }
 
@@ -318,7 +327,6 @@ fn cache_volumes_absent_null_or_malformed() {
         r#","cacheVolumes":[{"paths":"~/x"}]"#,
         r#","cacheVolumes":[{"paths":[1]}]"#,
         r#","cacheVolumes":[{"sizeGB":-1}]"#,
-        r#","cacheVolumes":[{"sealed":"yes"}]"#,
     ] {
         assert!(vols(bad).unwrap_err().contains("cacheVolumes"), "{bad}");
     }
