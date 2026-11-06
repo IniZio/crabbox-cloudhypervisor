@@ -282,6 +282,9 @@ impl RealBackend {
         let client = ChClient::new(&record.api_socket()).with_timeout(POWER_API_TIMEOUT);
         match client.state().as_deref() {
             Ok("Paused") => {
+                // A pause that died before stopping the VM left this behind; once
+                // the guest runs, its disk moves past it and a restore would corrupt it.
+                remove_tree(&self.snapshot_dir(&record.lease_id))?;
                 client.resume()?;
                 self.wait_state(&client, "Running")?;
                 let _ = writeln!(diag, "vm resumed");

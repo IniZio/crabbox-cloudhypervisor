@@ -182,3 +182,96 @@ fn failed_hole_digging_only_warns() {
     let text = String::from_utf8(diag).unwrap();
     assert!(text.contains("snapshot kept dense"), "{text}");
 }
+
+/// Records whether the VM process was alive when the hole digging reported.
+struct AliveAtDig {
+    pid: u32,
+    alive: Option<bool>,
+}
+
+impl std::io::Write for AliveAtDig {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if String::from_utf8_lossy(buf).contains("snapshot kept dense") {
+            self.alive = Some(crate::host::pid_alive(self.pid, super::super::CH_COMM));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Replies for a pause of a running VM, from `vm.info` through `vmm.shutdown`.
+fn pause_replies() -> Vec<String> {
+    let ok = NO_CONTENT.to_owned();
+    vec![
+        info("Running"),
+        ok.clone(),
+        info("Paused"),
+        ok.clone(),
+        ok.clone(),
+        ok.clone(),
+        ok,
+    ]
+}
+
+#[test]
+fn suspend_frees_the_vm_before_digging_holes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = disk_fixture(dir.path(), Some(&ch));
+    let seen = serve(&rec.api_socket(), pause_replies());
+    let mut diag = AliveAtDig {
+        pid: ch.child.id(),
+        alive: None,
+    };
+    backend.pause(&rec, &mut diag).unwrap();
+    seen.join().unwrap();
+    assert_eq!(diag.alive, Some(false), "vm stopped when holes were dug");
+}
+
+#[test]
+fn failed_hole_digging_still_leaves_a_suspended_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = disk_fixture(dir.path(), Some(&ch));
+    let seen = serve(&rec.api_socket(), pause_replies());
+    let mut diag = Vec::new();
+    backend.pause(&rec, &mut diag).unwrap();
+    seen.join().unwrap();
+    let text = String::from_utf8(diag).unwrap();
+    assert!(text.contains("snapshot kept dense"), "{text}");
+    assert!(snap(&backend).is_dir());
+    assert_eq!(backend.power(&rec), Power::Suspended);
+}
+
+#[test]
+fn crash_before_digging_holes_leaves_a_dense_snapshot_to_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, rec) = disk_fixture(dir.path(), None);
+    std::fs::create_dir_all(snap(&backend)).unwrap();
+    let memory = snap(&backend).join("memory-ranges");
+    std::fs::write(&memory, vec![0_u8; 4096]).unwrap();
+    assert_eq!(backend.power(&rec), Power::Suspended);
+    let err = backend.bring_up(&rec, &mut Vec::new()).unwrap_err();
+    assert!(err.contains("restore from snapshot failed"), "{err}");
+    assert_eq!(std::fs::read(&memory).unwrap().len(), 4096);
+}
+
+#[test]
+fn resuming_in_place_after_a_crash_before_stop_drops_the_stale_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec) = disk_fixture(dir.path(), Some(&ch));
+    std::fs::create_dir_all(snap(&backend)).unwrap();
+    let ok = NO_CONTENT.to_owned();
+    let seen = serve(&rec.api_socket(), vec![info("Paused"), ok, info("Running")]);
+    assert!(backend.bring_up(&rec, &mut Vec::new()).unwrap());
+    let lines = seen.join().unwrap();
+    assert!(lines.iter().any(|l| l.contains("vm.resume")), "{lines:?}");
+    assert!(
+        !snap(&backend).exists(),
+        "guest disk moved past the snapshot"
+    );
+}
