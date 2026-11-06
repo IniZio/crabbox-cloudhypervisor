@@ -135,6 +135,7 @@ pub(crate) fn request(operation: Operation) -> Request {
         lease_id: None,
         checkpoint_id: None,
         name: None,
+        publish_caches: false,
     }
 }
 
@@ -260,6 +261,13 @@ impl Backend for Fake {
         self.alive_set.borrow_mut().remove(&record.lease_id);
         self.suspended.borrow_mut().insert(record.lease_id.clone());
         Ok(())
+    }
+
+    fn pause_and_publish(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("publish at pause {}", record.lease_id));
+        self.pause(record, diag)
     }
 
     fn resume(&self, record: &LeaseRecord, _diag: &mut dyn Write) -> Result<(), String> {

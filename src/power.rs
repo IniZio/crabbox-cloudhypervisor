@@ -38,7 +38,11 @@ pub(crate) fn pause(
     let (id, record) = load(request, backend, diag)?;
     match backend.power(&record) {
         Power::Running | Power::Paused => {
-            backend.pause(&record, diag)?;
+            if request.publish_caches {
+                backend.pause_and_publish(&record, diag)?;
+            } else {
+                backend.pause(&record, diag)?;
+            }
             Ok(format!("suspended {id}"))
         }
         Power::Suspended => Ok(format!("{id} already suspended")),

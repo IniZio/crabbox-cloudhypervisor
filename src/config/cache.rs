@@ -2,8 +2,11 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Where cache volume generations live and how much they may use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CacheConfig {
     /// Store root (`cacheVolumeDir`).
     pub volume_dir: PathBuf,

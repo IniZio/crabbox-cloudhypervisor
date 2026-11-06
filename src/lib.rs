@@ -51,6 +51,9 @@ const PROXY_USAGE: &str = "usage: proxy <leaseId> --state-dir <dir>";
 /// Usage text for the `watch` subcommand.
 const WATCH_USAGE: &str = "usage: watch <leaseId> --state-dir <dir>";
 
+/// Usage text for the `publish` subcommand.
+const PUBLISH_USAGE: &str = "usage: publish <leaseId> --state-dir <dir>";
+
 /// Builds the config from a request and the process environment.
 fn config_of(request: &Request) -> Result<config::Config, String> {
     config::Config::from_request(&request.config, &|k| std::env::var(k).ok())
@@ -173,6 +176,13 @@ fn lease_args<'a>(args: &'a [String], usage: &str) -> Result<(&'a str, &'a str),
 pub fn run_watch(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
     let (id, dir) = lease_args(args, WATCH_USAGE)?;
     watch::run(id, std::path::Path::new(dir), diag)
+}
+
+/// Runs `publish <leaseId> --state-dir <dir>`, the detached cache publisher of a
+/// lease that just suspended; notes go to `diag`.
+pub fn run_publish(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
+    let (id, dir) = lease_args(args, PUBLISH_USAGE)?;
+    vm::run_publisher(id, std::path::Path::new(dir), diag)
 }
 
 /// Runs `proxy <leaseId> --state-dir <dir>` (`args` are those after `proxy`).

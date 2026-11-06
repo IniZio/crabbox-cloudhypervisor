@@ -116,6 +116,11 @@ pub trait Backend {
     /// left paused by this call.
     fn pause(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String>;
 
+    /// [`Backend::pause`], and the lease's caches may be saved for the next lease.
+    fn pause_and_publish(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        self.pause(record, diag)
+    }
+
     /// Paused: vm.resume. Suspended: restore the snapshot, then vm.resume.
     /// Stopped: cold boot from the existing disk and seed
     /// (new passt and CH, same lease dir). Then waits for crabbox-ready.

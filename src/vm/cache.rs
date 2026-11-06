@@ -4,6 +4,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,27 @@ pub(super) struct LeaseCache {
     scope: Option<String>,
 }
 
+/// A publish's outcome as a note.
+fn describe(got: Publish) -> String {
+    match got {
+        Publish::Published { generation } => {
+            format!("published gen {}", generation / 1_000_000_000)
+        }
+        Publish::Unchanged => "unchanged".to_owned(),
+        Publish::Skipped { reason } => format!("skipped: {reason}"),
+        Publish::Rejected { reason } => format!("rejected: {reason}"),
+    }
+}
+
 impl LeaseCache {
+    /// The cache record in `lease_dir`; empty when it has none or it is unreadable.
+    fn read(lease_dir: &Path) -> Self {
+        fs::read(lease_dir.join(CACHE_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
     /// Groups that have a disk, with their disk index.
     fn attached(&self) -> impl Iterator<Item = (usize, &RecordedGroup)> {
         self.groups
@@ -178,10 +199,7 @@ impl RealBackend {
 
     /// The lease's cache record; empty when it has none or it is unreadable.
     pub(super) fn read_cache(&self, id: &str) -> LeaseCache {
-        fs::read(self.store.lease_dir(id).join(CACHE_FILE))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        LeaseCache::read(&self.store.lease_dir(id))
     }
 
     /// Collects store garbage before a lease with cache volumes restores, and
@@ -195,48 +213,50 @@ impl RealBackend {
     fn quiesce(record: &LeaseRecord, diag: &mut dyn Write) -> bool {
         let power = Self::power_of(record);
         if power != Power::Running {
-            let _ = writeln!(diag, "cache: vm is {}; nothing published", power.status());
+            let _ = writeln!(diag, "cache: vm is {}; no clean shutdown", power.status());
             return false;
         }
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         if let Err(e) = client.power_button() {
-            let _ = writeln!(diag, "cache: {e}; nothing published");
+            let _ = writeln!(diag, "cache: no clean shutdown: {e}");
             return false;
         }
         let off = wait_until(SHUTDOWN_WAIT, || {
             !Self::ch_alive(record) || client.state().is_ok_and(|s| s == "Shutdown")
         });
         if !off {
-            let _ = writeln!(
-                diag,
-                "cache: guest did not power off in time; nothing published"
-            );
+            let _ = writeln!(diag, "cache: guest did not power off in time");
         }
         off
     }
 
-    /// Shuts the guest down cleanly when it has cache disks; true when it did.
+    /// Flushes a running guest's cache disks and records the result, then shuts
+    /// it down; true when it powered off. A guest found any other way is left
+    /// as it is, and only a record from its sleep can publish it.
     pub(super) fn quiesce_for_cache(&self, record: &LeaseRecord, diag: &mut dyn Write) -> bool {
-        let cache = self.read_cache(&record.lease_id);
-        cache.attached().next().is_some() && Self::quiesce(record, diag)
+        let id = &record.lease_id;
+        if self.read_cache(id).attached().next().is_none() {
+            return false;
+        }
+        if Self::power_of(record) == Power::Running {
+            let synced = self.sync_groups(record, diag);
+            if let Err(e) = self.write_publish_record(id, synced) {
+                let _ = writeln!(diag, "warn: {e}");
+            }
+        }
+        Self::quiesce(record, diag)
     }
 
-    /// Publishes each grown group when the guest shut down cleanly, then drops
-    /// the working copies. Notes go to `diag`; nothing here fails a release.
+    /// Publishes each grown group the guest shut down cleanly or synced, then
+    /// drops the working copies. Notes go to `diag`; nothing here fails a release.
     pub(super) fn settle_cache(&self, id: &str, quiesced: bool, diag: &mut dyn Write) {
         let cache = self.read_cache(id);
         let store = self.volume_store(cache.scope.as_deref());
+        let synced = self.synced_groups(id);
         for (_, g) in cache.attached() {
             let group = g.group.id.as_str();
-            let note = if quiesced {
-                match store.publish(&g.group, &g.copy, id, SystemTime::now()) {
-                    Publish::Published { generation } => {
-                        format!("published gen {}", generation / 1_000_000_000)
-                    }
-                    Publish::Unchanged => "unchanged".to_owned(),
-                    Publish::Skipped { reason } => format!("skipped: {reason}"),
-                    Publish::Rejected { reason } => format!("rejected: {reason}"),
-                }
+            let note = if quiesced || synced.get(group) == Some(&true) {
+                describe(store.publish(&g.group, &g.copy, id, SystemTime::now()))
             } else {
                 "discarded".to_owned()
             };
@@ -268,5 +288,6 @@ impl RealBackend {
 }
 
 mod held;
+pub(super) mod publisher;
 #[cfg(test)]
 mod tests;

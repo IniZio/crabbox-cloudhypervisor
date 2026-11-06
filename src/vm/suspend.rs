@@ -1,6 +1,7 @@
 //! Suspend to disk: snapshot a paused VM into its lease dir, stop its
 //! processes, and restore it later with its guest processes intact.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -79,10 +80,29 @@ impl RealBackend {
         }
     }
 
+    /// Suspends a VM whose caches may be saved: flushes its cache disks first,
+    /// then publishes in the background once its memory is free. Nothing about
+    /// the caches can fail the suspend.
+    pub(super) fn suspend_and_publish(
+        &self,
+        record: &LeaseRecord,
+        diag: &mut dyn Write,
+    ) -> Result<(), String> {
+        let synced = if Self::power_of(record) == Power::Running {
+            self.sync_groups(record, diag)
+        } else {
+            BTreeMap::new()
+        };
+        self.suspend(record, diag)?;
+        self.start_publisher(&record.lease_id, synced, diag);
+        Ok(())
+    }
+
     /// Snapshots the VM to disk, then stops cloud-hypervisor and passt.
     /// A VM that was running keeps running if the snapshot cannot be taken;
     /// one found paused (by an older adapter) is left as it was found.
     pub(super) fn suspend(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
+        self.forget_publish_record(&record.lease_id);
         let was_running = Self::power_of(record) == Power::Running;
         if was_running {
             self.pause_vm(record, diag)?;
