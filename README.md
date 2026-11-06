@@ -353,6 +353,13 @@ earlier pin when a response omits it; upstream crabbox ignores it.
   VM is dead with no snapshot (host reboot, killed process) it cold-boots from
   the lease's existing disk and seed.
 
+`list` reports `resumeMemoryMiB` on a suspended lease: the host memory restoring
+it takes, which is the allocated size of the snapshot's memory file plus 64 MiB
+for cloud-hypervisor, passt and page tables. Restore loads only the allocated
+parts of that file, so this is usually well below guest RAM, but the guest can
+grow back to its full RAM once running. The field is absent on any other status
+and when the memory file cannot be read.
+
 Needs the crabbox fork (branch `moor/external-pause-resume`) and
 `capabilities.pauseResume: true` in the trusted crabbox user config.
 

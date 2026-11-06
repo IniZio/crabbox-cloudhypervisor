@@ -85,4 +85,7 @@ pub struct LeaseRow {
     /// absent when it cannot be read.
     #[serde(rename = "hostMemoryMiB", skip_serializing_if = "Option::is_none")]
     pub host_memory_mib: Option<u64>,
+    /// Host memory restoring this suspended VM takes, in MiB.
+    #[serde(rename = "resumeMemoryMiB", skip_serializing_if = "Option::is_none")]
+    pub resume_memory_mib: Option<u64>,
 }

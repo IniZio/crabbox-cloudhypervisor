@@ -71,6 +71,22 @@ fn list_reports_host_memory_zero_when_down_and_omits_unreadable() {
 }
 
 #[test]
+fn only_a_suspended_lease_reports_what_resuming_it_takes() {
+    let fake = Fake::default();
+    for (id, alive) in [("down", false), ("run", true), ("susp", false)] {
+        fake.add(id, alive);
+        fake.resume_memory.borrow_mut().insert(id.into(), 1526);
+    }
+    fake.suspended.borrow_mut().insert("susp".into());
+    let rows = list(&request(Operation::List), &fake, &mut std::io::sink()).unwrap();
+    let got: Vec<(&str, Option<u64>)> = rows
+        .iter()
+        .map(|r| (r.lease_id.as_str(), r.resume_memory_mib))
+        .collect();
+    assert_eq!(got, [("down", None), ("run", None), ("susp", Some(1526))]);
+}
+
+#[test]
 fn list_empty() {
     let fake = Fake::default();
     assert!(list(&request(Operation::List), &fake, &mut std::io::sink())

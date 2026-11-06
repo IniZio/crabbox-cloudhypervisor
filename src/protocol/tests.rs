@@ -191,6 +191,7 @@ fn leases_response_uses_camel_case() {
         growth_blocked: String::new(),
         balloon_off: String::new(),
         host_memory_mib: None,
+        resume_memory_mib: None,
     };
     assert_eq!(
         leases_response(std::slice::from_ref(&row)),
@@ -200,7 +201,16 @@ fn leases_response_uses_camel_case() {
         host_memory_mib: Some(1122),
         ..row
     };
-    assert!(leases_response(&[row]).contains(r#""status":"running","hostMemoryMiB":1122}"#));
+    assert!(leases_response(std::slice::from_ref(&row))
+        .contains(r#""status":"running","hostMemoryMiB":1122}"#));
+    let row = LeaseRow {
+        status: "suspended".into(),
+        host_memory_mib: Some(0),
+        resume_memory_mib: Some(1526),
+        ..row
+    };
+    assert!(leases_response(&[row])
+        .contains(r#""status":"suspended","hostMemoryMiB":0,"resumeMemoryMiB":1526}"#));
 }
 
 #[test]

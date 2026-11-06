@@ -30,6 +30,10 @@ pub fn list(
                     Power::Stopped | Power::Suspended => Some(0),
                     _ => backend.host_memory_mib(&r),
                 },
+                resume_memory_mib: match power {
+                    Power::Suspended => backend.resume_memory_mib(&r),
+                    _ => None,
+                },
                 growth_blocked: backend.growth_blocked(&r.lease_id),
                 balloon_off: backend.balloon_off(&r.lease_id),
                 lease_id: r.lease_id,

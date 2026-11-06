@@ -275,3 +275,18 @@ fn resuming_in_place_after_a_crash_before_stop_drops_the_stale_snapshot() {
         "guest disk moved past the snapshot"
     );
 }
+
+#[test]
+fn resuming_takes_the_snapshots_allocated_memory_plus_overhead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, rec) = disk_fixture(dir.path(), None);
+    assert_eq!(backend.resume_memory_mib(&rec), None);
+    std::fs::create_dir_all(snap(&backend)).unwrap();
+    assert_eq!(backend.resume_memory_mib(&rec), None);
+    let memory = std::fs::File::create(snap(&backend).join("memory-ranges")).unwrap();
+    std::io::Write::write_all(&mut &memory, &vec![1_u8; 2 << 20]).unwrap();
+    memory.set_len(1 << 30).unwrap();
+    memory.sync_all().unwrap();
+    let got = backend.resume_memory_mib(&rec).unwrap();
+    assert!((66..=70).contains(&got), "2 MiB allocated gave {got} MiB");
+}

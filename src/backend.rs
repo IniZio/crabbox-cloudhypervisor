@@ -151,6 +151,11 @@ pub trait Backend {
         None
     }
 
+    /// Host memory restoring the lease's snapshot takes, in MiB.
+    fn resume_memory_mib(&self, _record: &LeaseRecord) -> Option<u64> {
+        None
+    }
+
     /// Snapshots the running lease's RAM and disk under `checkpoint_id` and
     /// reports what was written. The lease keeps running, also when this
     /// fails. Only called when [`Power::Running`].
