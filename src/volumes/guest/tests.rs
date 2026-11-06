@@ -95,8 +95,7 @@ fn each_path_binds_its_own_directory_of_the_volume() {
 
 #[test]
 fn every_cache_mount_is_ordered_before_containerd_and_docker() {
-    let mut docker = req("g7x", "docker", &["~/docker", "/var/lib/containerd"], 0);
-    docker.sealed = true;
+    let docker = req("g7x", "docker", &["~/docker", "/var/lib/containerd"], 0);
     let reqs = [req("g7", "npm", &["~/.npm"], 0), docker];
     let plan = plan(&reqs, &limits(40));
     let setup = setup(&[

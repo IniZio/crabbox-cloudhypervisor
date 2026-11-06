@@ -116,11 +116,8 @@ pub fn tick(planner: &mut Planner, machine: &dyn Machine, log: &mut Log<'_>) -> 
     Ok(())
 }
 
-/// The host filesystem keeps this percent of its size free, and at least
-/// [`HOST_FLOOR_GIB`], so snapshots and other Boxes still fit.
-const HOST_FLOOR_PERCENT: u64 = 10;
 /// Smallest host free-space floor, GiB.
-const HOST_FLOOR_GIB: u64 = 20;
+pub const HOST_FLOOR_GIB: u64 = 20;
 
 /// Grows the disk image only when the host filesystem would still hold its free
 /// floor after the whole step is written. Free space is read now because the
@@ -129,7 +126,7 @@ fn grow_disk(machine: &dyn Machine, from: u64, to: u64, log: &mut Log<'_>) {
     let need = to.saturating_sub(from);
     match machine.host_space() {
         Ok((free, total)) => {
-            let floor = (total / 100 * HOST_FLOOR_PERCENT).max(HOST_FLOOR_GIB * GIB);
+            let floor = crate::host::host_floor(total, HOST_FLOOR_GIB);
             if free.saturating_sub(need) >= floor {
                 machine.set_blocked(None);
             } else {

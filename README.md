@@ -18,7 +18,7 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
   `checkpointCreate`.
 - `passt` with `--vhost-user` support (tested with 2026_06_11).
 - `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`.
-- For cache volumes: `mke2fs`, `e2fsck`, `resize2fs` and `debugfs` (e2fsprogs). Without
+- For cache volumes: `mke2fs`, `e2fsck` and `resize2fs` (e2fsprogs). Without
   them every cache volume is skipped and the Box starts cold.
 - crabbox itself, with `rsync` and `git` for syncing.
 - With `cgroup: systemd` (the default): a systemd user manager for the user that
@@ -240,8 +240,7 @@ lease has none running, and never a second one.
 
 With `capabilities.cacheVolumes: true` in the trusted crabbox user config,
 `acquire` reads `desired.cacheVolumes`. Each entry names a `group`, a volume
-`name`, a `key`, one or more guest `paths`, an optional `sizeGB` and an
-optional `sealed`. With `CRABBOX_CACHE_SCOPE` set, crabbox also sends
+`name`, a `key`, one or more guest `paths` and an optional `sizeGB`. With `CRABBOX_CACHE_SCOPE` set, crabbox also sends
 `desired.cacheScope` (16 lowercase hex digits); any other value fails the
 acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
 `~/.ssh`), `/opt/<rel>`, `/var/cache/<rel>`, or `/var/lib/containerd` or
@@ -261,21 +260,22 @@ acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
   and holds only what the lease writes, on any host filesystem, so restore
   takes no time and N leases of one group store the generation once. The
   overlay's backing file is a hard link to the generation in the lease's work
-  directory. A generation smaller than the group's current size, or one that
-  still holds a `.crabbox-sealed` marker, is copied instead (a reflink where
-  the filesystem allows it), grown host-side and has its markers deleted. With
+  directory. A generation smaller than the group's current size is copied
+  instead (a reflink where the filesystem allows it) and grown host-side. With
   no generation the lease gets a fresh empty filesystem.
 - **Publish.** `release` presses the ACPI power button and waits up to 30
-  seconds for the guest to power off. Then a group publishes as the newest
-  generation only if it grew by at least 32 MiB of allocated blocks, its
-  journal is clean, every `sealed` volume has `.crabbox-sealed` in each of its
-  path directories (else `unsealed: <name>`), `e2fsck -fn` passes and it is
-  less than 95% full. An overlay is first flattened (`qemu-img convert`)
-  into a raw image that refers to no other file, and the checks run on that.
-  The seal markers are deleted before the image is renamed in, mode 0444, so a
-  published generation is never written again. Anything
-  else is discarded and the previous generation stays. A VM that is stopped,
-  paused or killed publishes nothing. A cache never fails a release.
+  seconds for the guest to power off. A group then publishes when it grew by at
+  least 32 MiB of allocated blocks since it last matched a generation. Publish
+  never touches the working copy: `qemu-img convert` writes a private raw image
+  that refers to no other file, and everything after runs on that. `e2fsck -fp`
+  replays the journal and repairs what it safely can, then the journal must be
+  clean, `e2fsck -fn` must pass and the image must be less than 95% full. An
+  overlay must also pass `qemu-img check`. The image is renamed in with mode
+  0444, so a published generation is never written again. A publish skips when
+  another lease published a generation at least as large since this lease last
+  matched the newest, or when it would take the host below its free-space
+  floor. Anything else leaves the previous generation in place. A VM that is
+  stopped, paused or killed publishes nothing. A cache never fails a release.
 - **Echo.** The acquire response lists each name with its outcome:
   `restored` (detail `gen <unix seconds>`), `empty` or `skipped` (detail says
   why; the path is then a plain directory of the root disk).

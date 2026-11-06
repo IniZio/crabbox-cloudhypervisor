@@ -1,11 +1,11 @@
 //! Generation store: `<dir>/<compat>/<group>/gen-<unix_ns>-<lease8>.img`.
 //!
 //! A generation is a raw ext4 image, read-only once published. Restore gives a
-//! lease a qcow2 overlay over the newest one, publish flattens a lease's
-//! overlay into the next one, and readers pick the newest name. Restore and
-//! publish share a store lock that GC holds exclusively. Working copies live
-//! in `<dir>/leases/<lease>/` on the same filesystem, so an overlay's backing
-//! file is a hard link there and publish ends in one rename(2).
+//! lease a qcow2 overlay over the newest one, publish flattens a private copy
+//! of a lease's disk into the next one, and readers pick the newest name.
+//! Restore and publish share a store lock that GC holds exclusively. Working
+//! copies live in `<dir>/leases/<lease>/` on the same filesystem, so an
+//! overlay's backing file is a hard link there and publish ends in one rename(2).
 
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::{ext4, Group, Outcome, Token, GIB};
+use super::{ext4, Outcome, Token, GIB};
 use crate::config::CacheConfig;
 
 /// Directory of working copies, beside the compat dirs.
@@ -23,8 +23,10 @@ const LEASES_DIR: &str = "leases";
 const LOCK_FILE: &str = ".lock";
 /// File whose mtime records a group's last restore or publish.
 const USED_FILE: &str = "used";
-/// Smallest growth (allocated bytes) worth publishing.
+/// Smallest growth (allocated bytes) worth publishing at close.
 pub const MIN_GROWTH: u64 = 32 * 1024 * 1024;
+/// Smallest growth worth publishing at a sleep, which the lease may repeat.
+pub const SLEEP_GROWTH: u64 = 256 * 1024 * 1024;
 /// A group at least this full is not published.
 pub const FULL_PERCENT: u64 = 95;
 /// Superseded generations stay this long, for restores already cloning them.
@@ -116,17 +118,22 @@ pub struct Restored {
     pub copy: WorkingCopy,
 }
 
-/// What release did with a working copy.
+/// What a publish did with a working copy, which it leaves unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Publish {
-    /// Renamed in as the newest generation.
+    /// Copied in as the newest generation.
     Published {
         /// Its timestamp, unix nanoseconds.
         generation: u64,
     },
-    /// Grew less than [`MIN_GROWTH`]; discarded.
+    /// Grew too little since it last matched a generation.
     Unchanged,
-    /// Not trusted; discarded.
+    /// A guard says not to spend the disk now.
+    Skipped {
+        /// Why.
+        reason: String,
+    },
+    /// Not trusted.
     Rejected {
         /// Why.
         reason: String,
@@ -155,6 +162,8 @@ pub struct Store {
     ttl: Duration,
     /// `qemu-img` binary.
     qemu_img: PathBuf,
+    /// Least host free space a publish leaves, GiB; 0 turns the floor off.
+    host_floor_gib: u64,
 }
 
 /// Unix nanoseconds of `t`; 0 before the epoch.
@@ -195,18 +204,6 @@ fn generations(dir: &Path) -> Vec<Generation> {
         .collect();
     gens.sort_by(|a, b| (a.ns, &a.path).cmp(&(b.ns, &b.path)));
     gens
-}
-
-/// Every sealed volume of `group` has the marker in each of its path dirs.
-fn check_sealed(group: &Group, image: &Path) -> Result<(), String> {
-    for (name, marker) in group.seal_markers() {
-        match ext4::has_file(image, &marker) {
-            Ok(true) => {}
-            Ok(false) => return Err(format!("unsealed: {name}")),
-            Err(e) => return Err(format!("unsealed: {name} ({e})")),
-        }
-    }
-    Ok(())
 }
 
 /// Removes a file or a directory tree; a missing one is fine.
@@ -295,6 +292,7 @@ impl Store {
             budget: cfg.store_max_gib.saturating_mul(GIB),
             ttl: Duration::from_secs(cfg.key_ttl_days.saturating_mul(86_400)),
             qemu_img: qemu_img.to_path_buf(),
+            host_floor_gib: cfg.host_floor_gib,
         }
     }
 

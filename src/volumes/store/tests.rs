@@ -5,9 +5,10 @@ use std::process::Command;
 use super::*;
 use crate::host;
 use crate::volumes::tests::{have_e2fsprogs, limits, noise};
-use crate::volumes::{GuestPath, Volume, SEAL_MARKER};
+use crate::volumes::{Group, GuestPath, Volume};
 
 mod overlay;
+mod publish;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -83,73 +84,9 @@ fn group(id: &str, capacity: u64) -> Group {
         volumes: vec![Volume {
             name: Token::parse("npm").unwrap(),
             paths: vec![GuestPath::Home(".npm".to_owned())],
-            sealed: false,
         }],
         capacity,
     }
-}
-
-/// Group `id` holding one sealed `docker` volume with two paths.
-fn sealed_group(id: &str) -> Group {
-    Group {
-        id: Token::parse(id).unwrap(),
-        volumes: vec![Volume {
-            name: Token::parse("docker").unwrap(),
-            paths: vec![
-                GuestPath::Home("docker".to_owned()),
-                GuestPath::Abs("/opt/android-sdk".to_owned()),
-            ],
-            sealed: true,
-        }],
-        capacity: GIB,
-    }
-}
-
-/// Runs debugfs `requests` against `image` in write mode.
-fn debugfs_script(image: &Path, requests: &[String]) {
-    let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("cmds");
-    fs::write(&script, requests.join("\n") + "\n").unwrap();
-    let out = Command::new("debugfs")
-        .arg("-w")
-        .arg("-f")
-        .arg(&script)
-        .arg(image)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-}
-
-/// The guest seals `volume`: 40 MiB of data, and the marker in each path dir
-/// whose index `marked` lists.
-fn guest_seals(copy: &WorkingCopy, volume: &Volume, marked: &[usize]) {
-    in_guest(copy, |image| seal_raw(image, volume, marked));
-}
-
-fn seal_raw(image: &Path, volume: &Volume, marked: &[usize]) {
-    let dir = tempfile::tempdir().unwrap();
-    let blob = dir.path().join("blob");
-    fs::write(&blob, noise(40 * MIB)).unwrap();
-    let name = volume.name.as_str();
-    let mut requests = vec![format!("mkdir {name}")];
-    let dirs = volume.image_dirs();
-    for d in &dirs {
-        requests.push(format!("mkdir \"{d}\""));
-    }
-    requests.push(format!("write {} \"{}/data\"", blob.display(), dirs[0]));
-    for i in marked {
-        requests.push(format!("write /dev/null \"{}/{SEAL_MARKER}\"", dirs[*i]));
-    }
-    debugfs_script(image, &requests);
-}
-
-/// True when every path dir of `volume` in `image` holds the marker.
-fn marked(image: &Path, volume: &Volume) -> Vec<bool> {
-    volume
-        .image_dirs()
-        .iter()
-        .map(|d| ext4::has_file(image, &format!("{d}/{SEAL_MARKER}")).unwrap())
-        .collect()
 }
 
 /// Writes `bytes` of random data into `image` at `/npm/<name>` without mounting it.
@@ -254,7 +191,10 @@ fn a_grown_copy_publishes_and_the_next_lease_restores_it() {
     let generation = 1_729_781_203_000_000_000;
     assert_eq!(published, Publish::Published { generation });
     assert_eq!(gens(&s, "g1"), ["gen-1729781203000000000-lease-on.img"]);
-    assert!(!s.work_dir("lease-one").join("g1.img").exists());
+    assert!(
+        s.work_dir("lease-one").join("g1.img").exists(),
+        "a publish copies, so the lease keeps its disk"
+    );
 
     let second = s.restore(&g, "lease-two");
     assert_eq!(second.outcome, Outcome::Restored { generation });
@@ -322,26 +262,12 @@ fn publish_rejects_a_failed_fsck() {
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let r = written(&s, "corrupt", 40 * MIB);
-    debugfs_w(&r.copy, "set_bg 0 free_blocks_count 1");
+    debugfs_w(&r.copy, "set_inode_field npm mode 0100644");
     let got = publish_at(&s, &r, "corrupt");
     assert!(
         matches!(&got, Publish::Rejected { reason } if reason.starts_with("fsck")),
         "{got:?}"
     );
-    assert!(gens(&s, "g").is_empty());
-}
-
-#[test]
-fn publish_rejects_an_unclean_unmount() {
-    if !have_tools() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let s = store(dir.path());
-    let r = written(&s, "killed", 40 * MIB);
-    debugfs_w(&r.copy, "feature needs_recovery");
-    let reason = "not cleanly unmounted".to_owned();
-    assert_eq!(publish_at(&s, &r, "killed"), Publish::Rejected { reason });
     assert!(gens(&s, "g").is_empty());
 }
 
@@ -438,114 +364,6 @@ fn gc_removes_working_copies_of_dead_leases_and_honours_dry_run() {
     assert_eq!(real.removed, [s.work_dir("gone")]);
     assert!(!s.work_dir("gone").exists());
     assert!(s.work_dir("live").exists());
-}
-
-#[test]
-fn a_restored_lease_starts_without_the_seal_marker() {
-    if !have_tools() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let s = store(dir.path());
-    let g = sealed_group("gx");
-    let first = s.restore(&g, "lease-one");
-    guest_seals(&first.copy, &g.volumes[0], &[0, 1]);
-    let got = s.publish(&g, &first.copy, "lease-one", at(5));
-    assert!(matches!(got, Publish::Published { .. }), "{got:?}");
-
-    let second = s.restore(&g, "lease-two");
-    assert!(
-        matches!(second.outcome, Outcome::Restored { .. }),
-        "{second:?}"
-    );
-    assert_eq!(second.copy.format, Format::Qcow2);
-    assert_eq!(marked(&view(&second.copy), &g.volumes[0]), [false, false]);
-    let generation = generations(&s.group_dir(&g.id)).pop().unwrap();
-    assert_eq!(
-        marked(&generation.path, &g.volumes[0]),
-        [false, false],
-        "publish clears the markers, so the generation is never edited after"
-    );
-}
-
-#[test]
-fn a_generation_that_still_holds_a_marker_is_restored_as_a_copy_without_it() {
-    if !have_tools() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let s = store(dir.path());
-    let g = sealed_group("gx");
-    let first = s.restore(&g, "old");
-    seal_raw(&first.copy.image, &g.volumes[0], &[0, 1]);
-    let legacy = s.group_dir(&g.id).join("gen-0000000000000000009-old.img");
-    fs::rename(&first.copy.image, &legacy).unwrap();
-    let before = fs::read(&legacy).unwrap();
-
-    let r = s.restore(&g, "new");
-    assert_eq!(r.outcome, Outcome::Restored { generation: 9 });
-    assert_eq!(r.copy.format, Format::Raw);
-    assert_eq!(marked(&r.copy.image, &g.volumes[0]), [false, false]);
-    assert!(
-        fs::read(&legacy).unwrap() == before,
-        "the generation is untouched"
-    );
-}
-
-#[test]
-fn publish_rejects_a_sealed_volume_without_the_marker_in_every_path() {
-    if !have_tools() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let s = store(dir.path());
-    let g = sealed_group("gx");
-    for marked in [&[][..], &[0], &[1]] {
-        let r = s.restore(&g, "half");
-        guest_seals(&r.copy, &g.volumes[0], marked);
-        let reason = "unsealed: docker".to_owned();
-        let got = s.publish(&g, &r.copy, "half", at(6));
-        assert_eq!(got, Publish::Rejected { reason }, "markers {marked:?}");
-        s.discard("half").unwrap();
-    }
-    assert!(gens(&s, "gx").is_empty());
-
-    let r = s.restore(&g, "sealed");
-    guest_seals(&r.copy, &g.volumes[0], &[0, 1]);
-    let got = s.publish(&g, &r.copy, "sealed", at(7));
-    assert_eq!(
-        got,
-        Publish::Published {
-            generation: 7_000_000_000
-        }
-    );
-}
-
-#[test]
-fn only_sealed_volumes_need_the_marker() {
-    if !have_tools() {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let s = store(dir.path());
-    let plain = group("g", GIB);
-    let sealed = sealed_group("gx");
-    let a = s.restore(&plain, "both");
-    let b = s.restore(&sealed, "both");
-    guest_writes(&a.copy, "pkg", 40 * MIB);
-    guest_seals(&b.copy, &sealed.volumes[0], &[]);
-    let got_plain = s.publish(&plain, &a.copy, "both", at(8));
-    let got_sealed = s.publish(&sealed, &b.copy, "both", at(8));
-    assert!(
-        matches!(got_plain, Publish::Published { .. }),
-        "{got_plain:?}"
-    );
-    assert!(
-        matches!(got_sealed, Publish::Rejected { .. }),
-        "{got_sealed:?}"
-    );
-    assert_eq!(gens(&s, "g").len(), 1);
-    assert!(gens(&s, "gx").is_empty());
 }
 
 #[test]

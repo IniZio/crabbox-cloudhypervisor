@@ -53,6 +53,7 @@ pub(super) fn config(root: &Path) -> Config {
             store_max_gib: 200,
             max_volume_gib: 40,
             key_ttl_days: 30,
+            host_floor_gib: 0,
         },
         cgroup: crate::scope::Cgroup::Off,
         balloon: crate::balloon::BalloonConfig::default(),

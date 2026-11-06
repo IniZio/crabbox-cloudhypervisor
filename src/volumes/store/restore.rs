@@ -22,7 +22,14 @@ impl Store {
     #[must_use]
     pub fn restore(&self, group: &Group, lease_id: &str) -> Restored {
         match self.try_restore(group, lease_id) {
-            Ok((outcome, copy)) => Restored { outcome, copy },
+            Ok((outcome, copy)) => {
+                let generation = match outcome {
+                    Outcome::Restored { generation } => Some(generation),
+                    Outcome::Empty | Outcome::Skipped { .. } => None,
+                };
+                self.record_published(lease_id, &group.id, generation, copy.baseline);
+                Restored { outcome, copy }
+            }
             Err(reason) => {
                 for suffix in [RAW_SUFFIX, OVERLAY_SUFFIX, BASE_SUFFIX] {
                     let _ = remove(&self.work_file(lease_id, &group.id, suffix));
@@ -54,12 +61,9 @@ impl Store {
         let outcome = Outcome::Restored {
             generation: newest.ns,
         };
-        if needs_edit(group, &newest.path)? {
+        if too_small(group, &newest.path)? {
             host::clone_disk(&newest.path, &raw, 0)?;
             ext4::grow(&raw, group.capacity)?;
-            for (_, marker) in group.seal_markers() {
-                ext4::remove_file(&raw, &marker)?;
-            }
             return Ok((outcome, working_copy(raw, Format::Raw)?));
         }
         let base = self.work_file(lease_id, &group.id, BASE_SUFFIX);
@@ -74,22 +78,12 @@ impl Store {
     }
 }
 
-/// True when generation `image` cannot back an overlay of `group` as is: it is
-/// smaller than the group, or still holds a seal marker (generations published
-/// before markers were cleared at publish do).
-fn needs_edit(group: &Group, image: &Path) -> Result<bool, String> {
+/// True when generation `image` is smaller than the group, so it cannot back an overlay.
+fn too_small(group: &Group, image: &Path) -> Result<bool, String> {
     let len = fs::metadata(image)
         .map_err(|e| format!("stat generation: {}", e.kind()))?
         .len();
-    if len < group.capacity {
-        return Ok(true);
-    }
-    for (_, marker) in group.seal_markers() {
-        if ext4::has_file(image, &marker)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(len < group.capacity)
 }
 
 /// `image` as a working copy, with its allocated bytes as the baseline.

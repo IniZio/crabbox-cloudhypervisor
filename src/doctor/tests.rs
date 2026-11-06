@@ -47,6 +47,7 @@ fn config(root: &Path) -> Config {
             store_max_gib: 200,
             max_volume_gib: 40,
             key_ttl_days: 30,
+            host_floor_gib: 0,
         },
         cgroup: Cgroup::Systemd,
         balloon: crate::balloon::BalloonConfig::default(),
@@ -220,7 +221,7 @@ fn cache_tools_are_reported_and_a_filesystem_without_reflink_is_not_a_warning() 
     let dir = tempfile::tempdir().unwrap();
     let (ok, r) = report(&config(dir.path()), &probes(dir.path()));
     assert!(ok, "{r}");
-    for name in ["mke2fs", "e2fsck", "resize2fs", "debugfs", "cache_store"] {
+    for name in ["mke2fs", "e2fsck", "resize2fs", "cache_store"] {
         assert!(r.contains(&format!(" {name}: ")), "{name} in {r}");
     }
     assert!(!r.contains("reflink"), "{r}");

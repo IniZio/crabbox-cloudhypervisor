@@ -33,6 +33,7 @@ pub(crate) fn limits(max_volume_gib: u64) -> CacheConfig {
         store_max_gib: 200,
         max_volume_gib,
         key_ttl_days: 30,
+        host_floor_gib: 0,
     }
 }
 
@@ -43,7 +44,6 @@ pub(crate) fn req(group: &str, name: &str, paths: &[&str], size_gb: u64) -> Cach
         key: format!("{group}-{name}"),
         paths: paths.iter().map(|p| (*p).to_owned()).collect(),
         size_gb,
-        sealed: false,
     }
 }
 
@@ -136,28 +136,6 @@ fn a_refused_path_skips_only_its_volume() {
     let skipped: Vec<&str> = plan.skipped.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(skipped, ["keys", "etc"]);
     assert!(plan.skipped.iter().all(|(_, r)| r.starts_with("path ")));
-}
-
-#[test]
-fn plan_keeps_sealed_per_volume() {
-    let mut docker = req("gx", "docker", &["~/docker", "/var/lib/containerd"], 0);
-    docker.sealed = true;
-    let reqs = [req("g", "npm", &["~/.npm"], 0), docker];
-    let plan = plan(&reqs, &limits(40));
-    let sealed: Vec<(&str, &str, bool)> = plan
-        .groups
-        .iter()
-        .flat_map(|g| {
-            g.volumes
-                .iter()
-                .map(move |v| (g.id.as_str(), v.name.as_str(), v.sealed))
-        })
-        .collect();
-    assert_eq!(
-        sealed,
-        [("g", "npm", false), ("gx", "docker", true)],
-        "two groups per scope, sealed only where declared"
-    );
 }
 
 #[test]
@@ -264,7 +242,6 @@ fn image_dirs_are_the_escaped_bind_targets_under_the_name() {
             GuestPath::parse("~/.npm").unwrap(),
             GuestPath::parse("/opt/android-sdk").unwrap(),
         ],
-        sealed: true,
     };
     assert_eq!(
         v.image_dirs(),

@@ -14,6 +14,9 @@ use crate::reclaim::ReclaimConfig;
 use crate::scope::Cgroup;
 use crate::size::{self, Size};
 
+mod cache;
+pub use cache::CacheConfig;
+
 /// Pinned guest image URL (Ubuntu noble cloud image).
 pub const IMAGE_URL: &str =
     "https://cloud-images.ubuntu.com/noble/20260926/noble-server-cloudimg-amd64.img";
@@ -50,19 +53,6 @@ pub struct Growth {
     pub disk_free_percent: u64,
     /// ...or below this many GiB, whichever is larger.
     pub disk_free_gib: u64,
-}
-
-/// Where cache volume generations live and how much they may use.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CacheConfig {
-    /// Store root (`cacheVolumeDir`).
-    pub volume_dir: PathBuf,
-    /// Whole store budget in GiB; least recently used groups go first above it.
-    pub store_max_gib: u64,
-    /// Largest group filesystem in GiB.
-    pub max_volume_gib: u64,
-    /// Groups unused for this many days are removed.
-    pub key_ttl_days: u64,
 }
 
 /// Validated provider configuration.
@@ -174,6 +164,7 @@ impl Config {
                 store_max_gib: int_key(config, "cacheStoreMaxGB", 200, 1, u64::MAX)?,
                 max_volume_gib: int_key(config, "cacheMaxVolumeGB", 40, 1, u64::MAX)?,
                 key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
+                host_floor_gib: crate::watch::HOST_FLOOR_GIB,
             },
             cgroup: cgroup(config)?,
             balloon: balloon(config)?,

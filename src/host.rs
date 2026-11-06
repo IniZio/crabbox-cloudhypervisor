@@ -62,6 +62,32 @@ pub fn flatten(qemu_img: &Path, top: &Path, dest: &Path, size_bytes: u64) -> Res
     grow(dest, size_bytes).map_err(|e| format!("disk flatten: {e}"))
 }
 
+/// Writes `dest`, a sparse raw copy of `top` as a `format` image reads through its chain.
+///
+/// It is new storage: qemu-img shares no extents without `-C`, so nothing written
+/// to `dest` can reach `top`. It skips the page cache where the filesystem allows
+/// that, so a big copy leaves other Boxes' memory alone.
+pub fn flatten_private(
+    qemu_img: &Path,
+    format: &str,
+    top: &Path,
+    dest: &Path,
+) -> Result<(), String> {
+    let convert = |direct: &[&str]| {
+        self::qemu_img(
+            qemu_img,
+            "private flatten",
+            Command::new(qemu_img)
+                .args(["convert", "-q"])
+                .args(direct)
+                .args(["-f", format, "-O", "raw", "-S", "4k"])
+                .arg(top)
+                .arg(dest),
+        )
+    };
+    convert(&["-T", "none", "-t", "none"]).or_else(|_| convert(&[]))
+}
+
 /// Runs the qemu-img command `cmd`; `Err` carries what it said.
 pub fn qemu_img(program: &Path, what: &str, cmd: &mut Command) -> Result<(), String> {
     let output = cmd
@@ -143,6 +169,19 @@ pub fn space(path: &Path) -> Result<(u64, u64), String> {
             "host free space: stat failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )),
+    }
+}
+
+/// Free bytes a filesystem of `total` bytes keeps so snapshots and other Boxes
+/// still fit: a tenth of its size, and at least `min_gib`.
+#[must_use]
+pub const fn host_floor(total: u64, min_gib: u64) -> u64 {
+    let percent = total / 100 * 10;
+    let least = min_gib.saturating_mul(1024 * 1024 * 1024);
+    if percent > least {
+        percent
+    } else {
+        least
     }
 }
 

@@ -234,6 +234,7 @@ impl RealBackend {
                         format!("published gen {}", generation / 1_000_000_000)
                     }
                     Publish::Unchanged => "unchanged".to_owned(),
+                    Publish::Skipped { reason } => format!("skipped: {reason}"),
                     Publish::Rejected { reason } => format!("rejected: {reason}"),
                 }
             } else {
