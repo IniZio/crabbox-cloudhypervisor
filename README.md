@@ -334,9 +334,12 @@ earlier pin when a response omits it; upstream crabbox ignores it.
 
 - `pause` always suspends to disk: `vm.pause`, then `vm.snapshot` into
   `<stateDir>/leases/<leaseId>/snap`, then it stops cloud-hypervisor and passt,
-  so the guest's RAM goes back to the host. The lease status becomes
-  `suspended`. The snapshot is written to `snap.tmp` and renamed only once
-  complete, so a crash mid-snapshot never leaves one that `resume` would use.
+  so the guest's RAM goes back to the host, and only then deallocates the
+  snapshot's zero-filled ranges. The lease status becomes `suspended`. The
+  snapshot is written to `snap.tmp` and renamed only once complete, so a crash
+  mid-snapshot never leaves one that `resume` would use. A crash before the
+  VM stops leaves it paused, and `resume` deletes the snapshot and continues in
+  place. A crash after that leaves a valid snapshot that may use more disk.
   `pause` fails when the state filesystem has less free space than guest RAM
   plus 1 GiB, or when the snapshot fails; the VM is then resumed and keeps
   running. A lease paused in memory by an older adapter version is suspended to

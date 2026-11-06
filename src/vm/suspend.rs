@@ -107,7 +107,6 @@ impl RealBackend {
             let _ = remove_tree(&tmp);
             return Err(format!("lease {id}: snapshot failed, pause aborted: {e}"));
         }
-        dig_snapshot_holes(Path::new(crate::host::DIG_HOLES_TOOL), &snap, diag);
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "snapshot written in {secs:.1}s");
         if let Err(e) = Self::stop_processes(record, diag) {
@@ -119,7 +118,10 @@ impl RealBackend {
             }
             let _ = writeln!(diag, "warn: {e}");
         }
-        self.scopes().stop(id, diag)?;
+        let scopes = self.scopes().stop(id, diag);
+        // Last, so the guest's RAM is back with the host while this reads the file.
+        dig_snapshot_holes(Path::new(crate::host::DIG_HOLES_TOOL), &snap, diag);
+        scopes?;
         let _ = writeln!(diag, "vm suspended to disk");
         Ok(())
     }
