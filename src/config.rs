@@ -116,6 +116,8 @@ pub struct Config {
     pub reclaim: ReclaimConfig,
     /// New leases restore a boot template snapshot instead of cold booting; on unless `false`.
     pub boot_template: bool,
+    /// The host serves checkpoints; `doctor` then requires the patched cloud-hypervisor.
+    pub checkpoints: bool,
 }
 
 /// Environment lookup used for default directories.
@@ -130,13 +132,13 @@ impl Config {
         reject_removed_keys(config)?;
         let state_dir = match path_key(config, "stateDir")? {
             Some(p) => p,
-            None => default_state_dir(env)?,
+            None => xdg_dir(env, "XDG_STATE_HOME", ".local/state")?,
         };
         let runtime_dir =
             path_key(config, "runtimeDir")?.unwrap_or_else(|| default_runtime_dir(env, &state_dir));
         let cache_dir = match path_key(config, "cacheDir")? {
             Some(p) => p,
-            None => default_cache_dir(env)?,
+            None => xdg_dir(env, "XDG_CACHE_HOME", ".cache")?,
         };
         let cpus = opt_int_key(config, "cpus", 1, 64)?
             .map(u32::try_from)
@@ -180,6 +182,7 @@ impl Config {
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             reclaim: reclaim(config)?,
             boot_template: bool_key(config, "bootTemplate", true)?,
+            checkpoints: bool_key(config, "checkpoints", false)?,
             state_dir,
         })
     }
@@ -379,16 +382,6 @@ fn xdg_dir(env: Env<'_>, xdg: &str, fallback: &str) -> Result<PathBuf, String> {
     let home = abs_env(env, "HOME")
         .ok_or_else(|| format!("config: set an absolute path key or HOME (${xdg} unset)"))?;
     Ok(home.join(fallback).join(APP_DIR))
-}
-
-/// Default state directory.
-fn default_state_dir(env: Env<'_>) -> Result<PathBuf, String> {
-    xdg_dir(env, "XDG_STATE_HOME", ".local/state")
-}
-
-/// Default cache directory.
-fn default_cache_dir(env: Env<'_>) -> Result<PathBuf, String> {
-    xdg_dir(env, "XDG_CACHE_HOME", ".cache")
 }
 
 /// Default runtime directory (short, holds unix sockets).

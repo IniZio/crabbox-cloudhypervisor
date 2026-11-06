@@ -59,6 +59,7 @@ pub(super) fn config(root: &Path) -> Config {
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
         boot_template: false,
+        checkpoints: false,
     }
 }
 

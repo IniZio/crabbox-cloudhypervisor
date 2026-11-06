@@ -13,6 +13,7 @@ use crate::scope::{Cgroup, Scopes};
 use crate::state::{LONGEST_SOCKET_NAME, RUN_DIR_NAME_LEN};
 use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
 
+mod checkpoints;
 #[cfg(test)]
 mod tests;
 
@@ -95,6 +96,9 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
         device("vhost-vsock", &probes.vhost_vsock, Level::Warn),
     ];
     checks.extend(tool_checks(config));
+    if config.checkpoints {
+        checks.push(checkpoints::hypervisor(&config.cloud_hypervisor));
+    }
     checks.extend(cgroup_checks(probes));
     checks.push(memory_pressure(config, probes));
     checks.push(writable("runtime_dir", &config.runtime_dir));

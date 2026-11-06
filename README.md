@@ -99,6 +99,7 @@ All keys go under `external.config`. All are optional.
 | `guestReclaimSkipRuns` | `10` | ...the next this many trims are skipped |
 | `pageReportingOrder` | `2` | smallest free block, 2^order pages, the guest reports to the host (0-10) |
 | `bootTemplate` | `true` | restores new leases from a boot template snapshot instead of cold booting them; `false` always cold boots; see [Boot template](#boot-template) |
+| `checkpoints` | `false` | set on a host that serves checkpoints; `doctor` then fails unless `cloud-hypervisor` is the patched `v52.0-moor.1` build |
 
 Without the `XDG_*` variables, state and cache fall back to
 `~/.local/state` and `~/.cache`.
