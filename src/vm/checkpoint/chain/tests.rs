@@ -137,10 +137,11 @@ fn a_checkpoint_others_are_deltas_over_cannot_be_deleted_until_they_are() {
 }
 
 #[test]
-fn a_checkpoint_others_are_deltas_over_is_not_replaced_and_the_lease_is_not_paused() {
+fn an_unfinished_checkpoint_others_are_deltas_over_is_not_retaken() {
     let root = tempfile::tempdir().unwrap();
     let (b, rec, _ch) = running_lease(root.path());
-    plant(&b, "ck1", SMALL, CH);
+    let dead = plant(&b, "ck1", SMALL, CH);
+    fs::rename(&dead, dead.with_extension("tmp")).unwrap();
     plant_child(&b, "ck2", Some("ck1"), SMALL, CH);
     let err = b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap_err();
     assert_eq!(
@@ -150,21 +151,23 @@ fn a_checkpoint_others_are_deltas_over_is_not_replaced_and_the_lease_is_not_paus
 }
 
 #[test]
-fn retaking_the_last_checkpoint_keeps_it_over_the_one_before() {
+fn retaking_the_last_checkpoint_is_refused_so_its_children_keep_reading_it() {
     if !have_qemu_img() {
         return;
     }
     let root = tempfile::tempdir().unwrap();
     let (b, rec, _ch) = lease_on_base(root.path());
     take(&b, &rec, "ck1").unwrap();
-    write_disk(&b, MIB / 2, 1);
+    let disk = write_disk(&b, MIB / 2, 1);
     take(&b, &rec, "ck2").unwrap();
-    let disk = write_disk(&b, MIB, 3);
-    let again = take(&b, &rec, "ck2").unwrap();
-    assert_eq!(again.parent_checkpoint_id.as_deref(), Some("ck1"));
+    write_disk(&b, MIB, 3);
+    let err = b
+        .take_checkpoint(&rec, "ck2", "n", &mut Vec::new())
+        .unwrap_err();
+    assert!(err.contains("ck2 exists"), "{err}");
     assert!(
         read_image(&delta(&b, "ck2")) == disk,
-        "ck2 reads as the disk"
+        "ck2 still reads as the disk it was taken from"
     );
 }
 

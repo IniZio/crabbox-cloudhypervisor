@@ -214,3 +214,24 @@ fn the_job_needs_nothing_of_the_lease_so_a_release_cannot_break_it() {
         .unwrap();
     assert!(same.success(), "the layer reads as the lease's cache disk");
 }
+
+#[test]
+fn a_checkpoint_being_written_cannot_be_taken_again() {
+    if !have_qemu_img() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = lease_with_job(root.path(), "sleep 30");
+    create(&b, &rec, "ck1");
+    let _ = fs::remove_file(rec.api_socket());
+    let err = b
+        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "checkpoint ck1 is being written; delete it before taking it again"
+    );
+    assert!(in_progress(&tmp_of(&b, "ck1")), "the first job carries on");
+    finish(&b.config.cache_dir, "ck1", &mut Vec::new()).unwrap();
+    assert!(b.checkpoint_dir("ck1").is_dir());
+}
