@@ -9,14 +9,17 @@
 pub(in crate::vm) mod tests;
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use super::Meta;
 use crate::host;
 use crate::protocol::Desired;
+use crate::timing;
 use crate::vm::cache::LeaseCache;
 use crate::vm::{mkdir_private, spec, RealBackend};
 use crate::volumes::store::{Format, WorkingCopy};
@@ -231,6 +234,7 @@ impl RealBackend {
         dir: &Path,
         meta: &Meta,
         desired: &Desired,
+        diag: &mut dyn Write,
     ) -> Result<LeaseCache, String> {
         let root = meta
             .disks
@@ -238,7 +242,16 @@ impl RealBackend {
             .filter(|d| d.of == DiskOf::Root)
             .ok_or("it holds no root disk")?;
         let size = self.config.disk_gib * GIB;
-        self.fork_disk(dir, root, &self.store.disk_path(id), None, size)?;
+        let image = self.store.disk_path(id);
+        let copying = Instant::now();
+        self.fork_disk(dir, root, &image, None, size)?;
+        let bytes = ext4::allocated(&image).unwrap_or_default();
+        timing::step(
+            diag,
+            "root-flatten",
+            copying.elapsed(),
+            &format!("bytes={bytes}"),
+        );
         let store = self.volume_store(meta.cache.scope());
         let refused = volumes::plan(&desired.cache_volumes, &self.config.cache).skipped;
         let cache = meta.cache.with_copies(refused, |group| {
@@ -249,9 +262,12 @@ impl RealBackend {
                 .ok_or_else(|| format!("it holds no disk for cache group {}", group.as_str()))?;
             let (image, base) = store.work_paths(id, group, disk.format);
             mkdir_private(&store.work_dir(id))?;
+            let copying = Instant::now();
             self.fork_disk(dir, disk, &image, base.as_deref(), 0)
                 .map_err(|e| format!("copy cache group {}: {e}", group.as_str()))?;
             let baseline = ext4::allocated(&image)?;
+            let detail = format!("group={} bytes={baseline}", group.as_str());
+            timing::step(diag, "cache-disk", copying.elapsed(), &detail);
             Ok(WorkingCopy {
                 image,
                 format: disk.format,

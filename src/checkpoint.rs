@@ -2,10 +2,12 @@
 //! leases from it, and delete it.
 
 use std::io::Write;
+use std::time::Instant;
 
 use crate::backend::{Backend, Power};
 use crate::lease::{build_lease, check_agreement, require_running, target_id};
 use crate::protocol::{CheckpointMade, Lease, Request};
+use crate::timing;
 
 #[cfg(test)]
 mod tests;
@@ -57,6 +59,7 @@ pub(crate) fn fork(
         .ok_or("checkpointFork requires desired")?;
     let checkpoint = checkpoint_id(request)?;
     let id = target_id(request)?;
+    let started = Instant::now();
     let _lock = backend.lock(&id)?;
     if let Some(existing) = backend.find(&id)? {
         check_agreement(request, &existing)?;
@@ -66,6 +69,7 @@ pub(crate) fn fork(
         return Ok(build_lease(&existing, Power::Running.status(), backend));
     }
     let record = backend.checkpoint_fork(desired, checkpoint, diag)?;
+    let waiting = Instant::now();
     let _ = writeln!(diag, "fork: created {} from {checkpoint}", record.lease_id);
     if let Err(err) = backend.wait_ready(&record, diag) {
         return Err(match backend.destroy(&record.lease_id, diag) {
@@ -73,6 +77,8 @@ pub(crate) fn fork(
             Err(e2) => format!("{err}; removing vm also failed: {e2}"),
         });
     }
+    timing::step(diag, "wait-ready", waiting.elapsed(), "");
+    timing::step(diag, "fork-total", started.elapsed(), "");
     Ok(build_lease(&record, Power::Running.status(), backend))
 }
 

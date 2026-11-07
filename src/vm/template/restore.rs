@@ -2,8 +2,9 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
 
@@ -17,6 +18,7 @@ use crate::ready::ReadyProbe;
 use crate::seed;
 use crate::size::Size;
 use crate::state::{self, LeaseRecord};
+use crate::timing;
 use crate::vm::{mkdir_private, remove_tree, spec, DisksFrom, RealBackend};
 use crate::volumes::guest::GuestSetup;
 
@@ -53,6 +55,23 @@ pub(super) fn retarget(
             .ok_or_else(|| format!("template config.json has no {pointer}"))? = value;
     }
     Ok(())
+}
+
+/// Splits the time since `spawning` at the moment the VMM bound its API socket:
+/// before it the processes start, after it the VMM loads the snapshot's memory.
+fn log_restore(diag: &mut dyn Write, spawning: SystemTime, api: &Path, snap: &Path) {
+    let now = SystemTime::now();
+    let bound = fs::metadata(api).and_then(|m| m.modified()).unwrap_or(now);
+    let elapsed = |from: SystemTime, to: SystemTime| to.duration_since(from).unwrap_or_default();
+    let memory = fs::metadata(snap.join("memory-ranges"));
+    let bytes = memory.map_or(0, |m| m.blocks().saturating_mul(512));
+    timing::step(diag, "process-start", elapsed(spawning, bound), "");
+    timing::step(
+        diag,
+        "memory-restore",
+        elapsed(bound, now),
+        &format!("bytes={bytes}"),
+    );
 }
 
 /// A dir laid out as a template: `snap/`, disks, the bootstrap key and the
@@ -98,27 +117,40 @@ impl RealBackend {
         size: Size,
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
-        let started = Instant::now();
         let id = desired.lease_id.as_str();
         let mut record = spec::new_record(id, &desired.slug, &desired.name, run_dir, size);
         remove_tree(run_dir)?;
         self.store.write(&record)?;
         mkdir_private(run_dir)?;
         self.prepare_guest(&record, desired, origin.disks, diag)?;
+        let started = Instant::now();
         let stage = self.store.lease_dir(id).join(STAGE_DIR);
         let hot = self.stage_snapshot(&origin.dir.join(SNAP_DIR), &stage, &record)?;
+        timing::step(diag, "stage-snapshot", started.elapsed(), "");
+        let spawning = SystemTime::now();
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let restored = self
             .start_processes(&mut record, size, Some(&stage), diag)
             .and_then(|()| self.wait_state(&client, "Paused"));
         let _ = remove_tree(&stage);
         restored?;
+        log_restore(
+            diag,
+            spawning,
+            &record.api_socket(),
+            &origin.dir.join(SNAP_DIR),
+        );
+        let resuming = Instant::now();
         client.resume()?;
         self.wait_state(&client, "Running")?;
+        timing::step(diag, "resume", resuming.elapsed(), "");
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(diag, "restored from {} in {secs:.1}s", origin.label);
         for disk in &hot {
+            let adding = Instant::now();
             client.add_disk(disk)?;
+            let detail = format!("id={}", disk["id"].as_str().unwrap_or_default());
+            timing::step(diag, "add-disk", adding.elapsed(), &detail);
         }
         self.start_watcher(&mut record, diag)?;
         Ok(record)
@@ -236,6 +268,8 @@ impl RealBackend {
             &mut || self.alive(record),
             diag,
         )?;
+        timing::step(diag, "identity-ssh-wait", started.elapsed(), "");
+        let rotating = Instant::now();
         let script = rotate::script(&self.identity(record)?);
         old.output(
             &format!("sudo sh -c {}", spec::shell_quote(&script)),
@@ -252,6 +286,7 @@ impl RealBackend {
                 let _ = writeln!(diag, "bootstrap key refused: {e}");
                 let secs = started.elapsed().as_secs_f64();
                 let _ = writeln!(diag, "identity rotated in {secs:.1}s");
+                timing::step(diag, "identity-rotation", rotating.elapsed(), "");
                 Ok(())
             }
             Err(e) => Err(format!("cannot confirm the bootstrap key is refused: {e}")),

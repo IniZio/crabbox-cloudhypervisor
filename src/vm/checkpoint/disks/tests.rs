@@ -5,7 +5,7 @@
 #![allow(clippy::indexing_slicing, reason = "tests index known-length fixtures")]
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -273,7 +273,7 @@ fn a_fork_runs_on_its_own_files_and_outlives_the_chain_and_the_generation() {
     let meta = read_meta(&dir).unwrap();
     b.store.write(&record("f")).unwrap();
     let cache = b
-        .fork_disks("f", &dir, &meta, &desired("f", npm()))
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut Vec::new())
         .unwrap();
     let copy = first(&cache);
     let work = b.volume_store(None).work_dir("f");
@@ -313,7 +313,7 @@ fn a_fork_of_a_raw_cache_disk_runs_a_raw_disk_of_its_own() {
     let meta = read_meta(&dir).unwrap();
     b.store.write(&record("f")).unwrap();
     let cache = b
-        .fork_disks("f", &dir, &meta, &desired("f", npm()))
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut Vec::new())
         .unwrap();
     let copy = first(&cache);
     assert_eq!(copy.format, Format::Raw);
@@ -359,4 +359,101 @@ fn a_checkpoint_in_the_layout_before_disks_is_refused_so_the_caller_starts_cold(
         "checkpoint old is unreadable: its checkpoint.json is bad or from an older layout"
     );
     assert!(b.store.read("f").unwrap().is_none());
+}
+
+/// Answers a restoring cloud-hypervisor's API at `sock` once its dir exists.
+fn serve_restored_vm(sock: PathBuf) {
+    std::thread::spawn(move || {
+        while !sock.parent().unwrap().is_dir() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let mut state = "Paused";
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+            if text.contains("vm.resume") {
+                state = "Running";
+            }
+            let body = format!(r#"{{"state":"{state}"}}"#);
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+        }
+    });
+}
+
+/// Steps every fork with a hot-added cache disk times.
+const FORK_STEPS: [&str; 13] = [
+    "lock-wait",
+    "cache-gc",
+    "root-flatten",
+    "cache-disk",
+    "stage-snapshot",
+    "process-start",
+    "memory-restore",
+    "resume",
+    "add-disk",
+    "identity-ssh-wait",
+    "identity-rotation",
+    "wait-ready",
+    "fork-total",
+];
+
+#[test]
+fn a_fork_logs_each_step_once() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, rec, _ch) = lease(root.path(), Format::Qcow2);
+    take(&b, &rec, "ck1");
+    let config = r#"{"payload":{"firmware":""},"disks":[{"path":""},{"path":""}],
+        "serial":{"file":""},"net":[{"vhost_socket":""}],"vsock":{"socket":""}}"#;
+    fs::write(b.checkpoint_dir("ck1").join("snap/config.json"), config).unwrap();
+
+    let mut cfg = b.config;
+    cfg.cpus = Some(1);
+    cfg.memory_mib = Some(64);
+    cfg.passt = root.path().join("passt");
+    cfg.ssh = root.path().join("ssh");
+    cfg.ssh_keygen = PathBuf::from("ssh-keygen");
+    let exe = root.path().join("watch");
+    let write = crate::test_exec::script;
+    let version = "cloud-hypervisor v52.0";
+    let ch = format!("case \"$1\" in --version) echo '{version}' ;; *) sleep 20 & wait ;; esac");
+    write(&cfg.cloud_hypervisor, &ch);
+    write(&cfg.passt, ": >\"$4\"; sleep 20 & wait");
+    write(&exe, "sleep 20 & wait");
+    let refused = "echo 'crabbox@x: Permission denied (publickey).' >&2; exit 255";
+    let ssh = format!("case \"$*\" in *bootstrap*' true') {refused} ;; esac; exit 0");
+    write(&cfg.ssh, &ssh);
+    let run_dir = cfg.runtime_dir.join(crate::state::run_dir_name("f"));
+    let b = RealBackend::new(cfg, exe);
+    let mut fork = record("f");
+    fork.run_dir = run_dir;
+    serve_restored_vm(fork.api_socket());
+
+    let request = r#"{"protocolVersion":1,"operation":"checkpointFork","checkpointId":"ck1",
+        "config":{},"desired":{"leaseId":"f","slug":"s","name":"n","cacheVolumes":[
+        {"group":"g1","name":"npm","key":"g1-npm","paths":["~/.npm"],"sizeGB":1}]}}"#;
+    let mut diag = Vec::new();
+    let outcome = crate::run_with(request.as_bytes(), &b, &mut diag);
+    let diag = String::from_utf8(diag).unwrap();
+    if let Ok(Some(forked)) = b.store.read("f") {
+        let _ = RealBackend::stop_processes(&forked, &mut Vec::new());
+    }
+    assert_eq!(outcome.exit_code, 0, "{}\n{diag}", outcome.stdout);
+
+    for step in FORK_STEPS {
+        let prefix = format!("timing {step} ms=");
+        let lines = diag.lines().filter(|l| l.starts_with(&prefix)).count();
+        assert_eq!(lines, 1, "{step} in\n{diag}");
+    }
+    assert!(diag.contains(" group=g1 bytes="), "{diag}");
+    assert!(diag.contains("restored from checkpoint ck1 in "), "{diag}");
 }
