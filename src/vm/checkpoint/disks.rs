@@ -29,7 +29,7 @@ use crate::volumes::{self, ext4, Token};
 /// Dir of the disks inside a checkpoint dir.
 const DISKS_DIR: &str = "disks";
 /// Bytes per GiB.
-const GIB: u64 = 1024 * 1024 * 1024;
+pub(super) const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Which of a lease's disks a held disk is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,14 +259,18 @@ impl RealBackend {
         let size = self.config.disk_gib * GIB;
         let image = self.store.disk_path(id);
         let copying = Instant::now();
-        host::flatten(&self.config.qemu_img, &root.layer(dir), &image, size)?;
+        let spare = super::spare::Spare::of(dir, root).file;
+        let method = if spare.exists()
+            && super::spare::take(&spare, &image, self.root_size(&root.layer(dir))?)?
+        {
+            "spare"
+        } else {
+            host::flatten(&self.config.qemu_img, &root.layer(dir), &image, size)?;
+            "flatten"
+        };
         let bytes = ext4::allocated(&image).unwrap_or_default();
-        timing::step(
-            diag,
-            "root-flatten",
-            copying.elapsed(),
-            &format!("bytes={bytes}"),
-        );
+        let detail = format!("bytes={bytes} method={method}");
+        timing::step(diag, "root-flatten", copying.elapsed(), &detail);
         let store = self.volume_store(meta.cache.scope());
         let refused = volumes::plan(&desired.cache_volumes, &self.config.cache).skipped;
         let cache = meta.cache.with_copies(refused, |group| {
