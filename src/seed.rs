@@ -143,7 +143,7 @@ write_files:
 {READY_SCRIPT}{files}runcmd:
   - [systemctl, daemon-reload]
 {commands}  - [systemctl, enable, --now, crabbox-ssh-vsock.socket]
-  - [sh, -c, 'for i in 1 2 3 4 5; do apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git rsync curl jq python3 tar && break; sleep 3; done']
+  - [sh, -c, 'for i in 1 2 3 4 5; do apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git rsync curl jq python3 tar ccache && break; sleep 3; done']
   - [sh, -c, 'touch /var/lib/crabbox-ready && sync']
 "
     )

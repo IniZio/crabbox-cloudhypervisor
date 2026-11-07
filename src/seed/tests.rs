@@ -37,7 +37,7 @@ fn user_data_has_expected_parts() {
     assert!(u.contains(&format!("      - {KEY}\n")));
     assert!(u.contains("ListenStream=vsock::22"));
     assert!(u.contains("/usr/local/bin/crabbox-ready"));
-    assert!(u.contains("install -y -qq git rsync curl jq python3 tar"));
+    assert!(u.contains("install -y -qq git rsync curl jq python3 tar ccache"));
     assert!(u.contains("lock_passwd: true"));
 }
 
