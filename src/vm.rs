@@ -3,6 +3,7 @@
 mod cache;
 mod checkpoint;
 mod hygiene;
+mod launch;
 mod power;
 #[cfg(test)]
 mod size_tests;
@@ -52,6 +53,8 @@ pub struct RealBackend {
     store: Store,
     /// This executable, used as the ssh `ProxyCommand`.
     exe: PathBuf,
+    /// Whether its processes must not outlive this adapter.
+    dies_with_adapter: bool,
 }
 
 impl RealBackend {
@@ -59,7 +62,12 @@ impl RealBackend {
     #[must_use]
     pub fn new(config: Config, exe: PathBuf) -> Self {
         let store = Store::new(&config.state_dir);
-        Self { config, store, exe }
+        Self {
+            config,
+            store,
+            exe,
+            dies_with_adapter: false,
+        }
     }
 }
 
@@ -143,7 +151,8 @@ impl RealBackend {
         let passt_sock = record.passt_socket();
         let args = ["--vhost-user", "-f", "-s"].map(OsString::from);
         let args = [&args[..], &[passt_sock.clone().into_os_string()]].concat();
-        let passt = scopes.command(&id, Role::Passt, None, &self.config.passt, &args)?;
+        let (program, args) = self.launch(&self.config.passt, &args);
+        let passt = scopes.command(&id, Role::Passt, None, &program, &args)?;
         let passt_pid = host::spawn_detached(&passt, &log)?;
         record.set_passt_pid(passt_pid);
         self.store.write(record)?;
@@ -153,13 +162,8 @@ impl RealBackend {
         let _ = writeln!(diag, "passt ready");
         let args = spec::ch_args(&record.api_socket(), restore);
         let limits = Limits::for_vm(size, self.config.vmm_overhead_mib);
-        let ch = scopes.command(
-            &id,
-            Role::Vm,
-            Some(limits),
-            &self.config.cloud_hypervisor,
-            &args,
-        )?;
+        let (program, args) = self.launch(&self.config.cloud_hypervisor, &args);
+        let ch = scopes.command(&id, Role::Vm, Some(limits), &program, &args)?;
         let pid = host::spawn_detached(&ch, &log)?;
         record.set_ch_pid(pid);
         self.store.write(record)?;
