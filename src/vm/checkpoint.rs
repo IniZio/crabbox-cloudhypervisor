@@ -9,6 +9,7 @@
 
 mod chain;
 pub(super) mod disks;
+mod spare;
 #[cfg(test)]
 pub(super) mod tests;
 
@@ -303,7 +304,13 @@ impl RealBackend {
             .restore_from(desired, &run_dir, &origin, size, diag)
             .and_then(|record| self.take_identity_from(record, &dir, alias, diag));
         match &restored {
-            Ok(_) => self.set_parent(lease, id, diag),
+            Ok(_) => {
+                self.set_parent(lease, id, diag);
+                if let Some(root) = meta.disks.first() {
+                    let bytes = crate::volumes::ext4::allocated(&self.store.disk_path(lease));
+                    self.refill_spare(&dir, root, bytes.unwrap_or_default(), diag);
+                }
+            }
             Err(_) => {
                 if let Err(e) = self.destroy(lease, diag) {
                     let _ = writeln!(diag, "cleanup after failed fork also failed: {e}");
@@ -320,6 +327,17 @@ impl RealBackend {
         let _lock = self.checkpoint_lock(true)?;
         self.check_no_children(id, "delete")?;
         remove_tree(&self.config.cache_dir.join(format!("{DIR_PREFIX}{id}.tmp")))?;
-        remove_tree(&self.checkpoint_dir(id))
+        let dir = self.checkpoint_dir(id);
+        let spares = read_meta(&dir).map(|m| m.disks).unwrap_or_default();
+        if !spares
+            .iter()
+            .take(1)
+            .all(|root| spare::Spare::of(&dir, root).stop())
+        {
+            return Err(format!(
+                "cannot delete checkpoint {id}: its spare root job will not stop"
+            ));
+        }
+        remove_tree(&dir)
     }
 }
