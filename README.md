@@ -535,6 +535,12 @@ identity rotation code of the [boot template](#boot-template).
   fails if the checkpoint is missing (`checkpoint not found: <id>`),
   incomplete, taken by another `cloud-hypervisor --version`, or taken at
   another size than the request's class gives.
+- `checkpointCreate` writes the same kind of timing lines to stderr, ending with
+  `timing checkpoint-total`. Each step but the total says `paused` when the
+  lease is paused for it, or `running` when it is not. Every step blocks the
+  caller. `memory-snapshot` and `dig-holes` give the snapshot's allocated
+  `bytes`. `hold-disk` and `write-layer` give the `disk` and its `bytes`,
+  and `write-layer` gives `method` and what the layer is `over`.
 - A fork writes one `timing <step> ms=<n>` line to stderr per step, and
   `timing fork-total` last. Steps other than the total do not overlap, so they
   sum to about the total. `memory-restore` and `root-flatten` also give `bytes`,

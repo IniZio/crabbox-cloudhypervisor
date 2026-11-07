@@ -153,7 +153,9 @@ impl RealBackend {
         let cache = &self.config.cache_dir;
         mkdir_private(cache)?;
         suspend::check_room(suspend::free_bytes(cache)?, size.memory_mib)?;
+        let started = Instant::now();
         let _lock = self.checkpoint_lock(false)?;
+        timing::step(diag, "lock-wait", started.elapsed(), "running");
         self.check_no_children(id, "replace")?;
         let mut meta = Meta {
             checkpoint_id: id.to_owned(),
@@ -170,20 +172,24 @@ impl RealBackend {
         let tmp = cache.join(format!("{DIR_PREFIX}{id}.tmp"));
         remove_tree(&tmp)?;
         mkdir_private(&tmp)?;
-        let started = Instant::now();
+        let tidying = Instant::now();
         self.tidy_guest(record, diag);
+        timing::step(diag, "tidy", tidying.elapsed(), "running");
         let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let pausing = Instant::now();
         let written = self.pause_vm(record, diag).and_then(|()| {
+            timing::step(diag, "pause", pausing.elapsed(), "paused");
             let captured = self.capture(record, &tmp, &mut meta, &pin, diag);
+            let resuming = Instant::now();
             let resumed = client
                 .resume()
                 .and_then(|()| self.wait_state(&client, "Running"))
                 .map_err(|e| format!("lease {lease} is still paused, resume it: {e}"));
+            timing::step(diag, "resume", resuming.elapsed(), "paused");
             captured.and(resumed)
         });
         let paused = pausing.elapsed().as_secs_f64();
-        let published = written.and_then(|()| self.publish(&tmp, id, &meta));
+        let published = written.and_then(|()| self.publish(&tmp, id, &meta, diag));
         if published.is_err() {
             let _ = remove_tree(&tmp);
         }
@@ -194,6 +200,7 @@ impl RealBackend {
             diag,
             "checkpoint {id} written in {secs:.1}s, the lease paused for {paused:.1}s"
         );
+        timing::step(diag, "checkpoint-total", started.elapsed(), "");
         Ok(CheckpointMade {
             checkpoint_id: id.to_owned(),
             parent_checkpoint_id: meta.parent,
@@ -204,8 +211,14 @@ impl RealBackend {
 
     /// Turns the disk copies in `tmp` into deltas over the parent's, then
     /// makes `tmp` checkpoint `id`; returns what the checkpoint weighs.
-    fn publish(&self, tmp: &Path, id: &str, meta: &Meta) -> Result<DirBytes, String> {
-        self.write_layers(tmp, &meta.disks, meta.parent.as_deref())?;
+    fn publish(
+        &self,
+        tmp: &Path,
+        id: &str,
+        meta: &Meta,
+        diag: &mut dyn Write,
+    ) -> Result<DirBytes, String> {
+        self.write_layers(tmp, &meta.disks, meta.parent.as_deref(), diag)?;
         let dir = self.checkpoint_dir(id);
         remove_tree(&dir)?;
         fs::rename(tmp, &dir).map_err(|e| format!("publish checkpoint: {e}"))?;
@@ -225,12 +238,20 @@ impl RealBackend {
         let lease = record.lease_id.as_str();
         let snap = dir.join(SNAP_DIR);
         mkdir_private(&snap)?;
+        let snapping = Instant::now();
         ChClient::new(&record.api_socket())
             .with_timeout(SNAPSHOT_TIMEOUT)
             .snapshot(&snap)
             .map_err(|e| format!("lease {lease}: snapshot failed: {e}"))?;
+        let memory = snap.join("memory-ranges");
+        let allocated = |p: &Path| fs::metadata(p).map_or(0, |m| m.blocks() * BLOCK);
+        let detail = format!("paused bytes={}", allocated(&memory));
+        timing::step(diag, "memory-snapshot", snapping.elapsed(), &detail);
+        let digging = Instant::now();
         suspend::dig_snapshot_holes(Path::new(host::DIG_HOLES_TOOL), &snap, diag);
-        (meta.disks, meta.cache) = self.hold_disks(lease, dir)?;
+        let detail = format!("paused bytes={}", allocated(&memory));
+        timing::step(diag, "dig-holes", digging.elapsed(), &detail);
+        (meta.disks, meta.cache) = self.hold_disks(lease, dir, diag)?;
         fs::copy(self.store.key_path(lease), dir.join(BOOTSTRAP_KEY))
             .map_err(|e| format!("keep login key: {e}"))?;
         fs::write(dir.join(KNOWN_HOSTS), pin).map_err(|e| format!("keep host pin: {e}"))?;
