@@ -30,7 +30,7 @@ fn fixture(root: &Path) -> (RealBackend, Assets, PathBuf) {
     cfg.cloud_hypervisor = root.join("cloud-hypervisor");
     cfg.passt = root.join("passt");
     cfg.ssh_keygen = root.join("ssh-keygen");
-    let backend = RealBackend::new(cfg.clone(), PathBuf::from("/bin/cb"));
+    let backend = RealBackend::new(cfg.clone(), root.join("adapter"));
     let (seed, _) = backend.template_seed("<bootstrap key>", "<host key>", "<host key>");
     let (image, firmware) = (&cfg.image.sha256, &cfg.firmware.sha256);
     let ch = "cloud-hypervisor v52.0";
@@ -54,6 +54,7 @@ fn write_tools(root: &Path) {
     let keygen =
         "for a; do k=$a; done\necho private >\"$k\"\necho 'ssh-ed25519 AAAA c' >\"$k.pub\"";
     crate::test_exec::script(&root.join("ssh-keygen"), keygen);
+    crate::test_exec::script(&root.join("adapter"), "shift 3\nexec \"$@\"");
     fs::write(root.join("base"), "disk").unwrap();
     fs::write(root.join("fw"), "fw").unwrap();
 }

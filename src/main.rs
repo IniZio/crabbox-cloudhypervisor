@@ -1,7 +1,8 @@
 //! Reads one protocol request on stdin and writes one response on stdout.
 //! `proxy <leaseId> --state-dir <dir>` runs the vsock SSH proxy instead, and
 //! `watch <leaseId> --state-dir <dir>` the lease's growth watcher, and
-//! `publish <leaseId> --state-dir <dir>` the cache publisher of a suspended lease.
+//! `publish <leaseId> --state-dir <dir>` the cache publisher of a suspended lease,
+//! and `tied <parentPid> -- <program> <args>` a program that dies with its parent.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -30,6 +31,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
             ExitCode::SUCCESS
+        }
+        Some((cmd, rest)) if cmd == "tied" => {
+            let error = crabbox_cloudhypervisor::tied::run(rest);
+            let _ = writeln!(stderr, "crabbox-cloudhypervisor: {error}");
+            ExitCode::from(1)
         }
         Some((cmd, _)) => {
             let _ = writeln!(
