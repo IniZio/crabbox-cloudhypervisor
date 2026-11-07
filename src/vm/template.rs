@@ -1,6 +1,7 @@
 //! Boot template: a snapshot of a freshly provisioned guest that new leases
 //! restore instead of cold booting, before they take their own identity.
 
+mod reap;
 pub(super) mod restore;
 mod rotate;
 #[cfg(test)]
@@ -314,6 +315,8 @@ impl RealBackend {
         config.state_dir = dir.join("state");
         let builder = Self::new(config, self.exe.clone());
         let run_dir = self.config.runtime_dir.join(state::run_dir_name(&id));
+        reap::reap(&run_dir, diag)?;
+        let _building = reap::in_flight(&run_dir)?;
         let mut record = spec::new_record(&id, "template", "template", &run_dir, want.size);
         let built = builder.boot_template(&mut record, assets, dir, diag);
         let stopped = Self::stop_processes(&record, diag);
