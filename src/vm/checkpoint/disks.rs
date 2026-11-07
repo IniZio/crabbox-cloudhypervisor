@@ -115,6 +115,52 @@ fn delta_over(
     host::qemu_img(qemu_img, what, rebase.arg(delta))
 }
 
+/// Turns each disk's frozen copy in `dir` into its layer: a delta over
+/// checkpoint `parent`'s disk of the same stem, else over its base.
+pub(super) fn write_layers(
+    qemu_img: &Path,
+    cache_dir: &Path,
+    dir: &Path,
+    disks: &[HeldDisk],
+    parent: Option<&str>,
+    diag: &mut dyn Write,
+) -> Result<(), String> {
+    for disk in disks {
+        let stem = disk.of.stem();
+        let prefix = super::DIR_PREFIX;
+        let backing = match parent {
+            Some(p)
+                if disk
+                    .layer(&cache_dir.join(format!("{prefix}{p}")))
+                    .is_file() =>
+            {
+                Some((
+                    Format::Qcow2,
+                    PathBuf::from(format!("../../{prefix}{p}/{DISKS_DIR}/{stem}.qcow2")),
+                ))
+            }
+            _ if disk.base(dir).is_file() => {
+                Some((Format::Raw, PathBuf::from(format!("{stem}.base.img"))))
+            }
+            _ => None,
+        };
+        let frozen = disk.frozen(dir);
+        let backing = backing.as_ref().map(|(f, name)| (*f, name.as_path()));
+        let over = backing.map_or("nothing", |(f, _)| match f {
+            Format::Qcow2 => "parent",
+            Format::Raw => "base",
+        });
+        let writing = Instant::now();
+        delta_over(qemu_img, &frozen, disk.format, &disk.layer(dir), backing)
+            .map_err(|e| format!("{stem}: {e}"))?;
+        let bytes = ext4::allocated(&disk.layer(dir)).unwrap_or_default();
+        let detail = format!("running disk={stem} bytes={bytes} method=rebase over={over}");
+        timing::step(diag, "write-layer", writing.elapsed(), &detail);
+        fs::remove_file(&frozen).map_err(|e| format!("{stem}: remove the copy: {e}"))?;
+    }
+    Ok(())
+}
+
 impl RealBackend {
     /// Lease `lease`'s disks, root first, each with the file it runs and the
     /// file it started from, if that is still there.
@@ -163,57 +209,26 @@ impl RealBackend {
             }
             let holding = Instant::now();
             host::clone_disk(&image, &disk.frozen(dir), 0)?;
+            if disk.format == Format::Qcow2 && disk.base(dir).is_file() {
+                // The copy names the lease's link of its base, which a release
+                // removes while the layer job may still read the copy.
+                let name = format!("{}.base.img", disk.of.stem());
+                let mut rebase = Command::new(&self.config.qemu_img);
+                rebase.args([
+                    "rebase", "-q", "-u", "-f", "qcow2", "-F", "raw", "-b", &name,
+                ]);
+                host::qemu_img(
+                    &self.config.qemu_img,
+                    "hold the disk",
+                    rebase.arg(disk.frozen(dir)),
+                )?;
+            }
             let bytes = ext4::allocated(&disk.frozen(dir)).unwrap_or_default();
             let detail = format!("paused disk={} bytes={bytes}", disk.of.stem());
             timing::step(diag, "hold-disk", holding.elapsed(), &detail);
             held.push(disk);
         }
         Ok((held, cache))
-    }
-
-    /// Turns each disk's frozen copy in `dir` into its layer: a delta over
-    /// checkpoint `parent`'s disk of the same stem, else over its base.
-    pub(super) fn write_layers(
-        &self,
-        dir: &Path,
-        disks: &[HeldDisk],
-        parent: Option<&str>,
-        diag: &mut dyn Write,
-    ) -> Result<(), String> {
-        for disk in disks {
-            let stem = disk.of.stem();
-            let prefix = super::DIR_PREFIX;
-            let backing = match parent {
-                Some(p) if disk.layer(&self.checkpoint_dir(p)).is_file() => Some((
-                    Format::Qcow2,
-                    PathBuf::from(format!("../../{prefix}{p}/{DISKS_DIR}/{stem}.qcow2")),
-                )),
-                _ if disk.base(dir).is_file() => {
-                    Some((Format::Raw, PathBuf::from(format!("{stem}.base.img"))))
-                }
-                _ => None,
-            };
-            let frozen = disk.frozen(dir);
-            let backing = backing.as_ref().map(|(f, name)| (*f, name.as_path()));
-            let over = backing.map_or("nothing", |(f, _)| match f {
-                Format::Qcow2 => "parent",
-                Format::Raw => "base",
-            });
-            let writing = Instant::now();
-            delta_over(
-                &self.config.qemu_img,
-                &frozen,
-                disk.format,
-                &disk.layer(dir),
-                backing,
-            )
-            .map_err(|e| format!("{stem}: {e}"))?;
-            let bytes = ext4::allocated(&disk.layer(dir)).unwrap_or_default();
-            let detail = format!("running disk={stem} bytes={bytes} method=rebase over={over}");
-            timing::step(diag, "write-layer", writing.elapsed(), &detail);
-            fs::remove_file(&frozen).map_err(|e| format!("{stem}: remove the copy: {e}"))?;
-        }
-        Ok(())
     }
 
     /// Writes `image`, lease's copy of cache disk `disk` from checkpoint dir

@@ -9,6 +9,7 @@
 
 mod chain;
 pub(super) mod disks;
+pub(crate) mod layers;
 mod spare;
 #[cfg(test)]
 pub(super) mod tests;
@@ -170,30 +171,23 @@ impl RealBackend {
         };
         let pin = known_hosts_line(&format!("crabbox-{lease}"), &self.read_host_key(lease)?);
         let tmp = cache.join(format!("{DIR_PREFIX}{id}.tmp"));
+        layers::stop(&tmp).map_err(|e| format!("cannot replace checkpoint {id}: {e}"))?;
         remove_tree(&tmp)?;
         mkdir_private(&tmp)?;
+        let lock = layers::begin(&tmp)?;
         let tidying = Instant::now();
         self.tidy_guest(record, diag);
         timing::step(diag, "tidy", tidying.elapsed(), "running");
-        let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
         let pausing = Instant::now();
-        let written = self.pause_vm(record, diag).and_then(|()| {
-            timing::step(diag, "pause", pausing.elapsed(), "paused");
-            let captured = self.capture(record, &tmp, &mut meta, &pin, diag);
-            let resuming = Instant::now();
-            let resumed = client
-                .resume()
-                .and_then(|()| self.wait_state(&client, "Running"))
-                .map_err(|e| format!("lease {lease} is still paused, resume it: {e}"));
-            timing::step(diag, "resume", resuming.elapsed(), "paused");
-            captured.and(resumed)
-        });
+        let handed = self
+            .capture_paused(record, &tmp, &mut meta, &pin, diag)
+            .and_then(|()| dir_bytes(&tmp))
+            .and_then(|bytes| self.start_layers(&tmp, id, lock).map(|()| bytes));
         let paused = pausing.elapsed().as_secs_f64();
-        let published = written.and_then(|()| self.publish(&tmp, id, &meta, diag));
-        if published.is_err() {
+        if handed.is_err() {
             let _ = remove_tree(&tmp);
         }
-        let bytes = published?;
+        let bytes = handed?;
         self.set_parent(lease, id, diag);
         let secs = started.elapsed().as_secs_f64();
         let _ = writeln!(
@@ -209,20 +203,30 @@ impl RealBackend {
         })
     }
 
-    /// Turns the disk copies in `tmp` into deltas over the parent's, then
-    /// makes `tmp` checkpoint `id`; returns what the checkpoint weighs.
-    fn publish(
+    /// Pauses the lease, captures it into `tmp` and resumes it, also when the
+    /// capture fails.
+    fn capture_paused(
         &self,
+        record: &LeaseRecord,
         tmp: &Path,
-        id: &str,
-        meta: &Meta,
+        meta: &mut Meta,
+        pin: &str,
         diag: &mut dyn Write,
-    ) -> Result<DirBytes, String> {
-        self.write_layers(tmp, &meta.disks, meta.parent.as_deref(), diag)?;
-        let dir = self.checkpoint_dir(id);
-        remove_tree(&dir)?;
-        fs::rename(tmp, &dir).map_err(|e| format!("publish checkpoint: {e}"))?;
-        dir_bytes(&dir)
+    ) -> Result<(), String> {
+        let lease = record.lease_id.as_str();
+        let client = ChClient::new(&record.api_socket()).with_timeout(API_TIMEOUT);
+        let pausing = Instant::now();
+        self.pause_vm(record, diag).and_then(|()| {
+            timing::step(diag, "pause", pausing.elapsed(), "paused");
+            let captured = self.capture(record, tmp, meta, pin, diag);
+            let resuming = Instant::now();
+            let resumed = client
+                .resume()
+                .and_then(|()| self.wait_state(&client, "Running"))
+                .map_err(|e| format!("lease {lease} is still paused, resume it: {e}"));
+            timing::step(diag, "resume", resuming.elapsed(), "paused");
+            captured.and(resumed)
+        })
     }
 
     /// Writes the paused lease's snapshot, copies of its disks, its login key
@@ -296,6 +300,9 @@ impl RealBackend {
     ) -> Result<LeaseRecord, String> {
         check_id(id)?;
         let waiting = Instant::now();
+        layers::wait_ready(&self.config.cache_dir, id, layers::READY_WAIT)?;
+        timing::step(diag, "ready-wait", waiting.elapsed(), "");
+        let waiting = Instant::now();
         let _lock = self.checkpoint_lock(false)?;
         timing::step(diag, "lock-wait", waiting.elapsed(), "");
         let dir = self.checkpoint_dir(id);
@@ -347,7 +354,9 @@ impl RealBackend {
         check_id(id)?;
         let _lock = self.checkpoint_lock(true)?;
         self.check_no_children(id, "delete")?;
-        remove_tree(&self.config.cache_dir.join(format!("{DIR_PREFIX}{id}.tmp")))?;
+        let tmp = self.config.cache_dir.join(format!("{DIR_PREFIX}{id}.tmp"));
+        layers::stop(&tmp).map_err(|e| format!("cannot delete checkpoint {id}: {e}"))?;
+        remove_tree(&tmp)?;
         let dir = self.checkpoint_dir(id);
         let spares = read_meta(&dir).map(|m| m.disks).unwrap_or_default();
         if !spares

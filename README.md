@@ -479,18 +479,30 @@ identity rotation code of the [boot template](#boot-template).
   overlay. A raw cache disk with no generation has none. Store GC of a
   generation never breaks a checkpoint that links it. When the store is on
   another filesystem, the generation is copied instead of linked.
-- After the lease resumes, every copy is stored the same way: as a qcow2 delta
-  that holds only the clusters that differ from the parent checkpoint's copy
-  of the same disk (`qemu-img rebase`, about 10 s for a 20 GiB disk). The
-  first checkpoint of a chain holds a delta over the disk's base, or the whole
-  disk when it has none. The parent is the lease's last checkpoint, or the
-  checkpoint it was forked from. Without one, or when that checkpoint is gone,
-  there is no parent. `parentCheckpointId` names the parent and is absent
-  without one. `uniqueBytes` is the space only this checkpoint allocates on
-  disk, which deleting it frees. It does not count a base that the store, a
-  lease or another checkpoint still links. `bytes` repeats it.
-  `apparentBytes` is the sum of its files' lengths, holes included. The
-  checkpoint is published only once every delta is complete.
+- `checkpointCreate` returns as soon as the lease runs again. A detached job,
+  at nice 19, then stores every copy the same way: as a qcow2 delta that holds
+  only the clusters that differ from the parent checkpoint's copy of the same
+  disk (`qemu-img rebase`, about 10 s for a 20 GiB disk). The first checkpoint
+  of a chain holds a delta over the disk's base, or the whole disk when it has
+  none. The parent is the lease's last checkpoint, or the checkpoint it was
+  forked from, also while that one's job still runs. Without one, or when that
+  checkpoint is gone, there is no parent. A job waits for its parent's job to
+  finish before it writes over it. `parentCheckpointId` names the parent and
+  is absent without one.
+- `uniqueBytes` is what the checkpoint holds when create returns: its snapshot
+  and the frozen copies of its disks. The finished deltas take a different
+  amount, usually less. It does not count a base that the store, a lease or
+  another checkpoint still links. `bytes` repeats it. `apparentBytes` is the
+  sum of its files' lengths, holes included.
+- The checkpoint is ready once its job renames `checkpoint-<id>.tmp` to
+  `checkpoint-<id>`, after every delta is complete. Until then
+  `layers.lock` in the `.tmp` dir is held by the create and then by the job and
+  everything the job runs. A fork of a checkpoint that is not ready waits for
+  it, up to 600 s, and logs `timing ready-wait`. After that, or when the job
+  died, the fork fails with `checkpoint <id> is still being written after 600s`
+  or `checkpoint <id> was never finished; delete it`. Its log is
+  `layers.log` in the checkpoint dir, with `timing write-layer` per disk and
+  `timing layers-total`.
 - The checkpoint lives in `<cacheDir>/checkpoint-<checkpointId>/`, laid out like
   a template: `snap/`, `disks/`, `bootstrap`, `known_hosts` and
   `checkpoint.json`. That file names the parent, lists the disks (root first,
@@ -537,10 +549,11 @@ identity rotation code of the [boot template](#boot-template).
   another size than the request's class gives.
 - `checkpointCreate` writes the same kind of timing lines to stderr, ending with
   `timing checkpoint-total`. Each step but the total says `paused` when the
-  lease is paused for it, or `running` when it is not. Every step blocks the
-  caller. `memory-snapshot` and `dig-holes` give the snapshot's allocated
-  `bytes`. `hold-disk` and `write-layer` give the `disk` and its `bytes`,
-  and `write-layer` gives `method` and what the layer is `over`.
+  lease is paused for it, or `running` when it is not. Every one of them
+  blocks the caller. `memory-snapshot` and `dig-holes` give the snapshot's
+  allocated `bytes`. `hold-disk` gives the `disk` and its `bytes`. The job's
+  `write-layer` lines, in `layers.log`, give the same plus `method` and what the
+  layer is `over`.
 - A fork writes one `timing <step> ms=<n>` line to stderr per step, and
   `timing fork-total` last. Steps other than the total do not overlap, so they
   sum to about the total. `memory-restore` and `root-flatten` also give `bytes`,
@@ -557,8 +570,10 @@ identity rotation code of the [boot template](#boot-template).
   succeeds. A checkpoint that others are deltas over is refused with
   `cannot delete checkpoint <id>: checkpoints <ids> are deltas over it; delete them first`,
   so delete leaves first. A fork already running is not affected, because its
-  disks refer to no checkpoint file. Delete first kills a running spare job and
-  every process it started, so nothing keeps writing into the removed dir.
+  disks refer to no checkpoint file. Delete first kills a running layer job or
+  spare root job and every process it started, so nothing keeps writing into
+  the removed dir. Taking a checkpoint again under the same id kills the old
+  one's layer job too, and removes what a job that died left.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 
