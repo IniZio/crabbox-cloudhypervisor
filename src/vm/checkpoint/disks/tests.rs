@@ -84,7 +84,7 @@ fn publish_generation(b: &RealBackend) {
 
 /// A running lease `a` on a 1 MiB base image with cache group g1: an overlay
 /// over a generation, or a raw disk when the store has none.
-fn lease(root: &Path, format: Format) -> (RealBackend, LeaseRecord, FakeCh) {
+pub(in crate::vm) fn lease(root: &Path, format: Format) -> (RealBackend, LeaseRecord, FakeCh) {
     let (b, rec, ch) = running_lease(root);
     let base = noise(MIB);
     fs::create_dir_all(&b.config.cache_dir).unwrap();
@@ -104,7 +104,7 @@ fn lease(root: &Path, format: Format) -> (RealBackend, LeaseRecord, FakeCh) {
 pub(in crate::vm) fn take(b: &RealBackend, rec: &LeaseRecord, id: &str) -> CheckpointMade {
     let _ = fs::remove_file(rec.api_socket());
     let api = Api::start(&rec.api_socket(), 5, false);
-    let made = b.take_checkpoint(rec, id, "n", &mut Vec::new()).unwrap();
+    let made = b.take_whole(rec, id, "n", &mut Vec::new()).unwrap();
     api.finish();
     made
 }

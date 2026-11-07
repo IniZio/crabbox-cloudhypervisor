@@ -55,6 +55,8 @@ const WATCH_USAGE: &str = "usage: watch <leaseId> --state-dir <dir>";
 
 /// Usage text for the `publish` subcommand.
 const PUBLISH_USAGE: &str = "usage: publish <leaseId> --state-dir <dir>";
+/// Usage of the `layers` subcommand.
+const LAYERS_USAGE: &str = "usage: layers <checkpointId> --cache-dir <dir>";
 
 /// Builds the config from a request and the process environment.
 fn config_of(request: &Request) -> Result<config::Config, String> {
@@ -185,6 +187,21 @@ pub fn run_watch(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
 pub fn run_publish(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
     let (id, dir) = lease_args(args, PUBLISH_USAGE)?;
     vm::run_publisher(id, std::path::Path::new(dir), diag)
+}
+
+/// Runs `layers <checkpointId> --cache-dir <dir>`, the detached job that
+/// finishes a checkpoint after its lease resumed; timing lines go to `diag`.
+pub fn run_layers(args: &[String], diag: &mut dyn Write) -> Result<(), String> {
+    let at = args
+        .iter()
+        .position(|a| a == "--cache-dir")
+        .ok_or(LAYERS_USAGE)?;
+    let dir = args.get(at + 1).ok_or(LAYERS_USAGE)?;
+    let id = args
+        .iter()
+        .find(|a| !a.starts_with("--") && *a != dir)
+        .ok_or(LAYERS_USAGE)?;
+    vm::finish_layers(std::path::Path::new(dir), id, diag)
 }
 
 /// Runs `proxy <leaseId> --state-dir <dir>` (`args` are those after `proxy`).

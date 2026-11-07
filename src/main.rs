@@ -32,6 +32,13 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some((cmd, rest)) if cmd == "layers" => {
+            if let Err(error) = crabbox_cloudhypervisor::run_layers(rest, &mut stderr) {
+                let _ = writeln!(stderr, "crabbox-cloudhypervisor: layers: {error}");
+                return ExitCode::from(1);
+            }
+            ExitCode::SUCCESS
+        }
         Some((cmd, rest)) if cmd == "tied" => {
             let error = crabbox_cloudhypervisor::tied::run(rest);
             let _ = writeln!(stderr, "crabbox-cloudhypervisor: {error}");

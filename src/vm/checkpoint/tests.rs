@@ -145,9 +145,7 @@ fn ids_that_could_leave_the_cache_dir_are_refused_everywhere() {
             .fork_checkpoint(&desired("l2"), bad, &mut diag)
             .unwrap_err();
         assert_eq!(err, want);
-        let err = b
-            .take_checkpoint(&record("a"), bad, "n", &mut diag)
-            .unwrap_err();
+        let err = b.take_whole(&record("a"), bad, "n", &mut diag).unwrap_err();
         assert_eq!(err, want);
     }
 }
@@ -377,9 +375,7 @@ fn a_checkpoint_of_a_running_lease_holds_its_ram_disk_and_login_and_the_lease_re
     let (b, rec, _ch) = running_lease(root.path());
     let api = Api::start(&rec.api_socket(), 5, false);
     let mut diag = Vec::new();
-    let made = b
-        .take_checkpoint(&rec, "ck1", "after clone", &mut diag)
-        .unwrap();
+    let made = b.take_whole(&rec, "ck1", "after clone", &mut diag).unwrap();
     assert_eq!(
         api.finish(),
         [
@@ -407,7 +403,7 @@ fn the_guest_is_tidied_before_the_pause_and_a_failed_tidy_never_fails_the_checkp
     let (b, rec, _ch) = running_lease(root.path());
     let api = Api::start(&rec.api_socket(), 5, false);
     let mut diag = Vec::new();
-    b.take_checkpoint(&rec, "ck1", "n", &mut diag).unwrap();
+    b.take_whole(&rec, "ck1", "n", &mut diag).unwrap();
     api.finish();
     let diag = String::from_utf8(diag).unwrap();
     let tidy = diag
@@ -422,9 +418,7 @@ fn a_failed_snapshot_resumes_the_lease_and_leaves_no_checkpoint() {
     let root = tempfile::tempdir().unwrap();
     let (b, rec, _ch) = running_lease(root.path());
     let api = Api::start(&rec.api_socket(), 5, true);
-    let err = b
-        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
-        .unwrap_err();
+    let err = b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap_err();
     assert!(err.contains("snapshot failed"), "{err}");
     assert!(err.contains("disk full"), "{err}");
     assert_eq!(
@@ -446,8 +440,7 @@ fn a_second_checkpoint_under_the_same_id_replaces_the_first() {
     let old = plant(&b, "ck1", SMALL, "cloud-hypervisor v51.0");
     fs::write(old.join("stale"), "x").unwrap();
     let api = Api::start(&rec.api_socket(), 5, false);
-    b.take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
-        .unwrap();
+    b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap();
     api.finish();
     assert!(!old.join("stale").exists());
     assert!(old.join("snap/memory-ranges").exists());
@@ -458,9 +451,7 @@ fn a_lease_without_a_host_key_cannot_be_checkpointed_and_is_not_paused() {
     let root = tempfile::tempdir().unwrap();
     let (b, rec, _ch) = running_lease(root.path());
     fs::remove_file(b.store.host_pub_path("a")).unwrap();
-    let err = b
-        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
-        .unwrap_err();
+    let err = b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap_err();
     assert!(err.contains("host key for a"), "{err}");
     assert!(!b.checkpoint_dir("ck1").exists());
 }
@@ -476,7 +467,12 @@ fn a_checkpoint_times_each_step_once_and_says_whether_the_lease_was_paused() {
     let mut diag = Vec::new();
     b.take_checkpoint(&rec, "ck1", "n", &mut diag).unwrap();
     api.finish();
-    let diag = String::from_utf8(diag).unwrap();
+    let mut job = Vec::new();
+    super::layers::finish(&b.config.cache_dir, "ck1", &mut job).unwrap();
+    let (diag, job) = (
+        String::from_utf8(diag).unwrap(),
+        String::from_utf8(job).unwrap(),
+    );
     let steps = [
         ("lock-wait", "running"),
         ("tidy", "running"),
@@ -485,19 +481,68 @@ fn a_checkpoint_times_each_step_once_and_says_whether_the_lease_was_paused() {
         ("dig-holes", "paused bytes="),
         ("hold-disk", "paused disk=root bytes="),
         ("resume", "paused"),
-        ("write-layer", "running disk=root bytes="),
         ("checkpoint-total", ""),
     ];
     for (step, detail) in steps {
         let prefix = format!("timing {step} ms=");
         let lines: Vec<&str> = diag.lines().filter(|l| l.starts_with(&prefix)).collect();
-        assert_eq!(lines.len(), 1, "{step} in\n{diag}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "{step} in
+{diag}"
+        );
         assert!(
             lines.iter().all(|l| l.contains(detail)),
-            "{step} in\n{diag}"
+            "{step} in
+{diag}"
         );
     }
-    assert!(diag.contains(" method=rebase over=nothing"), "{diag}");
     let total = diag.lines().last().unwrap_or_default();
     assert!(total.starts_with("timing checkpoint-total"), "{diag}");
+    assert!(
+        !diag.contains("write-layer"),
+        "the caller does not wait for layers: {diag}"
+    );
+    assert_job_lines(&job);
+}
+
+/// Checks the layer job's timing lines in `job`.
+fn assert_job_lines(job: &str) {
+    let layer = "timing write-layer ms=";
+    assert_eq!(
+        job.lines().filter(|l| l.starts_with(layer)).count(),
+        1,
+        "{job}"
+    );
+    assert!(job.contains(" running disk=root bytes="), "{job}");
+    assert!(job.contains(" method=rebase over=nothing"), "{job}");
+    assert!(
+        job.lines()
+            .last()
+            .unwrap_or_default()
+            .starts_with("timing layers-total"),
+        "{job}"
+    );
+}
+
+impl RealBackend {
+    /// [`Self::take_checkpoint`], then its layer job run here, as the detached
+    /// job would; the bytes are what the whole checkpoint weighs.
+    pub(in crate::vm) fn take_whole(
+        &self,
+        record: &LeaseRecord,
+        id: &str,
+        name: &str,
+        diag: &mut dyn Write,
+    ) -> Result<CheckpointMade, String> {
+        let made = self.take_checkpoint(record, id, name, diag)?;
+        super::layers::finish(&self.config.cache_dir, id, diag)?;
+        let whole = dir_bytes(&self.checkpoint_dir(id))?;
+        Ok(CheckpointMade {
+            unique_bytes: whole.allocated,
+            apparent_bytes: whole.apparent,
+            ..made
+        })
+    }
 }

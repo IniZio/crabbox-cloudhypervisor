@@ -23,7 +23,7 @@ const CH: &str = "cloud-hypervisor v52.0";
 fn take(b: &RealBackend, rec: &LeaseRecord, id: &str) -> Result<CheckpointMade, String> {
     let _ = fs::remove_file(rec.api_socket());
     let api = Api::start(&rec.api_socket(), 5, false);
-    let made = b.take_checkpoint(rec, id, "n", &mut Vec::new());
+    let made = b.take_whole(rec, id, "n", &mut Vec::new());
     api.finish();
     made
 }
@@ -142,9 +142,7 @@ fn a_checkpoint_others_are_deltas_over_is_not_replaced_and_the_lease_is_not_paus
     let (b, rec, _ch) = running_lease(root.path());
     plant(&b, "ck1", SMALL, CH);
     plant_child(&b, "ck2", Some("ck1"), SMALL, CH);
-    let err = b
-        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
-        .unwrap_err();
+    let err = b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap_err();
     assert_eq!(
         err,
         "cannot replace checkpoint ck1: checkpoints ck2 are deltas over it; delete them first"

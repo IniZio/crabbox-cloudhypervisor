@@ -45,7 +45,7 @@ impl RealBackend {
             .filter(|e| {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
-                name.starts_with(DIR_PREFIX) && !name.ends_with(".tmp")
+                name.starts_with(DIR_PREFIX)
             })
             .filter_map(|e| read_meta(&e.path()))
             .filter(|m| m.parent.as_deref() == Some(id) && m.checkpoint_id != id)
@@ -78,8 +78,11 @@ impl RealBackend {
         }
         parent.filter(|p| {
             let dir = self.checkpoint_dir(p);
+            let pending = self.config.cache_dir.join(format!("{DIR_PREFIX}{p}.tmp"));
             check_id(p).is_ok()
-                && read_meta(&dir).is_some_and(|m| m.disks.iter().all(|d| d.layer(&dir).is_file()))
+                && (read_meta(&dir)
+                    .is_some_and(|m| m.disks.iter().all(|d| d.layer(&dir).is_file()))
+                    || super::layers::in_progress(&pending))
         })
     }
 

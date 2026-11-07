@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub use cache::publisher::run_publisher;
+pub use checkpoint::layers::finish as finish_layers;
 use checkpoint::DisksFrom;
 use util::{mkdir_private, remove_tree, serial_tail, wait_until};
 
