@@ -464,3 +464,40 @@ fn a_lease_without_a_host_key_cannot_be_checkpointed_and_is_not_paused() {
     assert!(err.contains("host key for a"), "{err}");
     assert!(!b.checkpoint_dir("ck1").exists());
 }
+
+#[test]
+fn a_checkpoint_times_each_step_once_and_says_whether_the_lease_was_paused() {
+    let root = tempfile::tempdir().unwrap();
+    if !have_qemu_img() {
+        return;
+    }
+    let (b, rec, _ch) = running_lease(root.path());
+    let api = Api::start(&rec.api_socket(), 5, false);
+    let mut diag = Vec::new();
+    b.take_checkpoint(&rec, "ck1", "n", &mut diag).unwrap();
+    api.finish();
+    let diag = String::from_utf8(diag).unwrap();
+    let steps = [
+        ("lock-wait", "running"),
+        ("tidy", "running"),
+        ("pause", "paused"),
+        ("memory-snapshot", "paused bytes="),
+        ("dig-holes", "paused bytes="),
+        ("hold-disk", "paused disk=root bytes="),
+        ("resume", "paused"),
+        ("write-layer", "running disk=root bytes="),
+        ("checkpoint-total", ""),
+    ];
+    for (step, detail) in steps {
+        let prefix = format!("timing {step} ms=");
+        let lines: Vec<&str> = diag.lines().filter(|l| l.starts_with(&prefix)).collect();
+        assert_eq!(lines.len(), 1, "{step} in\n{diag}");
+        assert!(
+            lines.iter().all(|l| l.contains(detail)),
+            "{step} in\n{diag}"
+        );
+    }
+    assert!(diag.contains(" method=rebase over=nothing"), "{diag}");
+    let total = diag.lines().last().unwrap_or_default();
+    assert!(total.starts_with("timing checkpoint-total"), "{diag}");
+}

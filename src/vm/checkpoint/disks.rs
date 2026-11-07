@@ -152,6 +152,7 @@ impl RealBackend {
         &self,
         lease: &str,
         dir: &Path,
+        diag: &mut dyn Write,
     ) -> Result<(Vec<HeldDisk>, LeaseCache), String> {
         let cache = self.read_cache(lease);
         mkdir_private(&dir.join(DISKS_DIR))?;
@@ -160,7 +161,11 @@ impl RealBackend {
             if let Some(base) = base {
                 host::link_or_copy(&base, &disk.base(dir))?;
             }
+            let holding = Instant::now();
             host::clone_disk(&image, &disk.frozen(dir), 0)?;
+            let bytes = ext4::allocated(&disk.frozen(dir)).unwrap_or_default();
+            let detail = format!("paused disk={} bytes={bytes}", disk.of.stem());
+            timing::step(diag, "hold-disk", holding.elapsed(), &detail);
             held.push(disk);
         }
         Ok((held, cache))
@@ -173,6 +178,7 @@ impl RealBackend {
         dir: &Path,
         disks: &[HeldDisk],
         parent: Option<&str>,
+        diag: &mut dyn Write,
     ) -> Result<(), String> {
         for disk in disks {
             let stem = disk.of.stem();
@@ -189,6 +195,11 @@ impl RealBackend {
             };
             let frozen = disk.frozen(dir);
             let backing = backing.as_ref().map(|(f, name)| (*f, name.as_path()));
+            let over = backing.map_or("nothing", |(f, _)| match f {
+                Format::Qcow2 => "parent",
+                Format::Raw => "base",
+            });
+            let writing = Instant::now();
             delta_over(
                 &self.config.qemu_img,
                 &frozen,
@@ -197,6 +208,9 @@ impl RealBackend {
                 backing,
             )
             .map_err(|e| format!("{stem}: {e}"))?;
+            let bytes = ext4::allocated(&disk.layer(dir)).unwrap_or_default();
+            let detail = format!("running disk={stem} bytes={bytes} method=rebase over={over}");
+            timing::step(diag, "write-layer", writing.elapsed(), &detail);
             fs::remove_file(&frozen).map_err(|e| format!("{stem}: remove the copy: {e}"))?;
         }
         Ok(())
