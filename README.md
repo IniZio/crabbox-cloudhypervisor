@@ -512,7 +512,22 @@ identity rotation code of the [boot template](#boot-template).
   file's data. Commit reads the chain with no lock and never writes a layer, so
   forks of one checkpoint run at once. A chain that does not end in the checkpoint's
   generation link is rebased instead (`qemu-img rebase`), and the fork says so
-  in its log. The fork restores the snapshot onto its
+  in its log.
+- A fork's root comes from a spare when one is ready. After each fork, the
+  adapter starts a background job that flattens one more copy of that
+  checkpoint's root into `disks/root.spare.raw`. The next fork renames it into
+  place instead of copying the whole root. A checkpoint gets a spare only once
+  a Box forks from it, so the first fork always copies. The job runs at nice 19
+  and reads and writes at most 200 MiB/s, so it leaves the disk to running
+  Boxes. It writes `root.spare.raw.tmp` and renames it when done, so a fork never
+  takes half a spare. It skips when the spare would take the host below its
+  free-space floor, or when checkpoints and leases are on different filesystems.
+  A spare whose size is not the fork's root size is deleted and the fork copies.
+  Of two forks at once, one takes the spare and the other copies. A spare costs
+  one root's allocated bytes. It lives in the checkpoint dir, so the
+  checkpoint's filesystem shows it as used and deleting the checkpoint frees it,
+  but `uniqueBytes`, counted at create, does not include it.
+- The fork restores the snapshot onto its
   files, pointing the cache disks the snapshot names at its copies, and
   rotates identity through one ssh call made with the source lease's key. The
   new lease gets its own keys, host key, machine id and hostname. The adapter
@@ -524,7 +539,8 @@ identity rotation code of the [boot template](#boot-template).
   `timing fork-total` last. Steps other than the total do not overlap, so they
   sum to about the total. `memory-restore` and `root-flatten` also give `bytes`,
   and `cache-disk` gives `group`, `bytes` and `method`, which is `commit`,
-  `rebase` or `flatten`.
+  `rebase` or `flatten`. `root-flatten` gives `method` too, which is `spare` or
+  `flatten`.
 - A fork's cache volumes must plan to the same groups and scope as the
   checkpoint's lease had, because its snapshot names those disks and its guest
   has them mounted. Otherwise the fork is refused before anything is made, as
@@ -535,7 +551,8 @@ identity rotation code of the [boot template](#boot-template).
   succeeds. A checkpoint that others are deltas over is refused with
   `cannot delete checkpoint <id>: checkpoints <ids> are deltas over it; delete them first`,
   so delete leaves first. A fork already running is not affected, because its
-  disks refer to no checkpoint file.
+  disks refer to no checkpoint file. Delete first kills a running spare job and
+  every process it started, so nothing keeps writing into the removed dir.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 
