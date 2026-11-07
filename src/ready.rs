@@ -18,6 +18,8 @@ const POLL: Duration = Duration::from_millis(100);
 const STDERR_MAX: usize = 200;
 /// A progress note is written every this many attempts.
 const NOTE_EVERY: u32 = 10;
+/// Exit code of coreutils `timeout` when it killed the command it ran.
+const GUEST_TIMEOUT_EXIT: i32 = 124;
 
 /// How to reach one guest over ssh.
 pub struct ReadyProbe {
@@ -144,8 +146,8 @@ impl ReadyProbe {
         self.output(&clock_step_remote(epoch), limit).map(drop)
     }
 
-    /// Runs `remote` once, killed after `limit`; stdout on exit 0, else the
-    /// last stderr line.
+    /// Runs `remote` once, killed after `limit`; stdout on exit 0, else why it
+    /// failed: which time limit killed it, its last stderr line, or its exit code.
     pub fn output(&self, remote: &str, limit: Duration) -> Result<String, String> {
         let mut child = Command::new(&self.ssh)
             .args(self.args(remote))
@@ -157,14 +159,14 @@ impl ReadyProbe {
         let stdout = drain(child.stdout.take());
         let stderr = drain(child.stderr.take());
         let started = Instant::now();
-        let success = loop {
+        let ended = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break status.success(),
+                Ok(Some(status)) => break Some(status),
                 Ok(None) if started.elapsed() < limit => std::thread::sleep(POLL),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break false;
+                    break None;
                 }
             }
         };
@@ -172,11 +174,27 @@ impl ReadyProbe {
             r.recv_timeout(Duration::from_millis(500))
                 .unwrap_or_default()
         };
-        if success {
-            Ok(collect(stdout))
-        } else {
-            Err(last_line(&collect(stderr)))
+        if ended.is_some_and(|status| status.success()) {
+            return Ok(collect(stdout));
         }
+        let said = last_line(&collect(stderr));
+        Err(match ended.map(|status| status.code()) {
+            None => named(&format!("killed at its {}s limit", limit.as_secs()), &said),
+            Some(Some(GUEST_TIMEOUT_EXIT)) => named("the guest's time limit killed it", &said),
+            Some(code) if said.is_empty() => {
+                code.map_or_else(|| "killed by a signal".to_owned(), |c| format!("exit {c}"))
+            }
+            Some(_) => said,
+        })
+    }
+}
+
+/// `cause`, followed by what the command said when it said anything.
+fn named(cause: &str, said: &str) -> String {
+    if said.is_empty() {
+        cause.to_owned()
+    } else {
+        format!("{cause}: {said}")
     }
 }
 

@@ -168,3 +168,41 @@ fn step_clock_sends_the_host_epoch() {
         .as_secs();
     assert!(now.abs_diff(epoch) < 10, "{sent}");
 }
+
+#[test]
+fn a_command_killed_at_its_limit_says_so_with_what_it_had_said() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = script(dir.path(), "ssh", "echo stuck >&2; exec sleep 60");
+    let error = probe(&ssh)
+        .output("true", Duration::from_secs(1))
+        .unwrap_err();
+    assert_eq!(error, "killed at its 1s limit: stuck");
+}
+
+#[test]
+fn a_command_killed_at_its_limit_with_nothing_said_still_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = script(dir.path(), "ssh", "exec sleep 60");
+    let error = probe(&ssh)
+        .output("true", Duration::from_secs(1))
+        .unwrap_err();
+    assert_eq!(error, "killed at its 1s limit");
+}
+
+#[test]
+fn a_failure_names_its_exit_when_silent_and_a_guest_timeout_always() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = |body: &str| {
+        let ssh = script(dir.path(), "ssh", body);
+        probe(&ssh)
+            .output("true", Duration::from_secs(5))
+            .unwrap_err()
+    };
+    assert_eq!(error("exit 3"), "exit 3");
+    assert_eq!(error("echo no route >&2; exit 255"), "no route");
+    assert_eq!(error("exit 124"), "the guest's time limit killed it");
+    assert_eq!(
+        error("echo stuck >&2; exit 124"),
+        "the guest's time limit killed it: stuck"
+    );
+}

@@ -258,6 +258,51 @@ fn a_hung_sync_is_cut_off_at_its_bound_and_publishes_nothing() {
 }
 
 #[test]
+fn a_hung_sync_notes_that_the_limit_killed_it() {
+    if !have_tools() {
+        return;
+    }
+    let l = Lease::new(&["g1"], "exec sleep 300");
+    let mut notes = Vec::new();
+    l.backend.sync_groups(&l.record, &mut notes);
+    let notes = String::from_utf8(notes).unwrap();
+    assert!(
+        notes.contains("cache group g1: sync failed: killed at its 5s limit"),
+        "{notes}"
+    );
+}
+
+#[test]
+fn a_permitted_pause_of_a_vm_not_running_notes_why_it_saves_nothing() {
+    if !have_tools() {
+        return;
+    }
+    let l = Lease::new(&["g1"], "");
+    let ok = NO_CONTENT.to_owned();
+    let api = serve(
+        &l.record.api_socket(),
+        vec![
+            info("Paused"),
+            info("Paused"),
+            ok.clone(),
+            ok.clone(),
+            ok.clone(),
+            ok,
+        ],
+    );
+    let mut notes = Vec::new();
+    l.backend.pause_and_publish(&l.record, &mut notes).unwrap();
+    api.join().unwrap();
+    let notes = String::from_utf8(notes).unwrap();
+    assert!(
+        notes.contains("vm was not running at the pause; caches not synced, nothing published"),
+        "{notes}"
+    );
+    assert_eq!(l.log("ssh.log"), "", "no sync");
+    assert_eq!(l.log("exe.log"), "", "no publisher");
+}
+
+#[test]
 fn one_group_failing_its_sync_costs_only_that_group() {
     if !have_tools() {
         return;

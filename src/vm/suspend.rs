@@ -91,6 +91,10 @@ impl RealBackend {
         let synced = if Self::power_of(record) == Power::Running {
             self.sync_groups(record, diag)
         } else {
+            let _ = writeln!(
+                diag,
+                "vm was not running at the pause; caches not synced, nothing published"
+            );
             BTreeMap::new()
         };
         self.suspend(record, diag)?;
