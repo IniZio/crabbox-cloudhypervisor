@@ -431,19 +431,20 @@ fn a_failed_snapshot_resumes_the_lease_and_leaves_no_checkpoint() {
 }
 
 #[test]
-fn a_second_checkpoint_under_the_same_id_replaces_the_first() {
+fn a_checkpoint_id_in_use_is_refused_and_the_old_checkpoint_kept() {
     let root = tempfile::tempdir().unwrap();
-    if !have_qemu_img() {
-        return;
-    }
     let (b, rec, _ch) = running_lease(root.path());
-    let old = plant(&b, "ck1", SMALL, "cloud-hypervisor v51.0");
-    fs::write(old.join("stale"), "x").unwrap();
-    let api = Api::start(&rec.api_socket(), 5, false);
-    b.take_whole(&rec, "ck1", "n", &mut Vec::new()).unwrap();
-    api.finish();
-    assert!(!old.join("stale").exists());
-    assert!(old.join("snap/memory-ranges").exists());
+    let old = plant(&b, "ck1", SMALL, CH);
+    fs::write(old.join("kept"), "x").unwrap();
+    let err = b
+        .take_checkpoint(&rec, "ck1", "n", &mut Vec::new())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "checkpoint ck1 exists; delete it before taking it again"
+    );
+    assert!(old.join("kept").exists());
+    assert!(!b.config.cache_dir.join("checkpoint-ck1.tmp").exists());
 }
 
 #[test]

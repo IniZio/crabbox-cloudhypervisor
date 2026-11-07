@@ -140,7 +140,8 @@ impl RealBackend {
     }
 
     /// Snapshots the running lease under `id`, resumes it, then stores its
-    /// disks as deltas over its parent's. An older leaf checkpoint of that id is replaced.
+    /// disks as deltas over its parent's. An id still in use is refused, since
+    /// forks and children read a checkpoint by its id.
     pub(super) fn take_checkpoint(
         &self,
         record: &LeaseRecord,
@@ -157,7 +158,8 @@ impl RealBackend {
         let started = Instant::now();
         let _lock = self.checkpoint_lock(false)?;
         timing::step(diag, "lock-wait", started.elapsed(), "running");
-        self.check_no_children(id, "replace")?;
+        let tmp = cache.join(format!("{DIR_PREFIX}{id}.tmp"));
+        self.check_unused(id, &tmp)?;
         let mut meta = Meta {
             checkpoint_id: id.to_owned(),
             name: name.to_owned(),
@@ -165,13 +167,11 @@ impl RealBackend {
             ch_version: ch_version(&self.config.cloud_hypervisor)?,
             size,
             created_at: state::now_unix(),
-            parent: self.parent_for(lease, id),
+            parent: self.parent_for(lease),
             disks: Vec::new(),
             cache: LeaseCache::default(),
         };
         let pin = known_hosts_line(&format!("crabbox-{lease}"), &self.read_host_key(lease)?);
-        let tmp = cache.join(format!("{DIR_PREFIX}{id}.tmp"));
-        layers::stop(&tmp).map_err(|e| format!("cannot replace checkpoint {id}: {e}"))?;
         remove_tree(&tmp)?;
         mkdir_private(&tmp)?;
         let lock = layers::begin(&tmp)?;
@@ -201,6 +201,22 @@ impl RealBackend {
             unique_bytes: bytes.allocated,
             apparent_bytes: bytes.apparent,
         })
+    }
+
+    /// Refuses id `id` while a checkpoint has it or is being written under it in
+    /// `tmp`, and while others are deltas over what a dead job left there.
+    fn check_unused(&self, id: &str, tmp: &Path) -> Result<(), String> {
+        if self.checkpoint_dir(id).exists() {
+            return Err(format!(
+                "checkpoint {id} exists; delete it before taking it again"
+            ));
+        }
+        if layers::in_progress(tmp) {
+            return Err(format!(
+                "checkpoint {id} is being written; delete it before taking it again"
+            ));
+        }
+        self.check_no_children(id, "replace")
     }
 
     /// Pauses the lease, captures it into `tmp` and resumes it, also when the

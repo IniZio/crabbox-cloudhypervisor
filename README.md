@@ -470,9 +470,11 @@ identity rotation code of the [boot template](#boot-template).
   processes, open TCP connections and ssh sessions carry on after a short
   pause, also when the checkpoint fails. Stock cloud-hypervisor v52.0 stops
   the passt rings to save their state and never restarts them, so the guest
-  network stays dead. v52.0-moor.1 restarts them on resume. A second create
-  under the same id replaces the first, unless other checkpoints are deltas
-  over it.
+  network stays dead. v52.0-moor.1 restarts them on resume. A create under an
+  id that exists or is still being written is refused with `checkpoint <id>
+  exists; delete it before taking it again`, because forks and later
+  checkpoints read a checkpoint by its id. A create under the id of one whose
+  layer job died removes what it left.
 - While the lease is paused, each of its disks is copied: the root disk first,
   then each cache disk. Beside each copy goes a hard link to what the disk
   started from: the base image for the root, the generation for a cache
@@ -572,8 +574,7 @@ identity rotation code of the [boot template](#boot-template).
   so delete leaves first. A fork already running is not affected, because its
   disks refer to no checkpoint file. Delete first kills a running layer job or
   spare root job and every process it started, so nothing keeps writing into
-  the removed dir. Taking a checkpoint again under the same id kills the old
-  one's layer job too, and removes what a job that died left.
+  the removed dir.
 - A checkpoint is not removed by `release` of its source lease or by `cleanup`.
   Delete it with `checkpointDelete`.
 

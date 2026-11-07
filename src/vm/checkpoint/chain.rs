@@ -67,15 +67,11 @@ impl RealBackend {
         ))
     }
 
-    /// The checkpoint lease `lease`'s next checkpoint, written under `id`, is
-    /// a delta over: the one the lease last matched (that one's parent when
-    /// `id` replaces it), while it is whole; else none.
-    pub(super) fn parent_for(&self, lease: &str, id: &str) -> Option<String> {
+    /// The checkpoint lease `lease`'s next checkpoint is a delta over: the one
+    /// the lease last matched, while it is whole or still being written; else none.
+    pub(super) fn parent_for(&self, lease: &str) -> Option<String> {
         let path = self.store.lease_dir(lease).join(PARENT_FILE);
-        let mut parent = fs::read_to_string(path).ok().map(|p| p.trim().to_owned());
-        if parent.as_deref() == Some(id) {
-            parent = read_meta(&self.checkpoint_dir(id)).and_then(|m| m.parent);
-        }
+        let parent = fs::read_to_string(path).ok().map(|p| p.trim().to_owned());
         parent.filter(|p| {
             let dir = self.checkpoint_dir(p);
             let pending = self.config.cache_dir.join(format!("{DIR_PREFIX}{p}.tmp"));

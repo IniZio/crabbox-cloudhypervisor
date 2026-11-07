@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::{disks, read_meta, DIR_PREFIX};
 use crate::host;
 use crate::timing;
-use crate::vm::{remove_tree, RealBackend};
+use crate::vm::RealBackend;
 
 /// Held for as long as the checkpoint is being made.
 const LOCK_FILE: &str = "layers.lock";
@@ -243,7 +243,6 @@ pub fn finish(cache: &Path, id: &str, diag: &mut dyn Write) -> Result<(), String
         meta.parent.as_deref(),
         diag,
     )?;
-    remove_tree(&done)?;
     fs::rename(&tmp, &done).map_err(|e| format!("publish checkpoint: {e}"))?;
     timing::step(diag, "layers-total", started.elapsed(), "");
     Ok(())
