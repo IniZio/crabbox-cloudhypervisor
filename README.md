@@ -508,6 +508,10 @@ identity rotation code of the [boot template](#boot-template).
   fails if the checkpoint is missing (`checkpoint not found: <id>`),
   incomplete, taken by another `cloud-hypervisor --version`, or taken at
   another size than the request's class gives.
+- A fork writes one `timing <step> ms=<n>` line to stderr per step, and
+  `timing fork-total` last. Steps other than the total do not overlap, so they
+  sum to about the total. `memory-restore` and `root-flatten` also give `bytes`,
+  and `cache-disk` gives `group` and `bytes`.
 - A fork's cache volumes must plan to the same groups and scope as the
   checkpoint's lease had, because its snapshot names those disks and its guest
   has them mounted. Otherwise the fork is refused before anything is made, as

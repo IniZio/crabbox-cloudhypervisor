@@ -33,6 +33,7 @@ use crate::protocol::{CheckpointMade, Desired};
 use crate::ready::known_hosts_line;
 use crate::size::Size;
 use crate::state::{self, LeaseRecord};
+use crate::timing;
 
 /// What the checkpoint was taken from, inside its dir.
 pub(super) const META_FILE: &str = "checkpoint.json";
@@ -272,7 +273,9 @@ impl RealBackend {
         diag: &mut dyn Write,
     ) -> Result<LeaseRecord, String> {
         check_id(id)?;
+        let waiting = Instant::now();
         let _lock = self.checkpoint_lock(false)?;
+        timing::step(diag, "lock-wait", waiting.elapsed(), "");
         let dir = self.checkpoint_dir(id);
         let meta = self.usable_checkpoint(id, &dir)?;
         let lease = desired.lease_id.as_str();

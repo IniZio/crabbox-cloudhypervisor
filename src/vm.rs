@@ -17,7 +17,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use cache::publisher::run_publisher;
 use checkpoint::DisksFrom;
@@ -33,6 +33,7 @@ use crate::scope::{self, Limits, Role};
 use crate::seed::{self, SeedParams};
 use crate::size::Size;
 use crate::state::{self, LeaseLock, LeaseRecord, Store};
+use crate::timing;
 
 /// Process name prefix of cloud-hypervisor (`comm` is cut to 15 characters).
 const CH_COMM: &str = "cloud-hyperviso";
@@ -100,7 +101,9 @@ impl RealBackend {
         let (host_private_key, host_public_key) = self.make_host_key(id)?;
         let instance_id = format!("{}-{}", record.cloud_id, record.created_at);
         let hostname = seed::hostname_for(&desired.name);
+        let collecting = Instant::now();
         self.collect_cache_garbage(diag);
+        timing::step(diag, "cache-gc", collecting.elapsed(), "");
         let cache = match from {
             DisksFrom::Image(base) => {
                 let size = self.config.disk_gib * 1024 * 1024 * 1024;
@@ -108,7 +111,7 @@ impl RealBackend {
                 self.restore_cache(id, &desired.cache_volumes, desired.cache_scope.as_deref())?
             }
             DisksFrom::Checkpoint(dir, meta) => self
-                .fork_disks(id, dir, meta, desired)
+                .fork_disks(id, dir, meta, desired, diag)
                 .map_err(|e| format!("checkpoint {}: {e}", meta.checkpoint_id))?,
         };
         let mut guest = cache.guest_setup();
