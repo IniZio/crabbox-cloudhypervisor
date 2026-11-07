@@ -142,3 +142,40 @@ fn unknown_subcommand_exits_2() {
         .unwrap();
     assert_eq!(status.code(), Some(2));
 }
+
+/// True iff `pid` is running: present and not a zombie.
+fn running(pid: u32) -> bool {
+    crabbox_cloudhypervisor::host::pid_alive(pid, "")
+}
+
+#[test]
+fn a_tied_program_dies_with_its_parent_and_a_detached_one_outlives_it() {
+    let idle = "while :; do sleep 1; done";
+    let parent = format!(
+        "\"$0\" tied $$ -- sh -c '{idle}' >/dev/null 2>&1 & t=$!; echo $t; \
+         setsid sh -c '{idle}' >/dev/null 2>&1 & echo $!; sleep 0.5; \
+         cat /proc/$t/status 2>/dev/null | grep -c '^State:.*[RS]'"
+    );
+    let out = Command::new("sh")
+        .args(["-c", &parent, BIN])
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    let pids: Vec<u32> = String::from_utf8(out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .map(|p| p.parse().unwrap())
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let alive: Vec<bool> = pids.iter().take(2).map(|p| running(*p)).collect();
+    for pid in pids.iter().take(2) {
+        let _ = crabbox_cloudhypervisor::host::kill(*pid, rustix::process::Signal::KILL);
+    }
+    let (&[_, _, tied_ran], &[tied_alive, detached_alive]) = (pids.as_slice(), alive.as_slice())
+    else {
+        panic!("parent printed {pids:?}");
+    };
+    assert_eq!(tied_ran, 1, "tied program never ran");
+    assert!(!tied_alive, "tied program outlived its parent");
+    assert!(detached_alive, "detached program died with its parent");
+}

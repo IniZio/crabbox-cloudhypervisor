@@ -407,9 +407,12 @@ provisioned guest instead of cold booting through cloud-init.
   `<cacheDir>/template-<key12>/snap`, stops it and keeps its disk beside the
   snapshot. Builds are serialised by `<cacheDir>/template.lock`.
 - SIGINT or SIGTERM during a build stops the template guest's
-  cloud-hypervisor and passt before the adapter dies of the signal. A killed
-  adapter leaves them running. So a build first stops the user's
-  cloud-hypervisor and passt processes that still serve a socket in its run dir.
+  cloud-hypervisor and passt before the adapter dies of the signal. The
+  template guest's processes start through `crabbox-cloudhypervisor tied`, so
+  the kernel kills them when the adapter exits, even by SIGKILL. A lease's
+  processes keep running after the adapter exits. A build first stops the
+  user's cloud-hypervisor and passt processes that still serve a socket in its
+  run dir.
 - The template key is a SHA-256 over the image and firmware hashes, the
   rendered template seed, the lease size (vCPUs and memory), `diskGiB` and
   `cloud-hypervisor --version`. Changing any of them builds a new template, and

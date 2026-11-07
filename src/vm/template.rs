@@ -313,7 +313,7 @@ impl RealBackend {
         let id = want.guest_id();
         let mut config = self.config.clone();
         config.state_dir = dir.join("state");
-        let builder = Self::new(config, self.exe.clone());
+        let builder = Self::new(config, self.exe.clone()).dying_with_adapter();
         let run_dir = self.config.runtime_dir.join(state::run_dir_name(&id));
         reap::reap(&run_dir, diag)?;
         let _building = reap::in_flight(&run_dir)?;
