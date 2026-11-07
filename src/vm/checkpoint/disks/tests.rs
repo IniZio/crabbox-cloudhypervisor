@@ -326,6 +326,138 @@ fn a_fork_of_a_raw_cache_disk_runs_a_raw_disk_of_its_own() {
     assert!(same_content(&copy.image, &image));
 }
 
+/// A lease on a generation, checkpointed once, its record for fork `f` written.
+fn checkpointed(root: &Path) -> (RealBackend, LeaseRecord, FakeCh, PathBuf) {
+    let (b, rec, ch) = lease(root, Format::Qcow2);
+    let image = cache_image(&b, "a");
+    scribble(&image, Format::Qcow2, 64 * MIB, MIB, 1);
+    take(&b, &rec, "ck1");
+    b.store.write(&record("f")).unwrap();
+    (b, rec, ch, image)
+}
+
+#[test]
+fn a_fork_commits_its_chain_and_says_so() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, _rec, _ch, image) = checkpointed(root.path());
+    let dir = b.checkpoint_dir("ck1");
+    let meta = read_meta(&dir).unwrap();
+    let mut diag = Vec::new();
+    let cache = b
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut diag)
+        .unwrap();
+    let diag = String::from_utf8(diag).unwrap();
+    assert!(diag.contains(" group=g1 bytes="), "{diag}");
+    assert!(diag.contains(" method=commit"), "{diag}");
+    assert!(!diag.contains("rebasing"), "{diag}");
+    assert!(same_content(&first(&cache).image, &image));
+}
+
+#[test]
+fn a_chain_over_another_copy_of_the_base_falls_back_to_a_rebase_and_says_so() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, _rec, _ch, image) = checkpointed(root.path());
+    let dir = b.checkpoint_dir("ck1");
+    let held = dir.join("disks/cache-g1.base.img");
+    let other = held.with_extension("img.other");
+    fs::copy(&held, &other).unwrap();
+    let status = Command::new("qemu-img")
+        .args(["rebase", "-q", "-u", "-f", "qcow2", "-F", "raw", "-b"])
+        .arg("cache-g1.base.img.other")
+        .arg(dir.join("disks/cache-g1.qcow2"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let meta = read_meta(&dir).unwrap();
+    let mut diag = Vec::new();
+    let cache = b
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut diag)
+        .unwrap();
+    let diag = String::from_utf8(diag).unwrap();
+    assert!(
+        diag.contains("does not end in the checkpoint's base; rebasing"),
+        "{diag}"
+    );
+    assert!(diag.contains(" method=rebase"), "{diag}");
+    assert!(same_content(&first(&cache).image, &image));
+}
+
+#[test]
+fn a_committed_fork_publishes_and_the_generation_restores() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, _rec, _ch, _image) = checkpointed(root.path());
+    let dir = b.checkpoint_dir("ck1");
+    let meta = read_meta(&dir).unwrap();
+    let cache = b
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut Vec::new())
+        .unwrap();
+    let forked = first(&cache).image.clone();
+    scribble(&forked, Format::Qcow2, 128 * MIB, 40 * MIB, 3);
+    let mut diag = Vec::new();
+    b.settle_cache("f", true, &mut diag);
+    let diag = String::from_utf8(diag).unwrap();
+    assert!(!diag.contains("failed"), "{diag}");
+    fs::create_dir_all(b.store.lease_dir("r")).unwrap();
+    let restored = b.restore_cache("r", &npm(), None).unwrap();
+    let image = &first(&restored).image;
+    assert!(diag.contains("published gen"), "{diag}");
+    for (at, len, byte) in [(64, 1, 1), (128, 40, 3)] {
+        let command = format!("read -P {byte} {at}M {len}M");
+        let out = Command::new("qemu-io")
+            .args(["-f", "qcow2", "-c", &command])
+            .arg(image)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(!said.contains("failed"), "{command}: {said}");
+        assert!(said.contains("read "), "{command}: {said}");
+    }
+}
+
+#[test]
+fn a_checkpoint_of_a_committed_fork_chains_on_its_parent() {
+    if !tools() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (b, _rec, _ch, _image) = checkpointed(root.path());
+    let dir = b.checkpoint_dir("ck1");
+    let meta = read_meta(&dir).unwrap();
+    let mut f = record("f");
+    f.run_dir = root.path().join("run-f");
+    f.size = Some(crate::vm::checkpoint::tests::SMALL);
+    let ch = FakeCh::spawn();
+    f.set_ch_pid(ch.child.id());
+    fs::create_dir_all(&f.run_dir).unwrap();
+    b.store.write(&f).unwrap();
+    let cache = b
+        .fork_disks("f", &dir, &meta, &desired("f", npm()), &mut Vec::new())
+        .unwrap();
+    fs::write(b.store.disk_path("f"), vec![7u8; 65_536]).unwrap();
+    fs::write(b.store.key_path("f"), "LEASE KEY\n").unwrap();
+    fs::write(b.store.host_pub_path("f"), "ssh-ed25519 HOST root@x\n").unwrap();
+    b.set_parent("f", "ck1", &mut Vec::new());
+    let forked = first(&cache).image.clone();
+    scribble(&forked, Format::Qcow2, 70 * MIB, MIB, 5);
+    let made = take(&b, &f, "ck2");
+    assert_eq!(made.parent_checkpoint_id.as_deref(), Some("ck1"));
+    let layer = b.checkpoint_dir("ck2").join("disks/cache-g1.qcow2");
+    assert_eq!(
+        image_info(&layer)["backing-filename"],
+        "../../checkpoint-ck1/disks/cache-g1.qcow2"
+    );
+    assert!(same_content(&layer, &forked));
+}
+
 #[test]
 fn removing_a_checkpoint_drops_its_link_to_the_generation() {
     if !tools() {
