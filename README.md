@@ -495,12 +495,17 @@ identity rotation code of the [boot template](#boot-template).
   `checkpoint-<id>.tmp`. The `bootstrap` file is the source lease's private
   login key. A checkpoint written before `disks/` existed is refused as
   unreadable, so its caller starts cold.
-- `checkpointFork` starts a new lease from it. Every disk is copied out the
-  same way, into one image that refers to no checkpoint file. A raw disk (the
-  root, or a raw cache disk) is flattened into a sparse raw disk
-  (`qemu-img convert`). A cache overlay becomes one overlay that holds
-  everything the chain changed, over the fork's own hard link of the
-  generation (`qemu-img rebase`). The fork restores the snapshot onto its
+- `checkpointFork` starts a new lease from it. Every disk is copied out into
+  one image that refers to no checkpoint file. A raw disk (the root, or a raw
+  cache disk) is flattened into a sparse raw disk (`qemu-img convert`). A cache
+  overlay becomes one overlay over the fork's own hard link of the generation.
+  `qemu-img commit` copies only what the chain allocated above the generation,
+  so the fork takes no longer for a larger generation. The overlay is qcow2
+  version 2 because cloud-hypervisor reads a version 3 zero cluster as the backing
+  file's data. Commit reads the chain with no lock and never writes a layer, so
+  forks of one checkpoint run at once. A chain that does not end in the checkpoint's
+  generation link is rebased instead (`qemu-img rebase`), and the fork says so
+  in its log. The fork restores the snapshot onto its
   files, pointing the cache disks the snapshot names at its copies, and
   rotates identity through one ssh call made with the source lease's key. The
   new lease gets its own keys, host key, machine id and hostname. The adapter
@@ -511,7 +516,8 @@ identity rotation code of the [boot template](#boot-template).
 - A fork writes one `timing <step> ms=<n>` line to stderr per step, and
   `timing fork-total` last. Steps other than the total do not overlap, so they
   sum to about the total. `memory-restore` and `root-flatten` also give `bytes`,
-  and `cache-disk` gives `group` and `bytes`.
+  and `cache-disk` gives `group`, `bytes` and `method`, which is `commit`,
+  `rebase` or `flatten`.
 - A fork's cache volumes must plan to the same groups and scope as the
   checkpoint's lease had, because its snapshot names those disks and its guest
   has them mounted. Otherwise the fork is refused before anything is made, as

@@ -5,6 +5,7 @@
 //! the cache generation), and every checkpoint of a chain links it, so store
 //! GC never breaks a chain and a fork finds the base beside the layer.
 
+mod commit;
 #[cfg(test)]
 pub(in crate::vm) mod tests;
 
@@ -201,26 +202,40 @@ impl RealBackend {
         Ok(())
     }
 
-    /// Writes `image`, lease's copy of `disk` from checkpoint dir `dir`, which
-    /// names no checkpoint file: a raw disk flattened from the chain and grown
-    /// to `size`, or for an overlay one layer over `base`, the lease's own link
-    /// of the disk's base.
+    /// Writes `image`, lease's copy of cache disk `disk` from checkpoint dir
+    /// `dir`, which names no checkpoint file: a raw disk flattened from the chain,
+    /// or for an overlay one layer over `base`, the lease's own link of the disk's
+    /// base. Returns how it was made.
     fn fork_disk(
         &self,
         dir: &Path,
         disk: &HeldDisk,
         image: &Path,
         base: Option<&Path>,
-        size: u64,
-    ) -> Result<(), String> {
+        diag: &mut dyn Write,
+    ) -> Result<&'static str, String> {
         let qemu_img = &self.config.qemu_img;
         match (disk.format, base) {
-            (Format::Raw, _) => host::flatten(qemu_img, &disk.layer(dir), image, size),
+            (Format::Raw, _) => {
+                host::flatten(qemu_img, &disk.layer(dir), image, 0).map(|()| "flatten")
+            }
             (Format::Qcow2, Some(base)) => {
-                host::link_or_copy(&disk.base(dir), base)?;
+                let held = disk.base(dir);
+                host::link_or_copy(&held, base)?;
                 let base = fs::canonicalize(base).map_err(|e| format!("resolve base: {e}"))?;
-                let backing = Some((Format::Raw, base.as_path()));
-                delta_over(qemu_img, &disk.layer(dir), Format::Qcow2, image, backing)
+                let chain = commit::read_chain(qemu_img, &disk.layer(dir))?;
+                if commit::ends_in(&chain, &held)? {
+                    commit::commit_chain(qemu_img, &chain, &base, image).map(|()| "commit")
+                } else {
+                    let stem = disk.of.stem();
+                    let _ = writeln!(
+                        diag,
+                        "{stem}: its chain does not end in the checkpoint's base; rebasing"
+                    );
+                    let backing = Some((Format::Raw, base.as_path()));
+                    delta_over(qemu_img, &disk.layer(dir), Format::Qcow2, image, backing)
+                        .map(|()| "rebase")
+                }
             }
             (Format::Qcow2, None) => Err("an overlay with no base".to_owned()),
         }
@@ -244,7 +259,7 @@ impl RealBackend {
         let size = self.config.disk_gib * GIB;
         let image = self.store.disk_path(id);
         let copying = Instant::now();
-        self.fork_disk(dir, root, &image, None, size)?;
+        host::flatten(&self.config.qemu_img, &root.layer(dir), &image, size)?;
         let bytes = ext4::allocated(&image).unwrap_or_default();
         timing::step(
             diag,
@@ -263,10 +278,11 @@ impl RealBackend {
             let (image, base) = store.work_paths(id, group, disk.format);
             mkdir_private(&store.work_dir(id))?;
             let copying = Instant::now();
-            self.fork_disk(dir, disk, &image, base.as_deref(), 0)
+            let method = self
+                .fork_disk(dir, disk, &image, base.as_deref(), diag)
                 .map_err(|e| format!("copy cache group {}: {e}", group.as_str()))?;
             let baseline = ext4::allocated(&image)?;
-            let detail = format!("group={} bytes={baseline}", group.as_str());
+            let detail = format!("group={} bytes={baseline} method={method}", group.as_str());
             timing::step(diag, "cache-disk", copying.elapsed(), &detail);
             Ok(WorkingCopy {
                 image,
