@@ -296,18 +296,13 @@ fn path_key(config: &Value, key: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Reads binary `key`; its default is what `crabbox-cloudhypervisor install`
-/// put in place, else `name` on PATH.
+/// Reads binary `key`; absent, it is the one `crabbox-cloudhypervisor install`
+/// puts in place, never a PATH lookup.
 fn installed(config: &Value, env: Env<'_>, key: &str, name: &str) -> Result<PathBuf, String> {
-    let default = crate::install::bin_dir(env)
-        .map(|dir| dir.join(name))
-        .ok()
-        .filter(|path| path.is_file())
-        .map_or_else(
-            || name.to_owned(),
-            |path| path.to_string_lossy().into_owned(),
-        );
-    bin_key(config, key, &default)
+    if get(config, key).is_some() {
+        return bin_key(config, key, name);
+    }
+    Ok(crate::install::bin_dir(env)?.join(name))
 }
 
 /// Reads an optional non-empty binary path or name.

@@ -16,7 +16,8 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
   vhost-user resume patch, [v52.0-moor.1](https://github.com/IniZio/cloud-hypervisor/releases/tag/v52.0-moor.1)
   (`cloud-hypervisor-static`). With stock v52.0 the guest network is dead after
   `checkpointCreate`.
-- `passt` with `--vhost-user` support (tested with 2026_06_11).
+- `passt` with `--vhost-user` support (tested with 2026_06_11). `install`
+  provides it and cloud-hypervisor; distro passt lacks `--vhost-user`.
 - `qemu-img`, `ssh`, `ssh-keygen`, `curl`, `setsid`, `nice`, `ionice`.
 - For cache volumes: `mke2fs`, `e2fsck` and `resize2fs` (e2fsprogs). Without
   them every cache volume is skipped and the Box starts cold.
@@ -38,8 +39,16 @@ crabbox-cloudhypervisor doctor    # one line per check, each failure with its fi
 `install.sh` puts the adapter in `~/.local/bin`. `install` puts
 cloud-hypervisor v52.0-moor.1 and a static passt with `--vhost-user` in
 `$XDG_DATA_HOME/crabbox-cloudhypervisor/bin` (default
-`~/.local/share/crabbox-cloudhypervisor/bin`). The config uses them when
-`cloudHypervisor` and `passt` are not set. Rerunning `install` downloads only
+`~/.local/share/crabbox-cloudhypervisor/bin`). The adapter always runs those
+two, never ones found on `PATH`. To run others, set their absolute paths:
+
+```yaml
+  config:
+    cloudHypervisor: /usr/local/bin/cloud-hypervisor
+    passt: /usr/local/bin/passt
+```
+
+Rerunning `install` downloads only
 what is missing or changed. It never runs sudo or a package manager. It names
 the package for each missing host tool instead.
 
@@ -100,7 +109,7 @@ All keys go under `external.config`. All are optional.
 | `cacheDir` | `$XDG_CACHE_HOME/crabbox-cloudhypervisor` | downloaded assets (absolute path) |
 | `image` | pinned Ubuntu image | `{url, sha256}` override |
 | `firmware` | pinned CLOUDHV.fd | `{url, sha256}` override |
-| `cloudHypervisor`, `passt` | what `install` put in place, else `PATH` | binary paths |
+| `cloudHypervisor`, `passt` | `$XDG_DATA_HOME/crabbox-cloudhypervisor/bin/<name>`, where `install` puts them; never `PATH` | binary paths |
 | `qemuImg`, `ssh`, `sshKeygen`, `curl` | looked up on `PATH` | binary paths |
 | `cacheVolumeDir` | `<stateDir>/volumes` | cache volume store (absolute path) |
 | `cacheStoreMaxGB` | `200` | store budget in GiB; least recently used groups go first above it |

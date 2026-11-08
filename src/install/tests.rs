@@ -244,30 +244,52 @@ fn release_pins_cover_x86_64_and_name_the_gap_elsewhere() {
     assert!(err.contains("aarch64"), "{err}");
 }
 
-#[test]
-fn installed_binaries_become_the_config_defaults() {
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().to_str().unwrap().to_owned();
-    let bin = dir.path().join("crabbox-cloudhypervisor/bin");
-    let env = |k: &str| match k {
+fn data_env(data: &Path) -> impl Fn(&str) -> Option<String> {
+    let data = data.to_str().unwrap().to_owned();
+    move |k: &str| match k {
         "HOME" => Some("/home/u".to_owned()),
         "XDG_DATA_HOME" => Some(data.clone()),
+        "PATH" => Some("/usr/local/bin:/usr/bin:/bin".to_owned()),
         _ => None,
-    };
+    }
+}
 
-    let before = Config::from_request(&Value::Null, &env).unwrap();
-    assert_eq!(before.passt, PathBuf::from("passt"));
+#[test]
+fn the_installed_binaries_are_the_config_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("crabbox-cloudhypervisor/bin");
+    let config = Config::from_request(&Value::Null, &data_env(dir.path())).unwrap();
+    assert_eq!(config.passt, bin.join("passt"));
+    assert_eq!(config.cloud_hypervisor, bin.join("cloud-hypervisor"));
+}
 
+#[test]
+fn an_explicit_binary_wins_over_the_installed_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("crabbox-cloudhypervisor/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::write(bin.join("passt"), PASST).unwrap();
-    fs::write(bin.join("cloud-hypervisor"), CH).unwrap();
-    let after = Config::from_request(&Value::Null, &env).unwrap();
-    assert_eq!(after.passt, bin.join("passt"));
-    assert_eq!(after.cloud_hypervisor, bin.join("cloud-hypervisor"));
+    let explicit = serde_json::json!({ "passt": "/usr/local/bin/passt" });
+    let config = Config::from_request(&explicit, &data_env(dir.path())).unwrap();
+    assert_eq!(config.passt, PathBuf::from("/usr/local/bin/passt"));
+    assert_eq!(config.cloud_hypervisor, bin.join("cloud-hypervisor"));
+}
 
-    let explicit = serde_json::json!({ "passt": "/opt/passt" });
-    let pinned = Config::from_request(&explicit, &env).unwrap();
-    assert_eq!(pinned.passt, PathBuf::from("/opt/passt"));
+#[test]
+fn nothing_installed_and_no_config_gives_the_install_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::from_request(&Value::Null, &data_env(dir.path())).unwrap();
+    let report = crate::doctor::run(&config, &mut std::io::sink()).unwrap_err();
+    for name in ["cloud-hypervisor", "passt"] {
+        let line = report
+            .lines()
+            .find(|l| l.starts_with(&format!("FAIL {name}:")))
+            .expect(&report);
+        assert!(
+            line.ends_with("run `crabbox-cloudhypervisor install`"),
+            "{line}"
+        );
+    }
 }
 
 #[test]

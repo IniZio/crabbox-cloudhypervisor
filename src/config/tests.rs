@@ -16,7 +16,8 @@ fn parse(config: &Value, pairs: &[(&str, &str)]) -> Result<Config, String> {
 
 const HOME: &[(&str, &str)] = &[("HOME", "/home/u")];
 
-/// Builds an expected config; binaries are bare names unless overridden.
+/// Builds an expected config for HOME=/home/u; cloud-hypervisor and passt are
+/// the installed ones, other binaries bare names.
 fn expected(state: &str, runtime: &str, cache: &str) -> Config {
     Config {
         state_dir: PathBuf::from(state),
@@ -40,8 +41,10 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             url: FIRMWARE_URL.to_owned(),
             sha256: FIRMWARE_SHA256.to_owned(),
         },
-        cloud_hypervisor: PathBuf::from("cloud-hypervisor"),
-        passt: PathBuf::from("passt"),
+        cloud_hypervisor: PathBuf::from(
+            "/home/u/.local/share/crabbox-cloudhypervisor/bin/cloud-hypervisor",
+        ),
+        passt: PathBuf::from("/home/u/.local/share/crabbox-cloudhypervisor/bin/passt"),
         qemu_img: PathBuf::from("qemu-img"),
         ssh: PathBuf::from("ssh"),
         ssh_keygen: PathBuf::from("ssh-keygen"),
@@ -129,7 +132,9 @@ fn relative_xdg_ignored() {
 #[test]
 fn missing_home_errors_only_when_needed() {
     assert!(parse(&Value::Null, &[]).is_err());
-    let cfg = json!({"stateDir": "/s", "cacheDir": "/c"});
+    let cfg = json!({
+        "stateDir": "/s", "cacheDir": "/c", "cloudHypervisor": "/b/ch", "passt": "/b/passt"
+    });
     let c = parse(&cfg, &[]).unwrap();
     assert_eq!(c.runtime_dir, PathBuf::from("/s/run"));
     assert!(parse(&json!({"stateDir": "/s"}), &[]).is_err());
