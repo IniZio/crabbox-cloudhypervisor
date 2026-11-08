@@ -12,6 +12,7 @@ use crate::vm::spec::{firmware_cache_path, image_cache_path};
 /// A config rooted in `root` whose tools all succeed.
 fn config(root: &Path) -> Config {
     let tool = PathBuf::from("/bin/true");
+    let passt = fake_tool(root, "fake-passt", "  --vhost-user  vhost-user mode");
     Config {
         state_dir: root.join("state"),
         runtime_dir: root.join("run"),
@@ -35,7 +36,7 @@ fn config(root: &Path) -> Config {
             sha256: "fedcba9876543210fedc".to_owned(),
         },
         cloud_hypervisor: tool.clone(),
-        passt: tool.clone(),
+        passt,
         qemu_img: tool.clone(),
         ssh: tool.clone(),
         ssh_keygen: tool.clone(),
@@ -136,6 +137,24 @@ fn missing_cloud_hypervisor_fails_without_echoing_path() {
     assert!(r.contains("FAIL passt:"), "{r}");
     assert!(!r.contains("secret-ch"), "{r}");
     assert!(!r.contains("/nonexistent"), "{r}");
+}
+
+#[test]
+fn every_failing_check_names_its_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = config(dir.path());
+    c.passt = PathBuf::from("/nonexistent/passt");
+    c.qemu_img = PathBuf::from("/nonexistent/qemu-img");
+    let mut p = probes(dir.path());
+    p.kvm = dir.path().join("absent");
+    let (_, r) = report(&c, &p);
+    assert!(
+        r.contains("FAIL passt:") && r.contains("run `crabbox-cloudhypervisor install`"),
+        "{r}"
+    );
+    assert!(r.contains("install the qemu-utils package"), "{r}");
+    assert!(r.contains("kvm group"), "{r}");
+    assert!(r.contains(" rsync: ") && r.contains(" git: "), "{r}");
 }
 
 #[test]
@@ -349,8 +368,14 @@ fn dig_holes_is_reported_and_never_fails() {
 
 /// A `cloud-hypervisor` stand-in that prints `banner` for `--version`.
 fn fake_ch(dir: &Path, banner: &str) -> PathBuf {
+    fake_tool(dir, "fake-ch", banner)
+}
+
+/// An executable `name` in `dir` that prints `banner` whatever its arguments.
+fn fake_tool(dir: &Path, name: &str, banner: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let path = dir.join("fake-ch");
+    fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
     fs::write(&path, format!("#!/bin/sh\necho '{banner}'\n")).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path
@@ -392,4 +417,15 @@ fn an_unreadable_version_fails_the_checkpoint_check() {
     let (ok, r) = checkpoint_report("", true);
     assert!(!ok, "{r}");
     assert!(r.contains("FAIL checkpoints: "), "{r}");
+}
+
+#[test]
+fn a_passt_without_vhost_user_fails_with_the_install_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = config(dir.path());
+    c.passt = fake_tool(dir.path(), "distro-passt", "passt 0.0~git20240220");
+    let (ok, r) = report(&c, &probes(dir.path()));
+    assert!(!ok, "{r}");
+    assert!(r.contains("FAIL passt_vhost_user: "), "{r}");
+    assert!(r.contains("run `crabbox-cloudhypervisor install`"), "{r}");
 }

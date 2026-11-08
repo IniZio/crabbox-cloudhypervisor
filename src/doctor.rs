@@ -9,11 +9,13 @@ use std::process::{Command, Stdio};
 
 use crate::assets::{cache_state, CacheState};
 use crate::config::{Asset, Config};
+use crate::install::fix;
 use crate::scope::{Cgroup, Scopes};
 use crate::state::{LONGEST_SOCKET_NAME, RUN_DIR_NAME_LEN};
 use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
 
 mod checkpoints;
+mod passt;
 #[cfg(test)]
 mod tests;
 
@@ -92,10 +94,11 @@ pub fn run(config: &Config, diag: &mut dyn Write) -> Result<String, String> {
 /// Like [`run`] with injectable device paths.
 fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<String, String> {
     let mut checks = vec![
-        device("kvm", &probes.kvm, Level::Fail),
+        kvm(&probes.kvm),
         device("vhost-vsock", &probes.vhost_vsock, Level::Warn),
     ];
     checks.extend(tool_checks(config));
+    checks.push(passt::vhost_user(&config.passt));
     if config.checkpoints {
         checks.push(checkpoints::hypervisor(&config.cloud_hypervisor));
     }
@@ -201,6 +204,16 @@ fn memory_pressure(config: &Config, probes: &Probes) -> Check {
     }
 }
 
+/// `/dev/kvm`, with the group fix when this user cannot open it.
+fn kvm(path: &Path) -> Check {
+    let mut check = device("kvm", path, Level::Fail);
+    if check.level == Level::Fail {
+        check.detail +=
+            "; add your user to the kvm group (sudo usermod -aG kvm $USER) and log in again";
+    }
+    check
+}
+
 /// Checks that a device node opens read+write; `missing` is the level when it does not.
 fn device(name: &'static str, path: &Path, missing: Level) -> Check {
     match OpenOptions::new().read(true).write(true).open(path) {
@@ -228,6 +241,9 @@ fn tool_checks(config: &Config) -> Vec<Check> {
         .collect();
     checks.push(tool("ssh-keygen", &config.ssh_keygen, "-?", false));
     checks.push(tool("setsid", Path::new("setsid"), "--version", false));
+    for name in ["rsync", "git"] {
+        checks.push(optional(name, "--version", "crabbox cannot sync work"));
+    }
     checks.push(dig_holes());
     checks
 }
@@ -254,17 +270,20 @@ fn dig_holes() -> Check {
 fn cache_checks(volume_dir: &Path) -> Vec<Check> {
     let mut checks: Vec<Check> = crate::volumes::ext4::TOOLS
         .iter()
-        .map(|name| {
-            let mut c = tool(name, Path::new(name), "-V", false);
-            if c.level == Level::Fail {
-                c.level = Level::Warn;
-                c.detail = format!("{name} not runnable; cache volumes are skipped");
-            }
-            c
-        })
+        .map(|name| optional(name, "-V", "cache volumes are skipped"))
         .collect();
     checks.push(cache_store(volume_dir));
     checks
+}
+
+/// A tool on PATH whose absence only degrades `lost`.
+fn optional(name: &'static str, flag: &str, lost: &str) -> Check {
+    let mut c = tool(name, Path::new(name), flag, false);
+    if c.level == Level::Fail {
+        c.level = Level::Warn;
+        c.detail = format!("{name} not runnable; {lost}; {}", fix(name));
+    }
+    c
 }
 
 /// Probes that the cache store can hard-link a generation into a lease's work
@@ -314,7 +333,7 @@ fn tool(name: &'static str, bin: &Path, flag: &str, need_success: bool) -> Check
         _ => Check::new(
             Level::Fail,
             name,
-            format!("configured {name} binary not runnable"),
+            format!("configured {name} binary not runnable; {}", fix(name)),
         ),
     }
 }

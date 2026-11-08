@@ -111,7 +111,7 @@ pub struct Config {
 }
 
 /// Environment lookup used for default directories.
-type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 impl Config {
     /// Parses `request.config` (object or null); defaults come from `env`.
@@ -146,8 +146,8 @@ impl Config {
             growth: growth(config, disk_gib)?,
             image: asset_key(config, "image", IMAGE_URL, IMAGE_SHA256)?,
             firmware: asset_key(config, "firmware", FIRMWARE_URL, FIRMWARE_SHA256)?,
-            cloud_hypervisor: bin_key(config, "cloudHypervisor", "cloud-hypervisor")?,
-            passt: bin_key(config, "passt", "passt")?,
+            cloud_hypervisor: installed(config, env, "cloudHypervisor", "cloud-hypervisor")?,
+            passt: installed(config, env, "passt", "passt")?,
             qemu_img: bin_key(config, "qemuImg", "qemu-img")?,
             ssh: bin_key(config, "ssh", "ssh")?,
             ssh_keygen: bin_key(config, "sshKeygen", "ssh-keygen")?,
@@ -296,6 +296,20 @@ fn path_key(config: &Value, key: &str) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// Reads binary `key`; its default is what `crabbox-cloudhypervisor install`
+/// put in place, else `name` on PATH.
+fn installed(config: &Value, env: Env<'_>, key: &str, name: &str) -> Result<PathBuf, String> {
+    let default = crate::install::bin_dir(env)
+        .map(|dir| dir.join(name))
+        .ok()
+        .filter(|path| path.is_file())
+        .map_or_else(
+            || name.to_owned(),
+            |path| path.to_string_lossy().into_owned(),
+        );
+    bin_key(config, key, &default)
+}
+
 /// Reads an optional non-empty binary path or name.
 fn bin_key(config: &Value, key: &str, default: &str) -> Result<PathBuf, String> {
     let Some(value) = get(config, key) else {
@@ -356,7 +370,7 @@ fn asset_key(config: &Value, key: &str, url: &str, sha256: &str) -> Result<Asset
 }
 
 /// True for 64 lowercase hex characters.
-fn is_sha256(s: &str) -> bool {
+pub(crate) fn is_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
@@ -366,7 +380,7 @@ fn abs_env(env: Env<'_>, name: &str) -> Option<PathBuf> {
 }
 
 /// `$XDG_*` base if set, else `$HOME/<fallback>`, then the app subdirectory.
-fn xdg_dir(env: Env<'_>, xdg: &str, fallback: &str) -> Result<PathBuf, String> {
+pub(crate) fn xdg_dir(env: Env<'_>, xdg: &str, fallback: &str) -> Result<PathBuf, String> {
     if let Some(base) = abs_env(env, xdg) {
         return Ok(base.join(APP_DIR));
     }
