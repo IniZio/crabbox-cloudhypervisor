@@ -12,6 +12,7 @@ pub mod config;
 pub mod doctor;
 pub mod grow;
 pub mod host;
+pub mod install;
 pub mod inventory;
 pub mod lease;
 /// Pause and resume operations.

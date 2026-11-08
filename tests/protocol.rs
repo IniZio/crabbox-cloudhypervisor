@@ -32,15 +32,19 @@ fn call(input: &str) -> (Value, i32) {
     (value, out.status.code().unwrap())
 }
 
-/// Runs `doctor` with every directory in `root` and every tool `/bin/true`,
-/// except for the `overrides` object merged into the config.
+/// Runs `doctor` with every directory in `root`, every tool `/bin/true` but a
+/// passt that offers vhost-user, then the `overrides` object merged in.
 fn doctor(root: &std::path::Path, overrides: &Value) -> (Value, i32) {
+    use std::os::unix::fs::PermissionsExt;
+    let passt = root.join("passt");
+    std::fs::write(&passt, "#!/bin/sh\necho '  --vhost-user'\n").unwrap();
+    std::fs::set_permissions(&passt, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut config = json!({
         "stateDir": root.join("state"),
         "runtimeDir": root.join("run"),
         "cacheDir": root.join("cache"),
         "cloudHypervisor": "/bin/true",
-        "passt": "/bin/true",
+        "passt": passt,
         "qemuImg": "/bin/true",
         "ssh": "/bin/true",
         "sshKeygen": "/bin/true",
