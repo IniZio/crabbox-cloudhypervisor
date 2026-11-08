@@ -4,6 +4,9 @@ NEXTEST_VERSION := 0.9.148
 TAPLO_VERSION := 0.10.0
 TYPOS_VERSION := 1.51.1
 LLVM_COV_VERSION := 0.9.1
+# Distro passt predates --vhost-user; releases ship this rev built static.
+PASST_REV := a9c61ffaf15347b8dfcc2347c5440e4b0e82333b
+PASST_SHA256 := cf4746812d3e2461f7582b7b8089591ce4e8b9d1f45beb28d9c177c365346907
 
 .PHONY: help coverage setup secret audit lint format format-check fmt-check test unit ci build deploy
 
@@ -62,9 +65,13 @@ build:
 	cargo build --release --locked
 
 deploy:
-	@echo "deploy: release binaries are not published yet"
+	@echo "deploy: push a v<version> tag; .github/workflows/release.yaml publishes the release"
 
 # Single source of the pins for CI's install-action step.
 .PHONY: print-tool-versions
 print-tool-versions:
 	@echo "cargo-deny@$(DENY_VERSION),cargo-machete@$(MACHETE_VERSION),cargo-nextest@$(NEXTEST_VERSION),taplo@$(TAPLO_VERSION),typos@$(TYPOS_VERSION)"
+
+.PHONY: print-passt
+print-passt:
+	@echo "$(PASST_REV) $(PASST_SHA256)"

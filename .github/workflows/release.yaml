@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yaml
+      - install.sh
+      - Makefile
+
+concurrency:
+  group: release-${{ github.ref }}
+  # A cancel mid-publish would leave a release without some of its assets.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag matches Cargo.toml
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          [ "$TAG" = "v$version" ] || { echo "::error::tag $TAG does not match Cargo.toml version $version"; exit 1; }
+      - run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: draft
+    if: always() && (needs.draft.result == 'success' || github.event_name == 'pull_request')
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || 'v0.0.0-check' }}
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - name: Install a musl C compiler
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Build passt at the pinned rev, static
+        run: |
+          read -r rev sha < <(make -s print-passt)
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/passt.tar.gz" "https://passt.top/passt/snapshot/passt-$rev.tar.gz"
+          echo "$sha  $RUNNER_TEMP/passt.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/passt"
+          tar -xzf "$RUNNER_TEMP/passt.tar.gz" -C "$RUNNER_TEMP/passt" --strip-components=1
+          make -C "$RUNNER_TEMP/passt" -j"$(nproc)" static
+          "$RUNNER_TEMP/passt/passt" --help | grep -q -- --vhost-user
+          file "$RUNNER_TEMP/passt/passt" | grep -Eq 'static(ally|-pie) linked' || { echo "::error::passt is not static"; exit 1; }
+      - name: Package
+        run: |
+          mkdir -p dist
+          asset=crabbox-cloudhypervisor-$TARGET.tar.gz
+          tar -czf "dist/$asset" -C "target/$TARGET/release" crabbox-cloudhypervisor
+          cp "$RUNNER_TEMP/passt/passt" "dist/passt-${{ matrix.arch }}-linux"
+          cd dist
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+      - name: The adapter runs and reads its own release
+        run: |
+          tar -xzf "dist/crabbox-cloudhypervisor-$TARGET.tar.gz" -C "$RUNNER_TEMP"
+          file "$RUNNER_TEMP/crabbox-cloudhypervisor" | grep -Eq 'static(ally|-pie) linked' || { echo "::error::the adapter is not static"; exit 1; }
+          "$RUNNER_TEMP/crabbox-cloudhypervisor" bogus 2>&1 | grep -q 'usage: crabbox-cloudhypervisor \[install|doctor'
+      - name: Upload
+        if: github.event_name == 'push'
+        run: gh release upload "$TAG" dist/* ${{ matrix.arch == 'x86_64' && 'install.sh' || '' }} --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - run: gh release edit "$TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
