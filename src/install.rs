@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::assets::sha256_file;
 use crate::config::{is_sha256, xdg_dir, Env};
+use crate::register;
 
 #[cfg(test)]
 mod tests;
@@ -191,7 +192,15 @@ pub fn fix(tool: &str) -> String {
     )
 }
 
-/// `crabbox-cloudhypervisor install`: the pinned binaries, then what the host still lacks.
+/// This binary's absolute path, which is what crabbox's config must name.
+pub fn adapter_path() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .map_err(|e| format!("find this binary's path: {e}"))
+}
+
+/// `crabbox-cloudhypervisor install`: the pinned binaries, what the host still lacks,
+/// then the adapter's entry in crabbox's config.
 pub fn run(env: Env<'_>) -> Result<String, String> {
     let dir = bin_dir(env)?;
     let mut lines = vec![
@@ -200,6 +209,13 @@ pub fn run(env: Env<'_>) -> Result<String, String> {
     ];
     for (tool, _) in missing_packages(OsStr::new(&env("PATH").unwrap_or_default())) {
         lines.push(format!("missing {tool}: {}", fix(tool)));
+    }
+    match register::register(env, &adapter_path()?) {
+        Ok(line) => lines.push(line),
+        Err(e) => {
+            lines.push(e);
+            return Err(lines.join("\n"));
+        }
     }
     lines.push("next: crabbox-cloudhypervisor doctor".to_owned());
     Ok(lines.join("\n"))

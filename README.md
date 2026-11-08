@@ -60,8 +60,11 @@ the passt pinned in the `Makefile`, their `.sha256` files and `install.sh`.
 
 ## crabbox config
 
-Put this in your trusted user config (not the repository config). Use the
-absolute path of the binary.
+`install` writes this into your trusted user config (`$CRABBOX_CONFIG`, else
+`$XDG_CONFIG_HOME/crabbox/config.yaml`), keeping every other key. It refuses and
+names the line to change when the config already selects another provider, and
+`doctor` checks that the config selects this adapter. To write it by hand, use
+the absolute path of the binary.
 
 ```yaml
 provider: external

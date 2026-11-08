@@ -430,3 +430,21 @@ fn a_passt_without_vhost_user_fails_with_the_install_fix() {
     assert!(r.contains("FAIL passt_vhost_user: "), "{r}");
     assert!(r.contains("run `crabbox-cloudhypervisor install`"), "{r}");
 }
+
+#[test]
+fn the_crabbox_config_check_fails_with_the_install_fix_until_registered() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_owned();
+    let env = move |k: &str| (k == "XDG_CONFIG_HOME").then(|| root.clone());
+    let before = super::registered::registration(&env);
+    assert_eq!(before.level, Level::Fail);
+    assert!(
+        before
+            .detail
+            .ends_with("run `crabbox-cloudhypervisor install`"),
+        "{}",
+        before.detail
+    );
+    crate::register::register(&env, &crate::install::adapter_path().unwrap()).unwrap();
+    assert_eq!(super::registered::registration(&env).level, Level::Ok);
+}
