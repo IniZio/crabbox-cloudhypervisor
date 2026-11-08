@@ -103,12 +103,15 @@ impl RealBackend {
     }
 
     /// Snapshots the VM to disk, then stops cloud-hypervisor and passt.
+    /// A running guest first drops its caches, so the snapshot and the memory
+    /// a resume needs hold only what the guest uses.
     /// A VM that was running keeps running if the snapshot cannot be taken;
     /// one found paused (by an older adapter) is left as it was found.
     pub(super) fn suspend(&self, record: &LeaseRecord, diag: &mut dyn Write) -> Result<(), String> {
         self.forget_publish_record(&record.lease_id);
         let was_running = Self::power_of(record) == Power::Running;
         if was_running {
+            self.tidy_guest(record, super::hygiene::SUSPEND_LIMIT, diag);
             self.pause_vm(record, diag)?;
         }
         let result = self.snapshot_and_stop(record, diag);

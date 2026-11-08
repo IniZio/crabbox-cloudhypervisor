@@ -1,9 +1,9 @@
-//! Guest hygiene before a checkpoint: flush and drop what the guest only
-//! caches, so the snapshot's memory image and disk copy hold less.
+//! Guest hygiene before a checkpoint or a suspend: flush and drop what the
+//! guest only caches, so the snapshot's memory image and disk copy hold less.
 //!
 //! The guest reports free pages to the host lazily, so after the drop the
 //! host's resident memory of cloud-hypervisor is polled until it stops falling.
-//! Nothing here can fail a checkpoint; a guest that cannot be tidied is
+//! Nothing here can fail a snapshot; a guest that cannot be tidied is
 //! snapshotted as it is.
 
 #[cfg(test)]
@@ -22,8 +22,11 @@ use crate::state::LeaseRecord;
 /// compact free memory so free-page reporting can hand whole blocks back.
 pub(super) const GUEST_SCRIPT: &str =
     "sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory'";
-/// Longest the guest command may run.
-const GUEST_LIMIT: Duration = Duration::from_secs(60);
+/// Longest the guest command may run before a checkpoint.
+pub(super) const CHECKPOINT_LIMIT: Duration = Duration::from_secs(60);
+/// Longest the guest command may run before a suspend, which crabbox gives two
+/// minutes in all, snapshot included.
+pub(super) const SUSPEND_LIMIT: Duration = Duration::from_secs(15);
 /// Time between samples of the VMM's resident memory.
 const POLL: Duration = Duration::from_millis(500);
 /// Longest the settle wait lasts.
@@ -93,8 +96,9 @@ fn gib(bytes: u64) -> String {
 }
 
 impl RealBackend {
-    /// Tidies the running guest for a checkpoint; failures are only logged.
-    pub(super) fn tidy_guest(&self, record: &LeaseRecord, diag: &mut dyn Write) {
+    /// Tidies the running guest for a snapshot, its command killed after
+    /// `limit`; failures are only logged.
+    pub(super) fn tidy_guest(&self, record: &LeaseRecord, limit: Duration, diag: &mut dyn Write) {
         let c = &self.config;
         let ssh = spec::guest_ssh(
             &c.ssh,
@@ -103,8 +107,8 @@ impl RealBackend {
             &c.state_dir,
             &record.lease_id,
         );
-        if let Err(e) = ssh.output(GUEST_SCRIPT, GUEST_LIMIT) {
-            let _ = writeln!(diag, "warn: guest not tidied before the checkpoint: {e}");
+        if let Err(e) = ssh.output(GUEST_SCRIPT, limit) {
+            let _ = writeln!(diag, "warn: guest not tidied before the snapshot: {e}");
             return;
         }
         let pid = record.ch_pid;

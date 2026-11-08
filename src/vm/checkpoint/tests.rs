@@ -407,7 +407,7 @@ fn the_guest_is_tidied_before_the_pause_and_a_failed_tidy_never_fails_the_checkp
     api.finish();
     let diag = String::from_utf8(diag).unwrap();
     let tidy = diag
-        .find("warn: guest not tidied before the checkpoint")
+        .find("warn: guest not tidied before the snapshot")
         .unwrap();
     assert!(tidy < diag.find("vm paused").unwrap(), "{diag}");
     assert_files(&b);

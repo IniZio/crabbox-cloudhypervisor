@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{settle, Settled, CAP, GUEST_SCRIPT, STEADY_BYTES, STEADY_RUN};
+use super::{settle, Settled, CAP, CHECKPOINT_LIMIT, GUEST_SCRIPT, STEADY_BYTES, STEADY_RUN};
 use crate::vm::tests::{config, record};
 use crate::vm::RealBackend;
 
@@ -111,7 +111,7 @@ fn the_script_runs_over_the_leases_own_ssh_and_memory_is_logged() {
     let mut rec = record("a");
     rec.ch_pid = Some(std::process::id());
     let mut diag = Vec::new();
-    b.tidy_guest(&rec, &mut diag);
+    b.tidy_guest(&rec, CHECKPOINT_LIMIT, &mut diag);
     assert_eq!(
         fs::read_to_string(&seen).unwrap(),
         format!("{GUEST_SCRIPT}\n")
@@ -127,11 +127,11 @@ fn a_guest_that_cannot_be_tidied_is_logged_and_not_waited_on() {
     let mut rec = record("a");
     rec.ch_pid = Some(std::process::id());
     let mut diag = Vec::new();
-    b.tidy_guest(&rec, &mut diag);
+    b.tidy_guest(&rec, CHECKPOINT_LIMIT, &mut diag);
     let diag = String::from_utf8(diag).unwrap();
     assert_eq!(
         diag,
-        "warn: guest not tidied before the checkpoint: permission denied\n"
+        "warn: guest not tidied before the snapshot: permission denied\n"
     );
 }
 
@@ -140,7 +140,7 @@ fn a_vm_whose_memory_cannot_be_read_is_not_waited_on() {
     let root = tempfile::tempdir().unwrap();
     let b = backend_with_ssh(root.path(), "exit 0");
     let mut diag = Vec::new();
-    b.tidy_guest(&record("a"), &mut diag);
+    b.tidy_guest(&record("a"), CHECKPOINT_LIMIT, &mut diag);
     let diag = String::from_utf8(diag).unwrap();
     assert!(diag.contains("vm memory unreadable"), "{diag}");
 }

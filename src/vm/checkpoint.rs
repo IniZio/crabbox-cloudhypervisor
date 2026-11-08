@@ -176,7 +176,7 @@ impl RealBackend {
         mkdir_private(&tmp)?;
         let lock = layers::begin(&tmp)?;
         let tidying = Instant::now();
-        self.tidy_guest(record, diag);
+        self.tidy_guest(record, super::hygiene::CHECKPOINT_LIMIT, diag);
         timing::step(diag, "tidy", tidying.elapsed(), "running");
         let pausing = Instant::now();
         let handed = self
