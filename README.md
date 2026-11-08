@@ -383,7 +383,11 @@ earlier pin when a response omits it; upstream crabbox ignores it.
 
 ## Pause and resume
 
-- `pause` always suspends to disk: `vm.pause`, then `vm.snapshot` into
+- `pause` always suspends to disk. First a running guest flushes and drops its
+  page, dentry and inode caches over ssh, killed after 15 s. The adapter then
+  waits up to 10 s for the freed pages to reach the host. So the snapshot and
+  `resumeMemoryMiB` hold only what the guest uses. A guest that cannot be
+  reached is snapshotted as it is, with a warning. Then `vm.pause`, `vm.snapshot` into
   `<stateDir>/leases/<leaseId>/snap`, then it stops cloud-hypervisor and passt,
   so the guest's RAM goes back to the host, and only then deallocates the
   snapshot's zero-filled ranges. The lease status becomes `suspended`. The
