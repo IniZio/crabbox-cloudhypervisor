@@ -31,6 +31,7 @@ impl RealBackend {
             ssh: self.config.ssh.clone(),
             balloon: self.config.balloon.clone(),
             memory_mib: self.record_size(record)?.memory_mib,
+            cache_dir: Some(self.config.cache.volume_dir.clone()),
         };
         let json = serde_json::to_vec(&watch).map_err(|e| format!("encode watch spec: {e}"))?;
         fs::OpenOptions::new()

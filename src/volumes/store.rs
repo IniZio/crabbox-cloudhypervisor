@@ -164,6 +164,8 @@ pub struct Store {
     qemu_img: PathBuf,
     /// Least host free space a publish leaves, GiB; 0 turns the floor off.
     host_floor_gib: u64,
+    /// Size of each cache disk, bytes; never below the group or its generation.
+    disk_bytes: u64,
 }
 
 /// Unix nanoseconds of `t`; 0 before the epoch.
@@ -293,6 +295,7 @@ impl Store {
             ttl: Duration::from_secs(cfg.key_ttl_days.saturating_mul(86_400)),
             qemu_img: qemu_img.to_path_buf(),
             host_floor_gib: cfg.host_floor_gib,
+            disk_bytes: cfg.grow_max_gib.saturating_mul(GIB),
         }
     }
 

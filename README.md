@@ -114,6 +114,7 @@ All keys go under `external.config`. All are optional.
 | `cacheVolumeDir` | `<stateDir>/volumes` | cache volume store (absolute path) |
 | `cacheStoreMaxGB` | `200` | store budget in GiB; least recently used groups go first above it |
 | `cacheMaxVolumeGB` | `40` | largest group filesystem in GiB |
+| `cacheGrowMaxGB` | `256` | size of each cache disk in GiB; its filesystem grows into it while the Box runs |
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 | `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
 | `vmmOverheadMiB` | `512` | MiB a VM scope may use above the VM memory, for cloud-hypervisor itself (at least 64) |
@@ -229,6 +230,13 @@ short, without a reboot:
   host free space at every grow, since images are sparse. Otherwise the disk
   stays as it is, and `list` and `resolve` report why in the lease's
   `growthBlocked` field.
+- **Cache filesystems.** Each cache disk is `cacheGrowMaxGB` long but its
+  filesystem starts at the group's size. When free space on a cache mount falls
+  below the same floor, the guest runs `resize2fs` to grow it by the same step,
+  up to the end of its disk. The VMM is not involved, so this works for qcow2
+  overlays, which `vm.resize-disk` refuses ("resize not supported with backing
+  files"). The same host free-space rule applies, read for the filesystem
+  holding the cache disks. A refused grow is logged.
 
 ## Memory while a Box runs
 
@@ -278,8 +286,12 @@ acquire. A path is `~/<rel>` (the login home `/home/crabbox`, never
   keep the mounts. Missing path parents are created for the login user. Every
   cache mount is ordered before `docker.service` and `containerd.service`.
 - **Size.** A group's filesystem is the sum of its declared `sizeGB`, at least
-  20 GiB, at most `cacheMaxVolumeGB`. The image is sparse, so only used blocks
-  take host space.
+  20 GiB, at most `cacheMaxVolumeGB`. Its disk is `cacheGrowMaxGB` (or the
+  filesystem, if larger), and the filesystem grows into it while the Box runs.
+  Publish extends each generation to the disk size, so the next lease's
+  overlay is as large and never reads past its backing file. A lease restored
+  from an older, smaller generation keeps that size until the next publish.
+  Images are sparse, so only used blocks take host space.
 - **Restore.** A new lease gets a qcow2 overlay over the group's newest
   generation, attached with `backing_files=on`. The overlay starts near empty
   and holds only what the lease writes, on any host filesystem, so restore
