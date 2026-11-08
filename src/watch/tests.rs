@@ -8,6 +8,8 @@ use std::process::Command;
 use super::*;
 use crate::grow::GIB;
 
+mod cache;
+
 /// Growth limits for a 10 GiB, 2 vCPU, 2 GiB guest.
 const GROWTH: Growth = Growth {
     disk_max_gib: Some(30),
@@ -46,6 +48,8 @@ struct Fake {
     wakes: RefCell<Vec<Result<bool, String>>>,
     /// Error for `set_balloon`, if any.
     balloon_error: Option<String>,
+    /// Cache filesystems the guest reports.
+    caches: RefCell<Vec<CacheFs>>,
 }
 
 impl Fake {
@@ -65,6 +69,7 @@ impl Fake {
             calls: RefCell::new(Vec::new()),
             wakes: RefCell::new(Vec::new()),
             balloon_error: None,
+            caches: RefCell::new(Vec::new()),
         }
     }
 
@@ -131,6 +136,27 @@ impl Machine for Fake {
             .borrow_mut()
             .push(format!("balloon {}", bytes / (1024 * 1024)));
         self.balloon_error.clone().map_or(Ok(()), Err)
+    }
+
+    fn cache_samples(&self) -> Result<Vec<CacheFs>, String> {
+        Ok(self.caches.borrow().clone())
+    }
+
+    fn cache_host_space(&self) -> Result<(u64, u64), String> {
+        Ok((self.host_free, self.host_total))
+    }
+
+    fn grow_cache(&self, mount: &str, bytes: u64) -> Result<u64, String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("grow_cache {mount} {}", bytes / GIB));
+        for c in self.caches.borrow_mut().iter_mut() {
+            if c.mount == mount {
+                c.fs_avail += bytes - c.fs_size;
+                c.fs_size = bytes;
+            }
+        }
+        Ok(bytes)
     }
 
     fn grow_fs(&self) -> Result<u64, String> {

@@ -138,6 +138,9 @@ impl Store {
         host::flatten_private(&self.qemu_img, copy.format.qemu_format(), &copy.image, flat)
             .map_err(rejected)?;
         check(flat).map_err(rejected)?;
+        // The next lease's overlay is as large as this generation, and a chain
+        // must never reach past its base, so the generation spans the whole disk.
+        host::grow(flat, self.disk_bytes.max(group.capacity)).map_err(rejected)?;
         let bytes = ext4::allocated(flat).map_err(rejected)?;
         self.check_regression(group, published, bytes)?;
         let generation = self

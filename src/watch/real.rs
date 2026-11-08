@@ -6,10 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::SAMPLE_SCRIPT;
-use super::{parse_sample, watch_loop, Log, Machine, WatchSpec, GROW_FS_SCRIPT, INTERVAL};
+use super::{
+    grow_cache_script, parse_cache_samples, parse_fs_bytes, parse_sample, watch_loop, Log, Machine,
+    WatchSpec, CACHE_SAMPLE_SCRIPT, GROW_FS_SCRIPT, INTERVAL,
+};
 use crate::balloon::Inflator;
 use crate::ch::ChClient;
-use crate::grow::{Current, Planner, Sample};
+use crate::grow::{CacheFs, Current, Planner, Sample};
 use crate::psi::{self, Psi};
 use crate::ready::ReadyProbe;
 use crate::state::{self, LeaseRecord, Store};
@@ -30,6 +33,8 @@ struct RealMachine {
     ssh: ReadyProbe,
     /// Root disk image.
     disk: PathBuf,
+    /// Host directory holding the cache disks.
+    cache_dir: PathBuf,
     /// Where a blocked disk grow is recorded for the lease status.
     blocked: PathBuf,
     /// Registered memory pressure trigger; `None` when ballooning is off.
@@ -61,6 +66,22 @@ impl Machine for RealMachine {
     fn host_space(&self) -> Result<(u64, u64), String> {
         let dir = self.disk.parent().unwrap_or_else(|| Path::new("/"));
         crate::host::space(dir)
+    }
+
+    fn cache_samples(&self) -> Result<Vec<CacheFs>, String> {
+        parse_cache_samples(&self.ssh.output(CACHE_SAMPLE_SCRIPT, SAMPLE_LIMIT)?)
+    }
+
+    fn cache_host_space(&self) -> Result<(u64, u64), String> {
+        crate::host::space(&self.cache_dir)
+    }
+
+    fn grow_cache(&self, mount: &str, bytes: u64) -> Result<u64, String> {
+        parse_fs_bytes(
+            &self
+                .ssh
+                .output(&grow_cache_script(mount, bytes), GROW_FS_LIMIT)?,
+        )
     }
 
     fn set_blocked(&self, reason: Option<&str>) {
@@ -116,6 +137,10 @@ pub fn run(lease_id: &str, state_dir: &Path, out: &mut dyn Write) -> Result<(), 
     let machine = RealMachine {
         client: ChClient::new(&record.api_socket()),
         ssh: spec::guest_ssh(&watch.ssh, &store, &exe, state_dir, lease_id),
+        cache_dir: watch
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| state_dir.to_path_buf()),
         disk: store.disk_path(lease_id),
         blocked: store.grow_blocked_path(lease_id),
         record,

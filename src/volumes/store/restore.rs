@@ -54,8 +54,10 @@ impl Store {
         mkdir_private(&self.work_dir(lease_id))?;
         Self::touch(&dir);
         let raw = self.work_file(lease_id, &group.id, RAW_SUFFIX);
+        let disk = self.disk_bytes.max(group.capacity);
         let Some(newest) = generations(&dir).pop() else {
             ext4::make(&raw, group.capacity)?;
+            host::grow(&raw, disk)?;
             return Ok((Outcome::Empty, working_copy(raw, Format::Raw)?));
         };
         let outcome = Outcome::Restored {
@@ -64,6 +66,7 @@ impl Store {
         if too_small(group, &newest.path)? {
             host::clone_disk(&newest.path, &raw, 0)?;
             ext4::grow(&raw, group.capacity)?;
+            host::grow(&raw, disk)?;
             return Ok((outcome, working_copy(raw, Format::Raw)?));
         }
         let base = self.work_file(lease_id, &group.id, BASE_SUFFIX);

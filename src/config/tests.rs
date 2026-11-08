@@ -55,6 +55,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             volume_dir: PathBuf::from(state).join("volumes"),
             store_max_gib: 200,
             max_volume_gib: 40,
+            grow_max_gib: 256,
             key_ttl_days: 30,
             host_floor_gib: 20,
         },
@@ -387,6 +388,7 @@ fn cache_keys_are_read_and_checked() {
             volume_dir: PathBuf::from("/v"),
             store_max_gib: 50,
             max_volume_gib: 8,
+            grow_max_gib: 256,
             key_ttl_days: 3,
             host_floor_gib: 20,
         }

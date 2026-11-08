@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::balloon::{BalloonConfig, Inflator};
 use crate::config::Growth;
-use crate::grow::{Action, Current, Planner, Sample, GIB};
+use crate::grow::{Action, CacheAction, CacheFs, Current, Planner, Sample, GIB};
+use crate::volumes::{Token, MOUNT_ROOT};
 
 mod log;
 mod real;
@@ -39,6 +40,29 @@ fi
 out=$(sudo resize2fs "$src" 2>&1) || { echo "resize2fs: $out" | tr '\n' ' ' >&2; exit 1; }
 df -B1 --output=size / | tail -n 1"#;
 
+/// Guest command printing, per mounted cache disk, its mount point, block
+/// count, block size, free bytes and disk bytes. Numbers pass through as text.
+pub const CACHE_SAMPLE_SCRIPT: &str = r#"for m in /var/lib/crabbox-cache/*; do
+  mountpoint -q "$m" || continue
+  src=$(findmnt -no SOURCE "$m")
+  sudo dumpe2fs -h "$src" 2>/dev/null | awk -F: -v m="$m" \
+    -v a="$(df -B1 --output=avail "$m" | tail -n 1)" -v d="$(lsblk -bdno SIZE "$src")" \
+    '/^Block count:/{c=$2} /^Block size:/{s=$2} END{print m, c, s, a, d}'
+done"#;
+
+/// Guest command growing the ext4 filesystem at `mount` to `bytes`, rounded
+/// down to whole 4 KiB blocks; prints its new block count and block size.
+#[must_use]
+pub fn grow_cache_script(mount: &str, bytes: u64) -> String {
+    let kib = bytes / 4096 * 4;
+    format!(
+        r#"set -eu
+src=$(findmnt -no SOURCE '{mount}')
+out=$(sudo resize2fs "$src" {kib}K 2>&1) || {{ echo "resize2fs: $out" | tr '\n' ' ' >&2; exit 1; }}
+sudo dumpe2fs -h "$src" 2>/dev/null | awk -F: '/^Block count:/{{c=$2}} /^Block size:/{{s=$2}} END{{print c, s}}'"#
+    )
+}
+
 /// What the watcher reads at start, written next to the lease record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +75,9 @@ pub struct WatchSpec {
     pub balloon: BalloonConfig,
     /// The lease's class memory, MiB.
     pub memory_mib: u64,
+    /// Host directory holding the lease's cache disks.
+    #[serde(default)]
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// What the watcher needs from the VMM, the host and the guest; tests fake it.
@@ -72,6 +99,12 @@ pub trait Machine {
     fn grow_disk(&self, bytes: u64) -> Result<(), String>;
     /// Grows the root partition and filesystem; returns the new fs size, bytes.
     fn grow_fs(&self) -> Result<u64, String>;
+    /// The cache filesystems mounted in the guest.
+    fn cache_samples(&self) -> Result<Vec<CacheFs>, String>;
+    /// Free and total bytes of the host filesystem that holds the cache disks, read now.
+    fn cache_host_space(&self) -> Result<(u64, u64), String>;
+    /// Grows the cache filesystem at `mount` to `bytes`; returns its new size, bytes.
+    fn grow_cache(&self, mount: &str, bytes: u64) -> Result<u64, String>;
     /// Blocks up to `timeout`; true when host memory pressure fired. Without a
     /// pressure feed it only sleeps and returns false.
     fn wait(&self, timeout: Duration) -> Result<bool, String>;
@@ -113,7 +146,87 @@ pub fn tick(planner: &mut Planner, machine: &dyn Machine, log: &mut Log<'_>) -> 
             )),
         }
     }
+    for action in planner.plan_caches(&machine.cache_samples()?) {
+        match action {
+            CacheAction::Grow { mount, from, to } => grow_cache(machine, &mount, from, to, log),
+            CacheAction::AtDisk { mount, avail } => log.note(&format!(
+                "cache filesystem {mount} low on space ({} free) and fills its disk; not growing",
+                gib(avail)
+            )),
+        }
+    }
     Ok(())
+}
+
+/// Grows a cache filesystem when the host keeps its free floor after the step.
+fn grow_cache(machine: &dyn Machine, mount: &str, from: u64, to: u64, log: &mut Log<'_>) {
+    let need = to.saturating_sub(from);
+    match machine.cache_host_space() {
+        Ok((free, total)) => {
+            let floor = crate::host::host_floor(total, HOST_FLOOR_GIB);
+            if free.saturating_sub(need) < floor {
+                log.fail(format!(
+                    "grow failed: host filesystem holding cache {mount} has {} free; a {} grow must leave its floor of {}; cache stays at {}",
+                    gib(free),
+                    gib(need),
+                    gib(floor),
+                    gib(from)
+                ));
+                return;
+            }
+        }
+        Err(e) => {
+            log.fail(format!("grow failed: cannot read host free space: {e}"));
+            return;
+        }
+    }
+    match machine.grow_cache(mount, to) {
+        Ok(size) => log.note(&format!(
+            "grew cache filesystem {mount} {} -> {}",
+            gib(from),
+            gib(size)
+        )),
+        Err(e) => log.fail(format!("grow failed: cache filesystem {mount}: {e}")),
+    }
+}
+
+/// Parses [`CACHE_SAMPLE_SCRIPT`] output. A mount outside the cache root or a
+/// name that is not a group token is refused, since it reaches a guest command.
+pub fn parse_cache_samples(text: &str) -> Result<Vec<CacheFs>, String> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let bad = || format!("cache sample: cannot read {line:?}");
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let [mount, count, block, avail, disk] = words.as_slice() else {
+                return Err(bad());
+            };
+            let name = mount
+                .strip_prefix(MOUNT_ROOT)
+                .and_then(|r| r.strip_prefix('/'))
+                .ok_or_else(|| format!("cache sample: {mount} is not under {MOUNT_ROOT}"))?;
+            Token::parse(name).map_err(|e| format!("cache sample: {name} {e}"))?;
+            let num = |w: &str| w.parse::<u64>().map_err(|_| bad());
+            Ok(CacheFs {
+                mount: (*mount).to_owned(),
+                fs_size: num(count)?.saturating_mul(num(block)?),
+                fs_avail: num(avail)?,
+                disk_bytes: num(disk)?,
+            })
+        })
+        .collect()
+}
+
+/// Parses `<block count> <block size>` into bytes.
+pub fn parse_fs_bytes(text: &str) -> Result<u64, String> {
+    let nums: Vec<u64> = text
+        .split_whitespace()
+        .filter_map(|w| w.parse().ok())
+        .collect();
+    match nums.as_slice() {
+        [count, block] => Ok(count.saturating_mul(*block)),
+        _ => Err(format!("cannot read the new size from {:?}", text.trim())),
+    }
 }
 
 /// Smallest host free-space floor, GiB.

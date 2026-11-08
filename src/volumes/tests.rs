@@ -32,6 +32,7 @@ pub(crate) fn limits(max_volume_gib: u64) -> CacheConfig {
         volume_dir: PathBuf::from("/v"),
         store_max_gib: 200,
         max_volume_gib,
+        grow_max_gib: 0,
         key_ttl_days: 30,
         host_floor_gib: 0,
     }

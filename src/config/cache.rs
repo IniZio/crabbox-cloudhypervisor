@@ -14,6 +14,10 @@ pub struct CacheConfig {
     pub store_max_gib: u64,
     /// Largest group filesystem in GiB.
     pub max_volume_gib: u64,
+    /// Size of each cache disk in GiB. The filesystem starts at the group size
+    /// and the guest grows it into the rest; the disk is sparse.
+    #[serde(default)]
+    pub grow_max_gib: u64,
     /// Groups unused for this many days are removed.
     pub key_ttl_days: u64,
     /// Publish leaves the host at least this free, GiB; 0 turns the floor off.

@@ -125,7 +125,7 @@ pub fn make_overlay(
 }
 
 /// Grows `disk` to `size_bytes`; never shrinks it.
-fn grow(disk: &Path, size_bytes: u64) -> Result<(), String> {
+pub fn grow(disk: &Path, size_bytes: u64) -> Result<(), String> {
     let file = OpenOptions::new()
         .write(true)
         .open(disk)

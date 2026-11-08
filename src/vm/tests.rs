@@ -52,6 +52,7 @@ pub(super) fn config(root: &Path) -> Config {
             volume_dir: root.join("volumes"),
             store_max_gib: 200,
             max_volume_gib: 40,
+            grow_max_gib: 0,
             key_ttl_days: 30,
             host_floor_gib: 0,
         },

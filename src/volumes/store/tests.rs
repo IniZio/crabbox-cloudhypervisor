@@ -7,6 +7,7 @@ use crate::host;
 use crate::volumes::tests::{have_e2fsprogs, limits, noise};
 use crate::volumes::{Group, GuestPath, Volume};
 
+mod grow;
 mod overlay;
 mod publish;
 

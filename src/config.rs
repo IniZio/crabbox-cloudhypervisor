@@ -160,14 +160,7 @@ impl Config {
                 3600,
             )?),
             reap_stopped_after_hours: reap_stopped_after_hours(config)?,
-            cache: CacheConfig {
-                volume_dir: path_key(config, "cacheVolumeDir")?
-                    .unwrap_or_else(|| state_dir.join("volumes")),
-                store_max_gib: int_key(config, "cacheStoreMaxGB", 200, 1, u64::MAX)?,
-                max_volume_gib: int_key(config, "cacheMaxVolumeGB", 40, 1, u64::MAX)?,
-                key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
-                host_floor_gib: crate::watch::HOST_FLOOR_GIB,
-            },
+            cache: cache(config, &state_dir)?,
             cgroup: cgroup(config)?,
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
@@ -257,6 +250,19 @@ fn bool_key(config: &Value, key: &str, default: bool) -> Result<bool, String> {
     get(config, key).map_or(Ok(default), |v| {
         v.as_bool()
             .ok_or_else(|| format!("config.{key} must be true or false"))
+    })
+}
+
+/// Reads the cache volume keys.
+fn cache(config: &Value, state_dir: &Path) -> Result<CacheConfig, String> {
+    Ok(CacheConfig {
+        volume_dir: path_key(config, "cacheVolumeDir")?
+            .unwrap_or_else(|| state_dir.join("volumes")),
+        store_max_gib: int_key(config, "cacheStoreMaxGB", 200, 1, u64::MAX)?,
+        max_volume_gib: int_key(config, "cacheMaxVolumeGB", 40, 1, u64::MAX)?,
+        grow_max_gib: int_key(config, "cacheGrowMaxGB", 256, 1, u64::MAX)?,
+        key_ttl_days: int_key(config, "cacheKeyTtlDays", 30, 1, u64::MAX)?,
+        host_floor_gib: crate::watch::HOST_FLOOR_GIB,
     })
 }
 
