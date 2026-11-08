@@ -30,10 +30,24 @@ stdin/stdout) and supports `doctor`, `acquire`, `resolve`, `list`, `release`, `p
 ## Install
 
 ```sh
-cargo install --path .
-# or
-cargo build --release   # target/release/crabbox-cloudhypervisor
+curl -fsSL https://github.com/IniZio/crabbox-cloudhypervisor/releases/latest/download/install.sh | sh
+crabbox-cloudhypervisor install   # pinned cloud-hypervisor and passt, sha256-checked
+crabbox-cloudhypervisor doctor    # one line per check, each failure with its fix
 ```
+
+`install.sh` puts the adapter in `~/.local/bin`. `install` puts
+cloud-hypervisor v52.0-moor.1 and a static passt with `--vhost-user` in
+`$XDG_DATA_HOME/crabbox-cloudhypervisor/bin` (default
+`~/.local/share/crabbox-cloudhypervisor/bin`). The config uses them when
+`cloudHypervisor` and `passt` are not set. Rerunning `install` downloads only
+what is missing or changed. It never runs sudo or a package manager. It names
+the package for each missing host tool instead.
+
+From source: `cargo install --path .`, then `crabbox-cloudhypervisor install`.
+
+A release is cut by pushing a `v<version>` tag that matches `Cargo.toml`;
+`.github/workflows/release.yaml` builds the static x86_64 and aarch64 adapter,
+the passt pinned in the `Makefile`, their `.sha256` files and `install.sh`.
 
 ## crabbox config
 
@@ -44,7 +58,7 @@ absolute path of the binary.
 provider: external
 target: linux
 external:
-  command: /home/you/.cargo/bin/crabbox-cloudhypervisor
+  command: /home/you/.local/bin/crabbox-cloudhypervisor
   capabilities:
     idempotentLeaseId: true
   connection:
@@ -86,7 +100,8 @@ All keys go under `external.config`. All are optional.
 | `cacheDir` | `$XDG_CACHE_HOME/crabbox-cloudhypervisor` | downloaded assets (absolute path) |
 | `image` | pinned Ubuntu image | `{url, sha256}` override |
 | `firmware` | pinned CLOUDHV.fd | `{url, sha256}` override |
-| `cloudHypervisor`, `passt`, `qemuImg`, `ssh`, `sshKeygen`, `curl` | looked up on `PATH` | binary paths |
+| `cloudHypervisor`, `passt` | what `install` put in place, else `PATH` | binary paths |
+| `qemuImg`, `ssh`, `sshKeygen`, `curl` | looked up on `PATH` | binary paths |
 | `cacheVolumeDir` | `<stateDir>/volumes` | cache volume store (absolute path) |
 | `cacheStoreMaxGB` | `200` | store budget in GiB; least recently used groups go first above it |
 | `cacheMaxVolumeGB` | `40` | largest group filesystem in GiB |
