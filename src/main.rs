@@ -64,7 +64,9 @@ fn host_command(cmd: &str) -> ExitCode {
         crabbox_cloudhypervisor::install::run(&env)
     } else {
         crabbox_cloudhypervisor::config::Config::from_request(&serde_json::Value::Null, &env)
-            .and_then(|config| crabbox_cloudhypervisor::doctor::run(&config, &mut std::io::sink()))
+            .and_then(|config| {
+                crabbox_cloudhypervisor::doctor::run_host(&config, &env, &mut std::io::sink())
+            })
     };
     let (report, code) = match result {
         Ok(report) => (report, ExitCode::SUCCESS),

@@ -16,6 +16,10 @@ use crate::vm::spec::{base_raw_path, firmware_cache_path, image_cache_path};
 
 mod checkpoints;
 mod passt;
+mod registered;
+mod report;
+pub use registered::run_host;
+use report::{line, render};
 #[cfg(test)]
 mod tests;
 
@@ -93,10 +97,21 @@ pub fn run(config: &Config, diag: &mut dyn Write) -> Result<String, String> {
 
 /// Like [`run`] with injectable device paths.
 fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<String, String> {
-    let mut checks = vec![
+    run_checks(config, probes, Vec::new(), diag)
+}
+
+/// Runs the host checks after `first`.
+fn run_checks(
+    config: &Config,
+    probes: &Probes,
+    first: Vec<Check>,
+    diag: &mut dyn Write,
+) -> Result<String, String> {
+    let mut checks = first;
+    checks.extend([
         kvm(&probes.kvm),
         device("vhost-vsock", &probes.vhost_vsock, Level::Warn),
-    ];
+    ]);
     checks.extend(tool_checks(config));
     checks.push(passt::vhost_user(&config.passt));
     if config.checkpoints {
@@ -125,29 +140,6 @@ fn run_with(config: &Config, probes: &Probes, diag: &mut dyn Write) -> Result<St
     } else {
         Ok(report)
     }
-}
-
-/// One report line: `<tag> <name>: <detail>`.
-fn line(c: &Check) -> String {
-    let tag = match c.level {
-        Level::Ok => "ok",
-        Level::Warn => "warn",
-        Level::Fail => "FAIL",
-    };
-    format!("{tag} {}: {}", c.name, c.detail)
-}
-
-/// Formats the checks plus the summary line.
-fn render(checks: &[Check]) -> String {
-    let count = |level| checks.iter().filter(|c| c.level == level).count();
-    let mut lines: Vec<String> = checks.iter().map(line).collect();
-    lines.push(format!(
-        "doctor: {} ok, {} warn, {} fail",
-        count(Level::Ok),
-        count(Level::Warn),
-        count(Level::Fail)
-    ));
-    lines.join("\n")
 }
 
 /// Checks that VM scopes can be created and can carry CPU and memory limits.

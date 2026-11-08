@@ -22,6 +22,7 @@ pub mod proxy;
 pub mod psi;
 pub mod ready;
 pub mod reclaim;
+pub mod register;
 pub mod scope;
 pub mod seed;
 pub mod size;
