@@ -201,3 +201,32 @@ fn cache_units_and_commands_survive_yaml() {
         "touch /var/lib/crabbox-ready && sync"
     );
 }
+
+/// Units that start apt on their own and would hold the dpkg lock.
+const APT_JOBS: [&str; 5] = [
+    "apt-daily.timer",
+    "apt-daily-upgrade.timer",
+    "apt-daily.service",
+    "apt-daily-upgrade.service",
+    "unattended-upgrades.service",
+];
+
+#[test]
+fn every_boot_masks_the_image_s_own_apt_jobs_before_anything_runs_apt() {
+    let Some(doc) = yaml_as_json(&user_data(&params())) else {
+        return;
+    };
+    let boot = doc["bootcmd"].as_array().expect("bootcmd runs every boot");
+    let masks = boot
+        .iter()
+        .filter_map(|c| c.as_array())
+        .find(|c| c.iter().any(|a| a == "mask"))
+        .expect("a mask command");
+    assert!(masks.iter().any(|a| a == "--now"), "{masks:?}");
+    for unit in APT_JOBS {
+        assert!(
+            masks.iter().any(|a| a == unit),
+            "{unit} not masked: {masks:?}"
+        );
+    }
+}

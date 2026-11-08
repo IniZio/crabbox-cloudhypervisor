@@ -5,6 +5,7 @@
 use std::fmt::Write as _;
 
 use crate::backend::SSH_USER;
+use crate::seed::APT_JOBS;
 use crate::vm::spec::shell_quote;
 use crate::volumes::guest::GuestSetup;
 
@@ -62,12 +63,15 @@ fn put(path: &str, mode: &str, content: &str) -> String {
 }
 
 /// The rotation script, run as root. Identity steps stop on the first error;
-/// per-lease commands, like cloud-init's runcmd, only report theirs.
+/// per-lease commands, like cloud-init's runcmd, only report theirs. The apt
+/// jobs are masked before the clock steps forward, which would fire their
+/// missed runs, so a snapshot taken before they were masked is covered too.
 #[must_use]
 pub(super) fn script(id: &Identity) -> String {
     let host = shell_quote(&id.hostname);
     let mut s = format!(
-        "set -eu\n{PUT}\ndate -s @{} >/dev/null\nprintf %s {} | base64 -d >/dev/urandom\n",
+        "set -eu\n{PUT}\nsystemctl mask --now {} || echo 'crabbox: failed: masking apt jobs' >&2\ndate -s @{} >/dev/null\nprintf %s {} | base64 -d >/dev/urandom\n",
+        APT_JOBS.join(" "),
         id.epoch,
         base64(&id.entropy)
     );

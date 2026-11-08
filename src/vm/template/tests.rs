@@ -237,6 +237,25 @@ fn the_rotation_script_sets_every_identity_piece_and_the_key_last() {
     );
 }
 
+#[test]
+fn the_rotation_script_masks_apt_jobs_before_the_clock_jump_can_fire_them() {
+    let s = script(&Identity::default());
+    let lines: Vec<&str> = s.lines().collect();
+    let mask = lines
+        .iter()
+        .position(|l| l.starts_with("systemctl mask --now"))
+        .expect("apt jobs masked");
+    for unit in [
+        "apt-daily.timer",
+        "apt-daily-upgrade.timer",
+        "unattended-upgrades.service",
+    ] {
+        assert!(lines[mask].contains(unit), "{unit}:\n{s}");
+    }
+    let clock = lines.iter().position(|l| l.starts_with("date -s")).unwrap();
+    assert!(mask < clock, "masked before the clock steps:\n{s}");
+}
+
 /// A lease with a live stand-in cloud-hypervisor and key files, a template
 /// dir, and an ssh script that logs argv and, once `deny` exists, refuses the
 /// bootstrap key on `true`.
