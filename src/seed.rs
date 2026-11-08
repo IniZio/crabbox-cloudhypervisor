@@ -31,6 +31,16 @@ const HOTADD_RULES: &str = r#"      SUBSYSTEM=="cpu", ACTION=="add", TEST=="onli
       SUBSYSTEM=="memory", ACTION=="add", TEST=="state", ATTR{state}=="offline", ATTR{state}="online"
 "#;
 
+/// The image's own apt jobs. Masked so they never hold the dpkg lock while a lease runs
+/// apt: a lease is thrown away, and updates come with a new image.
+pub(crate) const APT_JOBS: [&str; 5] = [
+    "apt-daily.timer",
+    "apt-daily-upgrade.timer",
+    "apt-daily.service",
+    "apt-daily-upgrade.service",
+    "unattended-upgrades.service",
+];
+
 /// Values substituted into the cloud-init documents.
 pub struct SeedParams<'a> {
     /// cloud-init instance id (new id per lease regenerates host keys).
@@ -98,6 +108,7 @@ pub fn user_data(params: &SeedParams<'_>) -> String {
     let host_priv = indented_key(params.host_private_key);
     let files = file_entries(params.files);
     let commands = command_entries(params.commands);
+    let apt_jobs = APT_JOBS.join(", ");
     format!(
         r"#cloud-config
 users:
@@ -108,6 +119,8 @@ users:
     ssh_authorized_keys:
       - {key}
 ssh_pwauth: false
+bootcmd:
+  - [systemctl, mask, --now, {apt_jobs}]
 ssh_deletekeys: true
 ssh_genkeytypes: []
 ssh_keys:

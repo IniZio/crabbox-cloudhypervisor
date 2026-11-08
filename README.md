@@ -382,7 +382,13 @@ cloud-init (sshd offers only that key). Every `acquire`, `resolve` and `resume`
 returns it as `ssh.hostKey` (`ssh-ed25519 AAAA...`, no hostname or comment), so
 it never rotates. The provider uses it for its own readiness check. The crabbox
 fork (branch `moor/main`) pins `ssh.hostKey` for the lease and keeps enforcing an
-earlier pin when a response omits it; upstream crabbox ignores it.
+earlier pin when a response omits it. Upstream crabbox ignores it.
+
+Every boot masks the image's own apt jobs (`apt-daily`, `apt-daily-upgrade` and
+`unattended-upgrades`), so they never hold the dpkg lock while a repo's setup
+runs apt. A lease restored from a boot template or a checkpoint masks them again
+before its clock steps to host time. The clock step would otherwise fire their
+missed runs. Leases are thrown away, so updates come with a new image.
 
 ## Pause and resume
 
