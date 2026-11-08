@@ -230,7 +230,7 @@ fn release_collects_a_superseded_generation_without_cleanup() {
     let aged = old.with_file_name("gen-0000000000000000001-first000.img");
     fs::rename(&old, &aged).unwrap();
     let newer = aged.with_file_name("gen-0000000000000000002-second00.img");
-    fs::copy(&aged, &newer).unwrap();
+    crate::host::clone_disk(&aged, &newer, 0).unwrap();
     assert_eq!(generations(dir.path()), 2);
 
     lease_dir(dir.path(), "third");
