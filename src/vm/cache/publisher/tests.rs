@@ -159,14 +159,19 @@ fn a_pause_without_the_field_syncs_nothing_records_nothing_and_a_close_publishes
     l.backend.pause(&l.record, &mut Vec::new()).unwrap();
     api.join().unwrap();
     assert!(!l.record_path().exists());
-    assert_eq!(l.log("ssh.log"), "", "no sync");
+    let at_pause = l.log("ssh.log");
+    assert!(!at_pause.contains("sync -f"), "no cache sync");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(l.log("exe.log"), "", "no publisher");
 
     let notes = l.close();
     assert!(notes.contains("cache group g1: discarded"), "{notes}");
     assert_eq!(l.generations("g1"), 0);
-    assert_eq!(l.log("ssh.log"), "", "closing a sleeper reaches no guest");
+    assert_eq!(
+        l.log("ssh.log"),
+        at_pause,
+        "closing a sleeper reaches no guest"
+    );
 }
 
 struct AliveAtPublisher {

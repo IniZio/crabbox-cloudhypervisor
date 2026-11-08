@@ -290,3 +290,79 @@ fn resuming_takes_the_snapshots_allocated_memory_plus_overhead() {
     let got = backend.resume_memory_mib(&rec).unwrap();
     assert!((66..=70).contains(&got), "2 MiB allocated gave {got} MiB");
 }
+
+/// A [`disk_fixture`] whose guest ssh runs `body`, appending each remote command to the
+/// returned file.
+fn ssh_fixture(
+    dir: &Path,
+    ch: &FakeCh,
+    body: &str,
+) -> (RealBackend, LeaseRecord, std::path::PathBuf) {
+    let (_, rec) = disk_fixture(dir, Some(ch));
+    let seen = dir.join("ssh-seen");
+    let mut cfg = crate::vm::tests::config(dir);
+    cfg.ssh = dir.join("ssh");
+    crate::test_exec::script(
+        &cfg.ssh,
+        &format!(
+            r#"for a; do last=$a; done; printf '%s\n' "$last" >> {}; {body}"#,
+            seen.display()
+        ),
+    );
+    (
+        RealBackend::new(cfg, std::path::PathBuf::from("/bin/cb")),
+        rec,
+        seen,
+    )
+}
+
+#[test]
+fn suspending_a_running_vm_drops_its_guest_caches_before_the_pause() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec, seen) = ssh_fixture(dir.path(), &ch, "exit 0");
+    let api = serve(&rec.api_socket(), pause_replies());
+    let mut diag = Vec::new();
+    backend.pause(&rec, &mut diag).unwrap();
+    api.join().unwrap();
+    let ran = std::fs::read_to_string(&seen).unwrap();
+    assert!(ran.contains("drop_caches"), "{ran}");
+    let text = String::from_utf8(diag).unwrap();
+    let tidied = text.find("guest tidied").expect("guest tidied");
+    let paused = text.find("vm paused").expect("vm paused");
+    assert!(tidied < paused, "{text}");
+    assert_eq!(backend.power(&rec), Power::Suspended);
+}
+
+#[test]
+fn a_guest_that_cannot_drop_its_caches_still_suspends() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec, _) = ssh_fixture(dir.path(), &ch, "echo 'no route' >&2; exit 255");
+    let api = serve(&rec.api_socket(), pause_replies());
+    let mut diag = Vec::new();
+    backend.pause(&rec, &mut diag).unwrap();
+    api.join().unwrap();
+    let text = String::from_utf8(diag).unwrap();
+    assert!(
+        text.contains("warn: guest not tidied before the snapshot: no route"),
+        "{text}"
+    );
+    assert_eq!(backend.power(&rec), Power::Suspended);
+}
+
+#[test]
+fn a_vm_found_paused_is_snapshotted_without_reaching_its_guest() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = FakeCh::spawn();
+    let (backend, rec, seen) = ssh_fixture(dir.path(), &ch, "exit 0");
+    let ok = NO_CONTENT.to_owned();
+    let api = serve(
+        &rec.api_socket(),
+        vec![info("Paused"), ok.clone(), ok.clone(), ok.clone(), ok],
+    );
+    backend.pause(&rec, &mut Vec::new()).unwrap();
+    api.join().unwrap();
+    assert!(!seen.exists(), "no guest command reaches a paused VM");
+    assert_eq!(backend.power(&rec), Power::Suspended);
+}
