@@ -24,6 +24,31 @@ pub enum Cgroup {
     Off,
 }
 
+/// A systemd slice unit that lease scopes are placed under (`config.cgroupSlice`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeSlice(String);
+
+impl ScopeSlice {
+    /// Accepts a non-empty slice unit name made of characters systemd allows in unit names.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        let allowed = |c: char| c.is_ascii_alphanumeric() || ":-_.\\".contains(c);
+        let stem = name.strip_suffix(".slice").unwrap_or("");
+        if stem.is_empty() || name.len() > 255 || !name.chars().all(allowed) {
+            return Err(format!(
+                "{name:?} is not a systemd slice name: use letters, digits and : - _ . \\ \
+                 only, ending in .slice, such as boxes.slice"
+            ));
+        }
+        Ok(Self(name.to_owned()))
+    }
+
+    /// The unit name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Which lease process a scope holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -86,11 +111,14 @@ pub fn unit(lease_id: &str, role: Role) -> String {
 /// No `--collect`: a scope the OOM killer stopped stays loaded as failed, so
 /// its `Result=oom-kill` can still be read until the lease is stopped.
 #[must_use]
-pub fn scope_argv(unit: &str, limits: Option<Limits>) -> Vec<OsString> {
+pub fn scope_argv(unit: &str, limits: Option<Limits>, slice: Option<&ScopeSlice>) -> Vec<OsString> {
     let mut argv: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet"]
         .map(str::to_owned)
         .to_vec();
     argv.push(format!("--unit={unit}"));
+    if let Some(s) = slice {
+        argv.push(format!("--slice={}", s.as_str()));
+    }
     if let Some(l) = limits {
         for p in [
             format!("CPUQuota={}%", u64::from(l.cpus) * 100),
@@ -126,6 +154,8 @@ pub fn memory_current(value: &str) -> Option<u64> {
 pub struct Scopes {
     /// Configured mode.
     pub mode: Cgroup,
+    /// Slice every scope joins; `None` leaves them in the user manager's default slice.
+    pub slice: Option<ScopeSlice>,
     /// The user manager's bus socket.
     pub bus: PathBuf,
     /// User name for the fix hint.
@@ -135,13 +165,14 @@ pub struct Scopes {
 impl Scopes {
     /// Scopes for the current user; the bus lives in `XDG_RUNTIME_DIR`, else `/run/user/<uid>`.
     #[must_use]
-    pub fn current(mode: Cgroup) -> Self {
+    pub fn current(mode: Cgroup, slice: Option<ScopeSlice>) -> Self {
         let uid = rustix::process::getuid().as_raw();
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map_or_else(|| PathBuf::from(format!("/run/user/{uid}")), PathBuf::from);
         let user = std::env::var("USER").unwrap_or_else(|_| uid.to_string());
         Self {
             mode,
+            slice,
             bus: runtime.join("bus"),
             user,
         }
@@ -174,7 +205,7 @@ impl Scopes {
             return Ok(Launch::plain(program, args));
         }
         self.check_bus()?;
-        let mut wrapped = scope_argv(&unit(lease_id, role), limits);
+        let mut wrapped = scope_argv(&unit(lease_id, role), limits, self.slice.as_ref());
         let runner = wrapped.remove(0);
         wrapped.push(program.as_os_str().to_owned());
         wrapped.extend_from_slice(args);

@@ -16,7 +16,7 @@ use crate::watch::WatchSpec;
 impl RealBackend {
     /// This user's scopes in the configured cgroup mode.
     pub(super) fn scopes(&self) -> Scopes {
-        Scopes::current(self.config.cgroup)
+        Scopes::current(self.config.cgroup, self.config.cgroup_slice.clone())
     }
 
     /// Writes the watch spec and spawns `<exe> watch <id> --state-dir <dir>`.

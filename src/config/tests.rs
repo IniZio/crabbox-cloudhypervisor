@@ -60,6 +60,7 @@ fn expected(state: &str, runtime: &str, cache: &str) -> Config {
             host_floor_gib: 20,
         },
         cgroup: crate::scope::Cgroup::Systemd,
+        cgroup_slice: None,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
@@ -413,6 +414,36 @@ fn removed_growth_keys_fail_to_load_and_say_why() {
             format!("config.{key} was removed: VMs now boot at their class size; delete it")
         );
     }
+}
+
+#[test]
+fn cgroup_slice_is_read_and_defaults_to_none() {
+    let c = parse(&json!({"cgroupSlice": "boxes.slice"}), HOME).unwrap();
+    assert_eq!(c.cgroup_slice.unwrap().as_str(), "boxes.slice");
+    assert!(parse(&json!({}), HOME).unwrap().cgroup_slice.is_none());
+}
+
+#[test]
+fn cgroup_slice_rejects_bad_names_and_cgroup_off() {
+    for bad in [
+        json!("boxes"),
+        json!(""),
+        json!("a/b.slice"),
+        json!("a b.slice"),
+        json!(3),
+    ] {
+        let err = parse(&json!({"cgroupSlice": bad}), HOME).unwrap_err();
+        assert!(err.starts_with("config.cgroupSlice"), "{bad}: {err}");
+    }
+    let err = parse(
+        &json!({"cgroup": "off", "cgroupSlice": "boxes.slice"}),
+        HOME,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("cgroupSlice") && err.contains("cgroup: off"),
+        "{err}"
+    );
 }
 
 #[test]

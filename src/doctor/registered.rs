@@ -10,7 +10,7 @@ use crate::register;
 /// [`super::run`] plus whether crabbox's user config selects this adapter.
 pub fn run_host(config: &Config, env: Env<'_>, diag: &mut dyn Write) -> Result<String, String> {
     let registered = registration(env);
-    run_checks(config, &Probes::host(config.cgroup), vec![registered], diag)
+    run_checks(config, &Probes::host(config), vec![registered], diag)
 }
 
 /// Whether crabbox's user config selects the adapter that is running.

@@ -52,6 +52,7 @@ fn config(root: &Path) -> Config {
             host_floor_gib: 0,
         },
         cgroup: Cgroup::Systemd,
+        cgroup_slice: None,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
@@ -79,6 +80,7 @@ fn probes(root: &Path) -> Probes {
         vhost_vsock: vsock,
         scopes: Scopes {
             mode: Cgroup::Systemd,
+            slice: None,
             bus,
             user: "alice".to_owned(),
         },

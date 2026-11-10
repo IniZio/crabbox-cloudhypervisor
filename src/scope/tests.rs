@@ -9,6 +9,7 @@ fn strings(argv: &[OsString]) -> Vec<String> {
 fn systemd(bus: &Path) -> Scopes {
     Scopes {
         mode: Cgroup::Systemd,
+        slice: None,
         bus: bus.to_path_buf(),
         user: "alice".to_owned(),
     }
@@ -20,7 +21,7 @@ fn vm_scope_carries_quota_memory_and_unit_name() {
         cpus: 4,
         memory_bytes: (8192 + 512) * 1024 * 1024,
     };
-    let argv = scope_argv("crabbox-lease_1.scope", Some(limits));
+    let argv = scope_argv("crabbox-lease_1.scope", Some(limits), None);
     assert_eq!(
         strings(&argv),
         [
@@ -42,7 +43,7 @@ fn vm_scope_carries_quota_memory_and_unit_name() {
 
 #[test]
 fn helper_scopes_carry_no_limits() {
-    let argv = scope_argv("crabbox-x-passt.scope", None);
+    let argv = scope_argv("crabbox-x-passt.scope", None, None);
     assert!(!strings(&argv)
         .iter()
         .any(|a| a.contains("Quota") || a.contains("Max")));
@@ -61,6 +62,7 @@ fn unit_names_are_per_lease_and_role() {
 fn off_mode_runs_the_program_directly() {
     let scopes = Scopes {
         mode: Cgroup::Off,
+        slice: None,
         bus: PathBuf::from("/nonexistent/bus"),
         user: "alice".to_owned(),
     };
@@ -115,6 +117,65 @@ fn systemd_mode_without_a_user_bus_refuses_and_names_the_fix() {
         .unwrap_err();
     assert!(err.contains("loginctl enable-linger alice"), "{err}");
     assert!(err.contains("cgroup: off"), "{err}");
+}
+
+fn slice(name: &str) -> ScopeSlice {
+    ScopeSlice::parse(name).unwrap()
+}
+
+#[test]
+fn a_slice_puts_every_scope_under_it_before_the_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let bus = dir.path().join("bus");
+    std::os::unix::net::UnixListener::bind(&bus).unwrap();
+    let mut scopes = systemd(&bus);
+    scopes.slice = Some(slice("boxes.slice"));
+    for role in Role::ALL {
+        let launch = scopes
+            .command("l1", role, None, Path::new("/bin/ch"), &[])
+            .unwrap();
+        let args = strings(&launch.args);
+        let at = args.iter().position(|a| a == "--slice=boxes.slice");
+        let end = args.iter().position(|a| a == "--");
+        assert!(at.is_some() && at < end, "{role:?}: {args:?}");
+    }
+}
+
+#[test]
+fn a_vm_scope_with_a_slice_adds_only_the_slice_flag() {
+    let limits = Limits {
+        cpus: 1,
+        memory_bytes: 1 << 30,
+    };
+    let plain = strings(&scope_argv("crabbox-a.scope", Some(limits), None));
+    let sliced = strings(&scope_argv(
+        "crabbox-a.scope",
+        Some(limits),
+        Some(&slice("boxes.slice")),
+    ));
+    let mut want = plain.clone();
+    want.insert(5, "--slice=boxes.slice".to_owned());
+    assert_eq!(sliced, want);
+    assert_eq!(plain.last().map(String::as_str), Some("--"));
+}
+
+#[test]
+fn slice_names_must_be_systemd_slice_units() {
+    for ok in ["boxes.slice", "a-b_c.d:e.slice"] {
+        assert_eq!(ScopeSlice::parse(ok).unwrap().as_str(), ok);
+    }
+    for bad in [
+        "",
+        "boxes",
+        "boxes.service",
+        ".slice",
+        "a/b.slice",
+        "a b.slice",
+        "boxes.slice\n",
+    ] {
+        let err = ScopeSlice::parse(bad).unwrap_err();
+        assert!(err.contains(".slice"), "{bad:?}: {err}");
+    }
 }
 
 #[test]

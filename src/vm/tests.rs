@@ -57,6 +57,7 @@ pub(super) fn config(root: &Path) -> Config {
             host_floor_gib: 0,
         },
         cgroup: crate::scope::Cgroup::Off,
+        cgroup_slice: None,
         balloon: crate::balloon::BalloonConfig::default(),
         vmm_overhead_mib: 512,
         reclaim: crate::reclaim::ReclaimConfig::default(),
