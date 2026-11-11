@@ -4,6 +4,7 @@ mod cache;
 mod checkpoint;
 mod hygiene;
 mod launch;
+mod net;
 mod power;
 #[cfg(test)]
 mod size_tests;
@@ -14,7 +15,6 @@ mod template;
 mod util;
 mod watcher;
 
-use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -150,8 +150,8 @@ impl RealBackend {
         let scopes = self.scopes();
         let log = self.store.process_log(&id);
         let passt_sock = record.passt_socket();
-        let args = ["--vhost-user", "-f", "-s"].map(OsString::from);
-        let args = [&args[..], &[passt_sock.clone().into_os_string()]].concat();
+        let routes = fs::read_to_string(net::ROUTES).unwrap_or_default();
+        let args = net::passt_args(&passt_sock, &routes);
         let (program, args) = self.launch(&self.config.passt, &args);
         let passt = scopes.command(&id, Role::Passt, None, &program, &args)?;
         let passt_pid = host::spawn_detached(&passt, &log)?;
