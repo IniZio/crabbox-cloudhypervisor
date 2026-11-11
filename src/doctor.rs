@@ -43,12 +43,12 @@ struct Probes {
 
 impl Probes {
     /// The real host device nodes.
-    fn host(cgroup: Cgroup) -> Self {
+    fn host(config: &Config) -> Self {
         let uid = rustix::process::getuid().as_raw();
         Self {
             kvm: PathBuf::from("/dev/kvm"),
             vhost_vsock: PathBuf::from("/dev/vhost-vsock"),
-            scopes: Scopes::current(cgroup),
+            scopes: Scopes::current(config.cgroup, config.cgroup_slice.clone()),
             controllers: PathBuf::from(format!(
                 "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/cgroup.controllers"
             )),
@@ -92,7 +92,7 @@ impl Check {
 
 /// Runs every host check and returns the report; `Err` when any check failed.
 pub fn run(config: &Config, diag: &mut dyn Write) -> Result<String, String> {
-    run_with(config, &Probes::host(config.cgroup), diag)
+    run_with(config, &Probes::host(config), diag)
 }
 
 /// Like [`run`] with injectable device paths.

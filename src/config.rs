@@ -11,10 +11,11 @@ use serde_json::Value;
 
 use crate::balloon::{BalloonConfig, Trigger};
 use crate::reclaim::ReclaimConfig;
-use crate::scope::Cgroup;
+use crate::scope::{Cgroup, ScopeSlice};
 use crate::size::{self, Size};
 
 mod cache;
+mod cgroup;
 pub use cache::CacheConfig;
 
 /// Pinned guest image URL (Ubuntu noble cloud image).
@@ -98,6 +99,8 @@ pub struct Config {
     pub cache: CacheConfig,
     /// How lease processes are confined.
     pub cgroup: Cgroup,
+    /// Slice the lease scopes are placed under; `None` keeps the user manager's default.
+    pub cgroup_slice: Option<ScopeSlice>,
     /// Shrinking guests when the host is short of memory.
     pub balloon: BalloonConfig,
     /// MiB a VM scope may use above its class memory, for the VMM itself.
@@ -161,7 +164,8 @@ impl Config {
             )?),
             reap_stopped_after_hours: reap_stopped_after_hours(config)?,
             cache: cache(config, &state_dir)?,
-            cgroup: cgroup(config)?,
+            cgroup: cgroup::mode(config)?,
+            cgroup_slice: cgroup::slice(config)?,
             balloon: balloon(config)?,
             vmm_overhead_mib: int_key(config, "vmmOverheadMiB", 512, 64, u64::MAX)?,
             reclaim: reclaim(config)?,
@@ -195,15 +199,6 @@ fn reject_removed_keys(config: &Value) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Reads `cgroup`: `systemd` (default) or `off`.
-fn cgroup(config: &Value) -> Result<Cgroup, String> {
-    match get(config, "cgroup").map(Value::as_str) {
-        None | Some(Some("systemd")) => Ok(Cgroup::Systemd),
-        Some(Some("off")) => Ok(Cgroup::Off),
-        Some(_) => Err("config.cgroup must be \"systemd\" or \"off\"".to_owned()),
-    }
 }
 
 /// Reads `balloon` and the keys that tune it.

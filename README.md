@@ -120,6 +120,7 @@ All keys go under `external.config`. All are optional.
 | `cacheGrowMaxGB` | `256` | size of each cache disk in GiB; its filesystem grows into it while the Box runs |
 | `cacheKeyTtlDays` | `30` | `cleanup` removes groups unused this many days |
 | `cgroup` | `systemd` | `systemd` runs each lease in systemd user scopes with kernel CPU and memory limits; `off` runs plain processes with no limits |
+| `cgroupSlice` | unset | systemd slice every lease scope joins, such as `boxes.slice`. One limit on the slice then covers all VMs. Needs `cgroup: systemd`. The host defines the slice and its limits |
 | `vmmOverheadMiB` | `512` | MiB a VM scope may use above the VM memory, for cloud-hypervisor itself (at least 64) |
 | `guestReclaimIntervalSecs` | `60` | seconds between guest file cache trims (at least 1) |
 | `guestReclaimFloorMiB` | `512` | file cache a guest keeps; each trim asks for the rest back |
