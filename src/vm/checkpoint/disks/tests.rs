@@ -559,7 +559,10 @@ fn a_fork_logs_each_step_once() {
     let version = "cloud-hypervisor v52.0";
     let ch = format!("case \"$1\" in --version) echo '{version}' ;; *) sleep 20 & wait ;; esac");
     write(&cfg.cloud_hypervisor, &ch);
-    write(&cfg.passt, ": >\"$4\"; sleep 20 & wait");
+    write(
+        &cfg.passt,
+        "for a; do s=$a; done; : >\"$s\"; sleep 20 & wait",
+    );
     write(&exe, "sleep 20 & wait");
     let refused = "echo 'crabbox@x: Permission denied (publickey).' >&2; exit 255";
     let ssh = format!("case \"$*\" in *bootstrap*' true') {refused} ;; esac; exit 0");

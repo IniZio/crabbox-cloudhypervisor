@@ -377,6 +377,13 @@ The `proxy` subcommand connects to the lease's cloud-hypervisor vsock socket
 and relays stdin/stdout to guest port 22. Each lease has its own SSH key.
 Outbound traffic goes through passt (NAT and DNS, no inbound).
 
+passt runs with `--map-host-loopback none`. So the guest cannot reach the
+host's loopback services through its gateway address, as passt's default
+allows. DNS stays on the gateway through `--dns-forward <gateway>`. It sends
+only ports 53 and 853 to the host's first resolver, so a loopback stub such as
+systemd-resolved still answers. Every other connection to the gateway address
+goes to the real gateway.
+
 The provider generates a per-lease ed25519 host key and injects it through
 cloud-init (sshd offers only that key). Every `acquire`, `resolve` and `resume`
 returns it as `ssh.hostKey` (`ssh-ed25519 AAAA...`, no hostname or comment), so
